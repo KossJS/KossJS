@@ -1,0 +1,60 @@
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+
+build/*
+build/
+*.spec
+dist/*
+dist/
+.venv/
+*.exe
+
+ToDo
+/some.txt
+
+/jniLibs/
+
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock
+.*/
+.*
+.gradle/
+*.lock
+
+
+!.github/
+!.gitignore
+!.cargo/
+
+*_Docs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Temporary Test Files
+*.bin
+temp_*/
+test_env/
+logs/
+
+*.7z
+*.txt
+problem*

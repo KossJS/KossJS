@@ -1,0 +1,14 @@
+[package]
+name = "kossjs"
+version = "0.1.0"
+edition = "2024"
+description = "Embeddable JavaScript runtime as a dynamic library"
+
+[lib]
+name = "kossjs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+boa_engine = "0.21"
+boa_runtime = "0.21"
+boa_gc = "0.21"
