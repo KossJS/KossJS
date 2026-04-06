@@ -3,8 +3,9 @@ KossJS Python Interface - Embeddable JavaScript runtime for Python
 """
 
 import ctypes
-import os
+import os # pyright: ignore[reportUnusedImport]
 import sys
+import json
 from pathlib import Path
 from typing import Any
 from collections.abc import Callable
@@ -22,25 +23,34 @@ class KossJS:
     RESULT_ERROR = 1
     RESULT_INVALID_ARG = 2
 
-    def __init__(self, lib_path: str | None = None):
+    def __init__(self, lib_path: str | None = None, with_modules: bool = False, root_dir: str | None = None):
         if lib_path is None:
             lib_path = self._find_library()
         
         self._lib = ctypes.CDLL(lib_path)
         self._setup_prototypes()
-        self._ptr = self._lib.koss_create()
+        
+        # Use with_modules to enable module loading from stdlib
+        if with_modules and root_dir:
+            self._ptr = self._lib.koss_create_with_modules(root_dir.encode("utf-8"))
+        else:
+            # Still use with_modules but with current directory
+            self._ptr = self._lib.koss_create_with_modules(b".")
         
         if not self._ptr:
             raise RuntimeError("Failed to create KossJS instance")
+        
+        self.register_module_loader()
+        # self.register_fetch()
     
     def _find_library(self) -> str:
         base_dir = Path(__file__).parent
         if sys.platform == "win32":
-            return str(base_dir / "target" / "debug" / "kossjs.dll")
+            return str(base_dir / "kossjs.dll")
         elif sys.platform == "darwin":
-            return str(base_dir / "target" / "debug" / "libkossjs.dylib")
+            return str(base_dir / "libkossjs.dylib")
         else:
-            return str(base_dir / "target" / "debug" / "libkossjs.so")
+            return str(base_dir / "libkossjs.so")
     
     def _setup_prototypes(self):
         lib = self._lib
@@ -48,16 +58,25 @@ class KossJS:
         lib.koss_create.restype = ctypes.c_void_p
         lib.koss_create.argtypes = []
         
+        lib.koss_create_with_modules.restype = ctypes.c_void_p
+        lib.koss_create_with_modules.argtypes = [ctypes.c_char_p]
+        
         lib.koss_destroy.argtypes = [ctypes.c_void_p]
         
         lib.koss_eval.restype = KossResult
         lib.koss_eval.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         
         lib.koss_run_file.restype = KossResult
-        lib.koss_run_file.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        lib.koss_run_file.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        
+        lib.koss_run_module.restype = KossResult
+        lib.koss_run_module.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         
         lib.koss_run_string.restype = KossResult
-        lib.koss_run_string.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        lib.koss_run_string.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        
+        lib.koss_run_module_string.restype = KossResult
+        lib.koss_run_module_string.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         
         lib.koss_set_global_string.restype = KossResult
         lib.koss_set_global_string.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
@@ -76,6 +95,21 @@ class KossJS:
         
         lib.koss_version.restype = ctypes.c_char_p
         lib.koss_version.argtypes = []
+        
+        lib.koss_register_module_loader.restype = KossResult
+        lib.koss_register_module_loader.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        
+        lib.koss_get_binding.restype = KossResult
+        lib.koss_get_binding.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        
+        lib.koss_fetch.restype = KossResult
+        lib.koss_fetch.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    
+    def _get_binding(self, name: str) -> dict[str, Any]:
+        """Get internal binding info from Rust."""
+        result = self._lib.koss_get_binding(self._ptr, name.encode("utf-8"))
+        value = self._check_result(result)
+        return json.loads(value) if value else {}
     
     def _check_result(self, result: KossResult) -> str:
         raw_value = result.value
@@ -105,11 +139,21 @@ class KossJS:
         result = self._lib.koss_run_file(self._ptr, path.encode("utf-8"))
         return self._check_result(result)
     
+    def run_module(self, path: str) -> str:
+        """Execute a JavaScript module and return the result."""
+        result = self._lib.koss_run_module(self._ptr, path.encode("utf-8"))
+        return self._check_result(result)
+
     def run_string(self, code: str) -> str:
         """Execute a JavaScript string and return the result."""
         result = self._lib.koss_run_string(self._ptr, code.encode("utf-8"))
         return self._check_result(result)
     
+    def run_module_string(self, code: str) -> str:
+        """Execute a JavaScript module string code and return the result."""
+        result = self._lib.koss_run_module_string(self._ptr, code.encode("utf-8"))
+        return self._check_result(result)
+
     def set_global(self, name: str, value: Any) -> None:
         """Set a global variable in the JavaScript context."""
         name_bytes = name.encode("utf-8")
@@ -125,7 +169,7 @@ class KossJS:
         
         self._check_result(result)
     
-    def register_function(self, name: str, func: Callable) -> None:
+    def register_function(self, name: str, func: Callable[..., Any]) -> None:
         """Register a Python function callable from JavaScript."""
         if sys.platform == "win32":
             libc = ctypes.CDLL('msvcrt.dll')
@@ -137,24 +181,24 @@ class KossJS:
         libc.free.argtypes = [ctypes.c_void_p]
         
         if not hasattr(self, "_callback_allocations"):
-            self._callback_allocations = []
+            self._callback_allocations: list[ctypes.c_void_p] = []
         
-        def wrapper(argc: int, argv: ctypes.c_void_p) -> ctypes.c_void_p:
+        def wrapper(argc: int, argv: ctypes.c_void_p) -> ctypes.c_void_p | None:
             try:
-                args = []
+                args: list[str] = []
                 for i in range(argc):
-                    str_ptr = ctypes.cast(argv + i * ctypes.sizeof(ctypes.c_char_p), ctypes.POINTER(ctypes.c_char_p))[0]
+                    str_ptr: int = ctypes.cast(argv + i * ctypes.sizeof(ctypes.c_char_p), ctypes.POINTER(ctypes.c_char_p))[0] # pyright: ignore[reportOperatorIssue, reportUnknownArgumentType]
                     args.append(ctypes.string_at(str_ptr).decode("utf-8"))
                 result = func(*args)
                 if result is None:
                     return None
                 encoded = result.encode('utf-8')
                 size = len(encoded) + 1
-                buf = libc.malloc(size)
+                buf: ctypes.c_void_p = libc.malloc(size)
                 if not buf:
                     return None
                 ctypes.memmove(buf, encoded, len(encoded))
-                ctypes.memset(ctypes.c_void_p(buf + len(encoded)), 0, 1)
+                ctypes.memset(ctypes.c_void_p(buf + len(encoded)), 0, 1) # pyright: ignore[reportOperatorIssue, reportUnknownArgumentType]
                 self._callback_allocations.append(buf)
                 return buf
             except Exception as e:
@@ -164,89 +208,217 @@ class KossJS:
                 return None
         
         CALLBACK_TYPE = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p)
-        wrapped = CALLBACK_TYPE(wrapper)
+        wrapped: ctypes._CFunctionType = CALLBACK_TYPE(wrapper) # pyright: ignore[reportPrivateUsage]
         name_bytes = name.encode("utf-8")
         result = self._lib.koss_register_function(self._ptr, name_bytes, wrapped)
         self._check_result(result)
         
         if not hasattr(self, "_callbacks"):
-            self._callbacks = []
+            self._callbacks: list[ctypes._CFunctionType] = [] # pyright: ignore[reportPrivateUsage]
         self._callbacks.append(wrapped)
     
-    def register_fetch(self) -> None:
-        """Register the built-in fetch function using Python's urllib."""
-        import urllib.request
-        import json as json_module
+    # def register_fetch(self) -> None:
+    #     """Register the built-in fetch function using Python's urllib."""
+    #     import urllib.request
+    #     import json as json_module
         
-        def fetch_impl(url: str, method: str = "GET", headers_str: str = "{}", body: str = "") -> str:
+    #     def fetch_impl(url: str, method: str = "GET", headers_str: str = "{}", body: str = "") -> str: # pyright: ignore[reportRedeclaration]
+    #         try:
+    #             headers: dict[str, Any] = json_module.loads(headers_str) if headers_str else {}
+                
+    #             req = urllib.request.Request(url, data=body.encode() if body else None, method=method)
+    #             for k, v in headers.items():
+    #                 req.add_header(k, v)
+                
+    #             with urllib.request.urlopen(req, timeout=30) as response:
+    #                 body_bytes = response.read()
+    #                 status_code = response.status
+    #                 status_text = response.reason
+                    
+    #                 response_headers = {}
+    #                 for k, v in response.getheaders():
+    #                     response_headers[k] = v
+                    
+    #                 result: dict[str, Any] = {
+    #                     "ok": status_code >= 200 and status_code < 300,
+    #                     "status": status_code,
+    #                     "statusText": status_text,
+    #                     "body": body_bytes.decode("utf-8", errors="replace"),
+    #                     "headers": response_headers
+    #                 }
+    #                 return json_module.dumps(result)
+    #         except urllib.error.HTTPError as e: # pyright: ignore[reportUnknownVariableType, reportAttributeAccessIssue, reportUnknownMemberType]
+    #             body: str = e.read().decode("utf-8", errors="replace") # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+    #             result: dict[str, Any] = {
+    #                 "ok": False,
+    #                 "status": e.code, # pyright: ignore[reportUnknownMemberType]
+    #                 "statusText": e.reason, # pyright: ignore[reportUnknownMemberType]
+    #                 "body": body,
+    #                 "headers": dict(e.headers) # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+    #             }
+    #             return json_module.dumps(result)
+    #         except Exception as e:
+    #             result = {
+    #                 "ok": False,
+    #                 "status": 0,
+    #                 "statusText": str(e),
+    #                 "body": "",
+    #                 "headers": {}
+    #             }
+    #             return json_module.dumps(result)
+        
+    #     self.register_function("__fetch", fetch_impl)
+        
+    #     fetch_js = '''
+    #     function fetch(url, options) {
+    #         options = options || {};
+    #         const headers = options.headers || {};
+    #         const headersJson = JSON.stringify(headers);
+    #         const body = options.body || "";
+    #         const method = options.method || "GET";
+            
+    #         const result = __fetch(url, method, headersJson, body);
+    #         const response = JSON.parse(result);
+    #         const _body = response.body;
+            
+    #         response.text = function() { return _body || ""; };
+    #         response.json = function() { 
+    #             try { return JSON.parse(_body || "null"); } 
+    #             catch(e) { return null; }
+    #         };
+            
+    #         return response;
+    #     }
+    #     '''
+    #     self.eval(fetch_js)
+    
+    # def register_fetch(self, fetch_func=None) -> None:
+    #     """Register the built-in fetch function and load the fetch module."""
+    #     import urllib.request
+    #     import json as json_module
+        
+    #     if fetch_func is None:
+    #         def default_fetch(url: str, options: str = "") -> str:
+    #             try:
+    #                 opts: dict[str, Any] = json_module.loads(options) if options else {}
+    #             except:
+    #                 opts = {}
+                
+    #             headers: dict[str, Any] = opts.get('headers', {})
+    #             method: str = opts.get('method', 'GET')
+    #             body: str = opts.get('body', '')
+                
+    #             req = urllib.request.Request(url, data=body.encode() if body else None, method=method)
+    #             for k, v in headers.items():
+    #                 req.add_header(k, v)
+                
+    #             try:
+    #                 with urllib.request.urlopen(req, timeout=30) as response:
+    #                     body_bytes = response.read()
+    #                     status_code = response.status
+    #                     status_text = response.reason
+                        
+    #                     response_headers = {}
+    #                     for k, v in response.getheaders():
+    #                         response_headers[k] = v
+                        
+    #                     result: dict[str, Any] = {
+    #                         "ok": status_code >= 200 and status_code < 300,
+    #                         "status": status_code,
+    #                         "statusText": status_text,
+    #                         "body": body_bytes.decode("utf-8", errors="replace"),
+    #                         "headers": response_headers
+    #                     }
+    #                     return json_module.dumps(result)
+    #             except urllib.error.HTTPError as e:
+    #                 body = e.read().decode("utf-8", errors="replace")
+    #                 result = {
+    #                     "ok": False,
+    #                     "status": e.code,
+    #                     "statusText": e.reason,
+    #                     "body": body,
+    #                     "headers": dict(e.headers)
+    #                 }
+    #                 return json_module.dumps(result)
+    #             except Exception as e:
+    #                 result = {
+    #                     "ok": False,
+    #                     "status": 0,
+    #                     "statusText": str(e),
+    #                     "body": "",
+    #                     "headers": {}
+    #                 }
+    #                 return json_module.dumps(result)
+            
+    #         fetch_func = default_fetch
+        
+    #     self.register_function("__fetch", fetch_func)
+        
+    #     # Use simple fetch implementation
+    #     fetch_module_path = str(Path(__file__).parent / "src" / "fetch" / "simple-fetch.js")
+    #     if Path(fetch_module_path).exists():
+    #         self.run_module(fetch_module_path)
+    #     else:
+    #         raise FileNotFoundError(f"Fetch module not found at: {fetch_module_path}")
+    
+    def register_module_loader(self) -> None:
+        """Register the module loader that loads Node.js stdlib modules."""
+        import sys
+        import json
+        import ctypes.util
+        
+        if sys.platform == "win32":
+            libc = ctypes.CDLL('msvcrt.dll')
+        else:
+            libc = ctypes.CDLL(ctypes.util.find_library('c'))
+        
+        libc.malloc.argtypes = [ctypes.c_size_t]
+        libc.malloc.restype = ctypes.c_void_p
+        libc.free.argtypes = [ctypes.c_void_p]
+        
+        def wrapper(argc: int, argv: ctypes.c_void_p) -> ctypes.c_void_p | None:
             try:
-                headers = json_module.loads(headers_str) if headers_str else {}
+                if argc < 1:
+                    return None
                 
-                req = urllib.request.Request(url, data=body.encode() if body else None, method=method)
-                for k, v in headers.items():
-                    req.add_header(k, v)
+                # Get the string pointer safely
+                argv_array = ctypes.cast(argv, ctypes.POINTER(ctypes.c_char_p))
+                str_ptr = argv_array[0]
+                if not str_ptr:
+                    return None
+                    
+                module_path = ctypes.string_at(str_ptr).decode("utf-8", errors="replace")
                 
-                with urllib.request.urlopen(req, timeout=30) as response:
-                    body_bytes = response.read()
-                    status_code = response.status
-                    status_text = response.reason
-                    
-                    response_headers = {}
-                    for k, v in response.getheaders():
-                        response_headers[k] = v
-                    
-                    result = {
-                        "ok": status_code >= 200 and status_code < 300,
-                        "status": status_code,
-                        "statusText": status_text,
-                        "body": body_bytes.decode("utf-8", errors="replace"),
-                        "headers": response_headers
-                    }
-                    return json_module.dumps(result)
-            except urllib.error.HTTPError as e:
-                body = e.read().decode("utf-8", errors="replace")
-                result = {
-                    "ok": False,
-                    "status": e.code,
-                    "statusText": e.reason,
-                    "body": body,
-                    "headers": dict(e.headers)
-                }
-                return json_module.dumps(result)
+                result: dict[str, Any] | None = koss_module_loader(module_path)
+                
+                if result is None:
+                    # Return empty object instead of null
+                    return None
+                
+                result_json = json.dumps(result)
+                encoded = result_json.encode('utf-8')
+                size = len(encoded) + 1
+                buf: ctypes.c_void_p = libc.malloc(size)
+                if not buf:
+                    return None
+                ctypes.memmove(buf, encoded, len(encoded))
+                ctypes.memset(ctypes.c_void_p(int(buf) + len(encoded)), 0, 1)
+                return buf
             except Exception as e:
-                result = {
-                    "ok": False,
-                    "status": 0,
-                    "statusText": str(e),
-                    "body": "",
-                    "headers": {}
-                }
-                return json_module.dumps(result)
+                import traceback
+                print(f"Module loader error: {e}")
+                traceback.print_exc()
+                return None
         
-        self.register_function("__fetch", fetch_impl)
+        CALLBACK_TYPE = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p)
+        wrapped: ctypes._CFunctionType = CALLBACK_TYPE(wrapper) # pyright: ignore[reportPrivateUsage]
         
-        fetch_js = '''
-        function fetch(url, options) {
-            options = options || {};
-            const headers = options.headers || {};
-            const headersJson = JSON.stringify(headers);
-            const body = options.body || "";
-            const method = options.method || "GET";
-            
-            const result = __fetch(url, method, headersJson, body);
-            const response = JSON.parse(result);
-            const _body = response.body;
-            
-            response.text = function() { return _body || ""; };
-            response.json = function() { 
-                try { return JSON.parse(_body || "null"); } 
-                catch(e) { return null; }
-            };
-            
-            return response;
-        }
-        '''
-        self.eval(fetch_js)
+        result = self._lib.koss_register_module_loader(self._ptr, wrapped)
+        self._check_result(result)
+        
+        if not hasattr(self, "_module_loader_callback"):
+            self._module_loader_callback: list[ctypes._CFunctionType] = [] # pyright: ignore[reportPrivateUsage]
+        self._module_loader_callback.append(wrapped)
     
     def version(self) -> str:
         """Get the KossJS version string."""
@@ -261,7 +433,7 @@ class KossJS:
     def __enter__(self):
         return self
     
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type, exc_val, exc_tb): # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
         self.destroy()
         return False
     
@@ -272,3 +444,44 @@ class KossJS:
 class JsError(Exception):
     """Exception raised when JavaScript code throws an error."""
     pass
+
+def koss_module_loader(module_path: str) -> dict[str, Any] | None:
+    """Load a Node.js module from the stdlib.
+    
+    This function is called by the JS require() when it can't find a module
+    in the regular module cache. It loads modules from src/stdlib.
+    """
+    base_dir = Path(__file__).parent
+    stdlib_dir = base_dir / "src" / "stdlib"
+    
+    # Handle node: prefix
+    if module_path.startswith("node:"):
+        module_path = module_path[5:]
+    
+    # List of built-in modules
+    builtin_modules = [
+        'assert', 'buffer', 'child_process', 'cluster', 'console', 'constants',
+        'crypto', 'dgram', 'dns', 'domain', 'events', 'fs', 'http', 'https',
+        'module', 'net', 'os', 'path', 'process', 'punycode', 'querystring',
+        'readline', 'repl', 'stream', 'string_decoder', 'sys', 'timers',
+        'tls', 'trace_events', 'tty', 'url', 'util', 'v8', 'vm', 'wasi',
+        'worker_threads', 'zlib', 'async_hooks', 'diagnostics_channel',
+        'perf_hooks', 'http2', 'http3', 'sqlite', 'test', 'wasi', 'sea'
+    ]
+    
+    # Check if it's a built-in module
+    if module_path in builtin_modules:
+        # Try to load from stdlib
+        js_file = stdlib_dir / f"{module_path}.js"
+        if js_file.exists():
+            with open(js_file, 'r', encoding='utf-8') as f:
+                return {"type": "module", "code": f.read()}
+        
+        # Try as directory with index.js
+        js_file = stdlib_dir / module_path / "index.js"
+        if js_file.exists():
+            with open(js_file, 'r', encoding='utf-8') as f:
+                return {"type": "module", "code": f.read()}
+    
+    # Return simple stub for unknown modules
+    return None

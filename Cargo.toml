@@ -1,8 +1,9 @@
 [package]
 name = "kossjs"
-version = "0.1.0"
+version = "0.1.0-dev.2"
 edition = "2024"
 description = "Embeddable JavaScript runtime as a dynamic library"
+license = "GNU Affero General Public License v3.0"
 
 [lib]
 name = "kossjs"
@@ -10,5 +11,20 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 boa_engine = "0.21"
+boa_parser = "0.21"
 boa_runtime = "0.21"
 boa_gc = "0.21"
+rustc-hash = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+once_cell = "1"
+base64 = "0.22"
+num_cpus = "1"
+url = "2"
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winuser", "processthreadsapi"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

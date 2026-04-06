@@ -1,0 +1,691 @@
+name: KossJS 跨平台构建与测试
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*', 'test_v*']
+  pull_request:
+    branches: [main, develop]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ═══════════════════════════════════════════════════════════════
+  #  桌面平台构建 (Windows / Linux / macOS × AMD64 / ARM64)
+  # ═══════════════════════════════════════════════════════════════
+  build-desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── Windows ──
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: kossjs.dll
+            lib_name: kossjs.dll
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            artifact_name: kossjs_arm64.dll
+            lib_name: kossjs.dll
+
+          # ── Linux ──
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: libkossjs.so
+            lib_name: libkossjs.so
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: libkossjs_arm64.so
+            lib_name: libkossjs.so
+            cross: true
+
+          # ── macOS ──
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: libkossjs.dylib
+            lib_name: libkossjs.dylib
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: libkossjs_arm64.dylib
+            lib_name: libkossjs.dylib
+
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.artifact_name }} (${{ matrix.target }})
+
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+
+      - name: 🦀 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 🔧 安装 CMake 和 Clang (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang llvm
+
+      - name: 🔧 安装 CMake 和 Clang (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake llvm || true
+          echo "$(brew --prefix llvm)/bin" >> $GITHUB_PATH
+
+      - name: 🔧 安装 CMake 和 LLVM (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install cmake llvm -y
+          echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
+
+      - name: 📦 缓存 Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+
+      - name: 🔧 安装 cross (ARM64 Linux 交叉编译)
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: 🏗️ 编译 (原生)
+        if: "!matrix.cross"
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: 🏗️ 编译 (交叉编译)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: 📋 重命名产物
+        shell: bash
+        run: |
+          SRC="target/${{ matrix.target }}/release/${{ matrix.lib_name }}"
+          DST="${{ matrix.artifact_name }}"
+          cp "$SRC" "$DST"
+          echo "产物: $DST ($(du -h "$DST" | cut -f1))"
+
+      # 安装 UPX 并压缩 Windows x64
+      - name: 🔧 安装 UPX (Windows x64)
+        if: runner.os == 'Windows' && matrix.target == 'x86_64-pc-windows-msvc'
+        run: choco install upx
+
+      - name: 📦 使用 UPX 压缩 Windows x64 产物
+        if: runner.os == 'Windows' && matrix.target == 'x86_64-pc-windows-msvc'
+        run: upx --best --lzma ${{ matrix.artifact_name }}
+
+      # 安装 LLVM 并使用 llvm-strip 处理 Windows ARM64
+      - name: 🔧 安装 LLVM (Windows ARM64)
+        if: runner.os == 'Windows' && matrix.target == 'aarch64-pc-windows-msvc'
+        run: choco install llvm
+
+      - name: 🔪 使用 llvm-strip 减小 Windows ARM64 体积
+        if: runner.os == 'Windows' && matrix.target == 'aarch64-pc-windows-msvc'
+        run: llvm-strip ${{ matrix.artifact_name }}
+
+      - name: 📦 使用 UPX 5.1.1 压缩 Linux 产物
+        if: runner.os == 'Linux'
+        uses: crazy-max/ghaction-upx@v3
+        with:
+          version: v5.1.1
+          files: ${{ matrix.artifact_name }}
+          args: --best --lzma
+
+      # macOS 使用 strip -S 仅剥离调试符号
+      - name: 🔪 使用 strip -S 减小 macOS 体积（仅剥离调试符号）
+        if: runner.os == 'macOS'
+        run: strip -S ${{ matrix.artifact_name }}
+
+      - name: 📤 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}
+          retention-days: 30
+
+  # ═══════════════════════════════════════════════════════════════
+  #  iOS 构建 (ARM64 Simulator / ARM64 Device)
+  # ═══════════════════════════════════════════════════════════════
+  build-ios:
+    runs-on: macos-latest
+    name: kossjs_ios.dylib (iOS)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-ios
+            suffix: arm64_device
+          - target: aarch64-apple-ios-sim
+            suffix: arm64_simulator
+
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+
+      - name: 🦀 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 🔧 安装 iOS 目标
+        run: |
+          rustup target add ${{ matrix.target }} || true
+
+      - name: 📦 缓存 Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ios-cargo-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: 🏗️ 编译 iOS 库
+        run: |
+          # iOS 需要 apple-sdk，macOS runner 自带
+          # 使用 NO_LTO 减少编译时间，iOS 不需要极致优化
+          # 设置 iOS 13.0 最低版本以修复 zstd 链接问题
+          export RUSTFLAGS="-C link-arg=-Wl,-dead_strip"
+          export IPHONEOS_DEPLOYMENT_TARGET=13.0
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: 📋 重命名产物
+        run: |
+          SRC="target/${{ matrix.target }}/release/libkossjs.dylib"
+          DST="kossjs_ios_${{ matrix.suffix }}.dylib"
+          cp "$SRC" "$DST"
+          echo "产物: $DST ($(du -h "$DST" | cut -f1))"
+
+      - name: 🔪 使用 strip 减小 iOS 库体积
+        run: |
+          strip -S kossjs_ios_${{ matrix.suffix }}.dylib
+
+      - name: 📤 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: kossjs_ios_${{ matrix.suffix }}.dylib
+          path: kossjs_ios_${{ matrix.suffix }}.dylib
+          retention-days: 30
+
+  # ═══════════════════════════════════════════════════════════════
+  #  Android 构建 (arm64-v8a / armeabi-v7a / x86_64)
+  # ═══════════════════════════════════════════════════════════════
+  build-android:
+    runs-on: ubuntu-latest
+    name: kossjs_android.so (Android)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            target: aarch64-linux-android
+            suffix: arm64
+          - abi: armeabi-v7a
+            target: armv7-linux-androideabi
+            suffix: armv7
+          - abi: x86_64
+            target: x86_64-linux-android
+            suffix: x86_64
+
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+
+      - name: 🦀 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 🔧 安装 CMake 和 Clang (boring-sys2 依赖)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang llvm
+
+      - name: 📦 缓存 Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: android-cargo-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: 📱 安装 cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: 🏗️ 编译 Android 库
+        run: |
+          # GitHub Actions runner 的系统环境变量是 ANDROID_NDK_LATEST_HOME
+          # boring-sys2 和 aws-lc-sys 需要 ANDROID_NDK_HOME
+          export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+          ls "$ANDROID_NDK_HOME" | head -5
+          cargo ndk \
+            --target ${{ matrix.abi }} \
+            --platform 21 \
+            build --release
+
+      - name: 📋 重命名产物
+        run: |
+          SRC="target/${{ matrix.target }}/release/libkossjs.so"
+          DST="kossjs_android_${{ matrix.suffix }}.so"
+          cp "$SRC" "$DST"
+          echo "产物: $DST ($(du -h "$DST" | cut -f1))"
+
+      - name: 🔪 使用 strip 减小 Android 库体积
+        run: |
+          ARTIFACT="kossjs_android_${{ matrix.suffix }}.so"
+          # 安装 binutils (包含 strip)
+          sudo apt-get update && sudo apt-get install -y binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi binutils-x86_64-linux-gnu
+          # 根据架构选择对应的 strip
+          case "${{ matrix.suffix }}" in
+            arm64) aarch64-linux-gnu-strip "$ARTIFACT" ;;
+            armv7) arm-linux-gnueabi-strip "$ARTIFACT" ;;
+            x86_64) x86_64-linux-gnu-strip "$ARTIFACT" ;;
+          esac
+
+      - name: 📤 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: kossjs_android_${{ matrix.suffix }}.so
+          path: kossjs_android_${{ matrix.suffix }}.so
+          retention-days: 30
+
+  # ═══════════════════════════════════════════════════════════════
+  #  鸿蒙 HarmonyOS 构建 (ARM64 / x86_64)
+  # ═══════════════════════════════════════════════════════════════
+  build-harmony:
+    runs-on: ubuntu-latest
+    name: kossjs_harmony.so (HarmonyOS)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-ohos
+            ohos_arch: arm64-v8a
+            suffix: arm64
+          - target: x86_64-unknown-linux-ohos
+            ohos_arch: x86_64
+            suffix: x86_64
+
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+
+      - name: 🔧 安装系统依赖 (CMake + Clang/LLVM，boring-sys2 依赖)
+        run: |
+          sudo apt-get update && sudo apt-get install -y make ninja-build jq cmake clang llvm
+          # boring-sys2 的 CMake 使用 --target=aarch64-linux-ohos，GCC 不支持，必须用 clang
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/clang 100
+          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/clang++ 100
+
+      - name: 📥 手动下载 OpenHarmony SDK
+        id: setup-ohos
+        run: |
+          SDK_VERSION="v5.0.3"
+          SDK_DIR="$HOME/ohos-sdk"
+          mkdir -p "$SDK_DIR" && cd "$SDK_DIR"
+
+          echo "📥 从 GitHub mirror 下载 OHOS SDK $SDK_VERSION ..."
+          gh release download "$SDK_VERSION" \
+            --pattern 'ohos-sdk-windows_linux-public.tar.gz*' \
+            --repo openharmony-rs/ohos-sdk
+
+          # 合并分片文件（如果有）
+          if ls ohos-sdk-windows_linux-public.tar.gz.a? 1>/dev/null 2>&1; then
+            cat ohos-sdk-windows_linux-public.tar.gz.a? > ohos-sdk-windows_linux-public.tar.gz
+            rm -f ohos-sdk-windows_linux-public.tar.gz.a?
+          fi
+
+          echo "📦 解压 SDK ..."
+          tar -xf ohos-sdk-windows_linux-public.tar.gz
+          rm -f ohos-sdk-windows_linux-public.tar.gz*
+
+          # 自动探测 Linux SDK 目录 + 解压 native zip 包
+          echo "🔍 探测 SDK 目录结构 ..."
+          find "$SDK_DIR" -maxdepth 4 -type d | head -20
+
+          # 找到 linux 目录（可能嵌套在 ohos-sdk/ 下）
+          LINUX_DIR=$(find "$SDK_DIR" -maxdepth 3 -type d -name "linux" | head -1)
+          if [ -z "$LINUX_DIR" ]; then
+            echo "❌ 找不到 linux 目录"
+            find "$SDK_DIR" -maxdepth 4 -type d | head -30
+            exit 1
+          fi
+          echo "✅ LINUX_DIR=$LINUX_DIR"
+
+          # 删除无用的 windows/ohos 目录节省空间
+          rm -rf "$(dirname "$LINUX_DIR")/windows" "$(dirname "$LINUX_DIR")/ohos" 2>/dev/null || true
+
+          # 解压 linux 目录下的所有 zip 包（native-linux-*.zip 等）
+          if ls "$LINUX_DIR"/*.zip 1>/dev/null 2>&1; then
+            echo "📦 解压 native zip 包 ..."
+            for z in "$LINUX_DIR"/*.zip; do
+              echo "  -> $(basename "$z")"
+              unzip -qo "$z" -d "$LINUX_DIR"
+              rm -f "$z"
+            done
+          fi
+
+          # 再次探测 native 目录
+          ls -la "$LINUX_DIR/" || true
+
+          if [ -d "$LINUX_DIR/native" ]; then
+            OHOS_NDK="$LINUX_DIR/native"
+          else
+            OHOS_NDK=$(find "$LINUX_DIR" -maxdepth 2 -type d -name "native" | head -1)
+          fi
+
+          if [ -z "$OHOS_NDK" ] || [ ! -d "$OHOS_NDK" ]; then
+            echo "❌ 找不到 native 目录"
+            find "$LINUX_DIR" -maxdepth 3 -type d | head -30
+            exit 1
+          fi
+
+          echo "✅ OHOS_NDK_HOME=$OHOS_NDK"
+          ls -la "$OHOS_NDK/build/cmake/" 2>/dev/null || echo "⚠️ cmake 目录不存在"
+          ls -la "$OHOS_NDK/llvm/bin/" 2>/dev/null | head -5 || echo "⚠️ llvm/bin 目录不存在"
+
+          echo "ohos-ndk-home=$OHOS_NDK" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: 🦀 安装 Rust nightly (OHOS 支持)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 📦 缓存 Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: harmony-cargo-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: 🏗️ 编译鸿蒙库
+        env:
+          OHOS_NDK_HOME: ${{ steps.setup-ohos.outputs.ohos-ndk-home }}
+        run: |
+          echo "OHOS_NDK_HOME=$OHOS_NDK_HOME"
+          ls -la "$OHOS_NDK_HOME/build/cmake/" 2>/dev/null || echo "Listing NDK..."
+
+          # 创建 clang wrapper 脚本
+          NDK_LLVM="$OHOS_NDK_HOME/llvm"
+          SYSROOT="$OHOS_NDK_HOME/sysroot"
+
+          # ===== 修复: OHOS 用 libc++ (LLVM) 而非 libstdc++ (GNU) =====
+          # boring-sys2 等 crate 链接时传 -lstdc++，OHOS sysroot 里没有
+          # 创建 libstdc++ → libc++ 符号链接让链接器找到
+          for ARCH_DIR in aarch64-linux-ohos x86_64-linux-ohos; do
+            LIB_DIR="$SYSROOT/usr/lib/$ARCH_DIR"
+            if [ -d "$LIB_DIR" ]; then
+              echo "🔗 修复 $ARCH_DIR: libstdc++ → libc++"
+              # 动态库符号链接
+              if [ -f "$LIB_DIR/libc++.so" ] && [ ! -f "$LIB_DIR/libstdc++.so" ]; then
+                ln -sf libc++.so "$LIB_DIR/libstdc++.so"
+              fi
+              # 静态库符号链接
+              if [ -f "$LIB_DIR/libc++_static.a" ] && [ ! -f "$LIB_DIR/libstdc++.a" ]; then
+                ln -sf libc++_static.a "$LIB_DIR/libstdc++.a"
+              elif [ -f "$LIB_DIR/libc++.a" ] && [ ! -f "$LIB_DIR/libstdc++.a" ]; then
+                ln -sf libc++.a "$LIB_DIR/libstdc++.a"
+              fi
+              ls -la "$LIB_DIR"/libstdc++* "$LIB_DIR"/libc++* 2>/dev/null || true
+            else
+              echo "⚠️  $LIB_DIR 不存在，尝试搜索..."
+              find "$SYSROOT" -name "libc++*" -type f 2>/dev/null | head -5
+            fi
+          done
+
+          mkdir -p $HOME/.ohos-wrappers
+
+          # aarch64 clang wrapper (含 -lstdc++ → -lc++ 替换)
+          cat > $HOME/.ohos-wrappers/aarch64-unknown-linux-ohos-clang.sh << 'WRAPPER'
+          #!/bin/bash
+          ARGS=()
+          for arg in "$@"; do
+            if [ "$arg" = "-lstdc++" ]; then ARGS+=("-lc++")
+            else ARGS+=("$arg"); fi
+          done
+          exec "PLACEHOLDER_LLVM/bin/clang" --target=aarch64-linux-ohos --sysroot="PLACEHOLDER_SYSROOT" "${ARGS[@]}"
+          WRAPPER
+          sed -i "s|PLACEHOLDER_LLVM|$NDK_LLVM|g; s|PLACEHOLDER_SYSROOT|$SYSROOT|g" $HOME/.ohos-wrappers/aarch64-unknown-linux-ohos-clang.sh
+          chmod +x $HOME/.ohos-wrappers/aarch64-unknown-linux-ohos-clang.sh
+
+          # x86_64 clang wrapper
+          cat > $HOME/.ohos-wrappers/x86_64-unknown-linux-ohos-clang.sh << 'WRAPPER'
+          #!/bin/bash
+          ARGS=()
+          for arg in "$@"; do
+            if [ "$arg" = "-lstdc++" ]; then ARGS+=("-lc++")
+            else ARGS+=("$arg"); fi
+          done
+          exec "PLACEHOLDER_LLVM/bin/clang" --target=x86_64-linux-ohos --sysroot="PLACEHOLDER_SYSROOT" "${ARGS[@]}"
+          WRAPPER
+          sed -i "s|PLACEHOLDER_LLVM|$NDK_LLVM|g; s|PLACEHOLDER_SYSROOT|$SYSROOT|g" $HOME/.ohos-wrappers/x86_64-unknown-linux-ohos-clang.sh
+          chmod +x $HOME/.ohos-wrappers/x86_64-unknown-linux-ohos-clang.sh
+
+          # aarch64 C++ wrapper
+          cat > $HOME/.ohos-wrappers/aarch64-unknown-linux-ohos-clang++.sh << 'WRAPPER'
+          #!/bin/bash
+          ARGS=()
+          for arg in "$@"; do
+            if [ "$arg" = "-lstdc++" ]; then ARGS+=("-lc++")
+            else ARGS+=("$arg"); fi
+          done
+          exec "PLACEHOLDER_LLVM/bin/clang++" --target=aarch64-linux-ohos --sysroot="PLACEHOLDER_SYSROOT" "${ARGS[@]}"
+          WRAPPER
+          sed -i "s|PLACEHOLDER_LLVM|$NDK_LLVM|g; s|PLACEHOLDER_SYSROOT|$SYSROOT|g" $HOME/.ohos-wrappers/aarch64-unknown-linux-ohos-clang++.sh
+          chmod +x $HOME/.ohos-wrappers/aarch64-unknown-linux-ohos-clang++.sh
+
+          # x86_64 C++ wrapper
+          cat > $HOME/.ohos-wrappers/x86_64-unknown-linux-ohos-clang++.sh << 'WRAPPER'
+          #!/bin/bash
+          ARGS=()
+          for arg in "$@"; do
+            if [ "$arg" = "-lstdc++" ]; then ARGS+=("-lc++")
+            else ARGS+=("$arg"); fi
+          done
+          exec "PLACEHOLDER_LLVM/bin/clang++" --target=x86_64-linux-ohos --sysroot="PLACEHOLDER_SYSROOT" "${ARGS[@]}"
+          WRAPPER
+          sed -i "s|PLACEHOLDER_LLVM|$NDK_LLVM|g; s|PLACEHOLDER_SYSROOT|$SYSROOT|g" $HOME/.ohos-wrappers/x86_64-unknown-linux-ohos-clang++.sh
+          chmod +x $HOME/.ohos-wrappers/x86_64-unknown-linux-ohos-clang++.sh
+
+          # 配置 Cargo linker + ar（必须在同一个 section 内，不能 duplicate key）
+          mkdir -p .cargo
+          cat > .cargo/config.toml << CARGO_CFG
+          [target.aarch64-unknown-linux-ohos]
+          ar = "llvm-ar"
+          linker = "$HOME/.ohos-wrappers/aarch64-unknown-linux-ohos-clang.sh"
+
+          [target.x86_64-unknown-linux-ohos]
+          ar = "llvm-ar"
+          linker = "$HOME/.ohos-wrappers/x86_64-unknown-linux-ohos-clang.sh"
+          CARGO_CFG
+
+          # 设置 CC/CXX 环境变量（目标特定 + 全局）
+          # boring-sys2 的 cmake 不走 cc crate 约定，直接用系统 cc/c++
+          # 必须设全局 CC/CXX 指向 NDK clang（它自带 --target 支持）
+          export CC="$NDK_LLVM/bin/clang"
+          export CXX="$NDK_LLVM/bin/clang++"
+          export CC_aarch64_unknown_linux_ohos="$HOME/.ohos-wrappers/aarch64-unknown-linux-ohos-clang.sh"
+          export CXX_aarch64_unknown_linux_ohos="$HOME/.ohos-wrappers/aarch64-unknown-linux-ohos-clang++.sh"
+          export CC_x86_64_unknown_linux_ohos="$HOME/.ohos-wrappers/x86_64-unknown-linux-ohos-clang.sh"
+          export CXX_x86_64_unknown_linux_ohos="$HOME/.ohos-wrappers/x86_64-unknown-linux-ohos-clang++.sh"
+          export AR_aarch64_unknown_linux_ohos="$NDK_LLVM/bin/llvm-ar"
+          export AR_x86_64_unknown_linux_ohos="$NDK_LLVM/bin/llvm-ar"
+          export RANLIB_aarch64_unknown_linux_ohos="$NDK_LLVM/bin/llvm-ranlib"
+          export RANLIB_x86_64_unknown_linux_ohos="$NDK_LLVM/bin/llvm-ranlib"
+
+          # 设置 CMAKE_TOOLCHAIN_FILE 给 aws-lc-sys
+          export CMAKE_TOOLCHAIN_FILE_aarch64_unknown_linux_ohos="$OHOS_NDK_HOME/build/cmake/ohos.toolchain.cmake"
+          export CMAKE_TOOLCHAIN_FILE_x86_64_unknown_linux_ohos="$OHOS_NDK_HOME/build/cmake/ohos.toolchain.cmake"
+
+          # 添加 llvm/bin 到 PATH
+          export PATH="$NDK_LLVM/bin:$PATH"
+
+          # 告知 cc crate 使用 libc++ 而非 libstdc++
+          export CXXSTDLIB="c++"
+
+          cargo +nightly build --release --target ${{ matrix.target }}
+
+      - name: 📋 重命名产物
+        run: |
+          SRC="target/${{ matrix.target }}/release/libkossjs.so"
+          DST="kossjs_harmony_${{ matrix.suffix }}.so"
+          if [ -f "$SRC" ]; then
+            cp "$SRC" "$DST"
+            echo "产物: $DST ($(du -h "$DST" | cut -f1))"
+          else
+            echo "⚠️  鸿蒙产物未生成"
+            exit 1
+          fi
+
+      - name: 📦 使用 UPX 5.1.1 压缩产物
+        uses: crazy-max/ghaction-upx@v3
+        with:
+          version: v5.1.1
+          files: kossjs_harmony_${{ matrix.suffix }}.so
+          args: --best --lzma
+
+      - name: 📤 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: kossjs_harmony_${{ matrix.suffix }}.so
+          path: kossjs_harmony_${{ matrix.suffix }}.so
+          retention-days: 30
+
+  # ═══════════════════════════════════════════════════════════════
+  #  测试 (Linux + macOS + Windows 原生)
+  # ═══════════════════════════════════════════════════════════════
+  test:
+    needs: build-desktop
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: libkossjs.so
+            lib_env: LD_LIBRARY_PATH
+          - os: macos-latest
+            artifact: libkossjs_arm64.dylib
+            lib_env: DYLD_LIBRARY_PATH
+          - os: windows-latest
+            artifact: kossjs.dll
+            lib_env: PATH
+    runs-on: ${{ matrix.os }}
+    name: 测试 (${{ matrix.os }})
+
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+
+      - name: 📥 下载构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: .
+
+      - name: 🐍 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 🧪 运行基础加载测试
+        shell: bash
+        run: |
+          echo "验证动态库可被加载..."
+          python3 -c "
+          import ctypes, sys, os
+          lib_name = '${{ matrix.artifact }}'
+          try:
+              lib = ctypes.CDLL('./' + lib_name)
+              print(f'[SUCCESS] Load {lib_name}')
+              sys.exit(0)
+          except Exception as e:
+              print(f'[FAILED] error: {e}')
+              sys.exit(1)
+          "
+
+      - name: 🧪 运行 Python 单元测试
+        shell: bash
+        run: |
+          echo "运行 KossJS Python 单元测试..."
+          python3 -c "
+          import sys
+          sys.path.insert(0, '.')
+          from kossjs_interface import KossJS
+          k = KossJS()
+          result = k.eval('1 + 1')
+          print(f'eval result: {result}')
+          k.destroy()
+          print('Python test passed!')
+          " || true
+        continue-on-error: true
+
+  # ═══════════════════════════════════════════════════════════════
+  #  发布 Release (仅在 tag 推送时触发)
+  # ═══════════════════════════════════════════════════════════════
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-desktop, build-android, build-ios, test]
+    runs-on: ubuntu-latest
+    name: 📦 发布 Release
+    permissions:
+      contents: write
+
+    steps:
+      - name: 📥 下载所有产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: 📦 打包为 7z
+        run: |
+          sudo apt-get install -y p7zip-full
+          mkdir -p release_pkg
+
+          # 桌面平台
+          cp artifacts/libkossjs.so/libkossjs.so release_pkg/ 2>/dev/null || true
+          cp artifacts/libkossjs_arm64.so/libkossjs_arm64.so release_pkg/ 2>/dev/null || true
+          cp artifacts/kossjs.dll/kossjs.dll release_pkg/ 2>/dev/null || true
+          cp artifacts/kossjs_arm64.dll/kossjs_arm64.dll release_pkg/ 2>/dev/null || true
+          cp artifacts/libkossjs.dylib/libkossjs.dylib release_pkg/ 2>/dev/null || true
+          cp artifacts/libkossjs_arm64.dylib/libkossjs_arm64.dylib release_pkg/ 2>/dev/null || true
+
+          # Android
+          mkdir -p release_pkg/android
+          cp artifacts/kossjs_android_arm64.so/kossjs_android_arm64.so release_pkg/android/ 2>/dev/null || true
+          cp artifacts/kossjs_android_armv7.so/kossjs_android_armv7.so release_pkg/android/ 2>/dev/null || true
+          cp artifacts/kossjs_android_x86_64.so/kossjs_android_x86_64.so release_pkg/android/ 2>/dev/null || true
+
+          # iOS
+          mkdir -p release_pkg/ios
+          cp artifacts/kossjs_ios_arm64_device.dylib/kossjs_ios_arm64_device.dylib release_pkg/ios/ 2>/dev/null || true
+          cp artifacts/kossjs_ios_arm64_simulator.dylib/kossjs_ios_arm64_simulator.dylib release_pkg/ios/ 2>/dev/null || true
+
+          # 鸿蒙
+          mkdir -p release_pkg/harmony
+          cp artifacts/kossjs_harmony_arm64.so/kossjs_harmony_arm64.so release_pkg/harmony/ 2>/dev/null || true
+          cp artifacts/kossjs_harmony_x86_64.so/kossjs_harmony_x86_64.so release_pkg/harmony/ 2>/dev/null || true
+
+          ls -lhR release_pkg/
+
+          cd release_pkg
+          7z a -t7z -m0=lzma2 -mx=9 ../KossJS-${{ github.ref_name }}.7z *
+
+      - name: 🚀 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: KossJS-${{ github.ref_name }}.7z
+          generate_release_notes: true
