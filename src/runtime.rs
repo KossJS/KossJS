@@ -1302,7 +1302,7 @@ pub unsafe extern "C" fn koss_register_fetch(ptr: *mut KossInstance) -> KossResu
 /// Returns the KossJS version string.
 #[unsafe(no_mangle)]
 pub extern "C" fn koss_version() -> *const c_char {
-    static VERSION: &[u8] = b"0.1.0\0";
+    static VERSION: &[u8] = b"0.1.0-dev.2\0";
     VERSION.as_ptr() as *const c_char
 }
 

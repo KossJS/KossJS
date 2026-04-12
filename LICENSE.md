@@ -659,3 +659,141 @@ specific requirements.
 if any, to sign a "copyright disclaimer" for the program, if necessary.
 For more information on this, and how to apply and follow the GNU AGPL, see
 <https://www.gnu.org/licenses/>.
+
+        --- 附加权限（GNU AGPL v3.0 第7节） ---
+        --- Additional Permissions under Section 7 of AGPL v3.0 ---
+
+本附加权限以中英文双语书写。当中英文版本存在任何冲突或不一致时，以中文版本为准。英文版本仅供参考。
+This Additional Permission is written in both Chinese and English. In the event of any conflict or inconsistency between the Chinese and English versions, the Chinese version shall prevail. The English version is provided for reference only.
+
+### 中文版本（具有法律效力）
+
+#### TT23XR Studio 附加权限：未修改二进制库的闭源使用例外
+
+根据 GNU Affero 通用公共许可证第3版（“AGPL v3.0”）第7节，TT23XR Studio（“版权持有人”）特此授予以下附加权限。
+
+**1. 定义**
+
+- **“本软件”**：指由 TT23XR Studio 发行、明确声明受本附加权限约束且版权归 TT23XR Studio 所有的源代码及编译后的二进制形式。
+- **“官方二进制库”**：指 TT23XR Studio 通过其官方渠道（例如 GitHub Releases）发布的、未经任何修改的预编译二进制库文件（包括但不限于 `.dll`、`.so`、`.dylib` 等形式）。自行从源代码编译得到的库文件（即使未修改源代码）**不属于**官方二进制库。
+- **“未经修改”**：对官方二进制库而言，指未以任何方式变更其二进制内容（包括但不限于反编译、修改、修补、重新打包/编译）。对源代码而言，指未以任何方式变更源代码内容（包括但不限于新增、删除、重写任何函数、类、模块或数据结构）。任何改变编译参数（如优化级别、宏定义）后重新编译得到的库，亦视为“修改”。
+- **“链接”**：指将本软件的官方二进制库与其他独立模块组合成一个可执行程序或库的任何方式，包括但不限于静态链接、动态链接、隐式链接、显式加载等。本附加权限**不要求**用户必须能够替换该二进制库。
+
+**2. 附加权限内容**
+
+尽管 AGPL v3.0 有其他规定，当您满足以下**所有**条件时，您可以将**未经修改的官方二进制库**通过任何形式的链接与其他独立模块（“组合作品”）一起使用、复制和分发，并且**组合作品中不属于本软件的部分**（即您的独立模块）**无需**遵循 AGPL v3.0 的任何条款（包括但不限于第5条“发布修改版源代码”和第13条“远程网络交互”）：
+
+- (a) **使用官方二进制库**：您使用的必须是 TT23XR Studio 官方发布的、未经任何修改的预编译二进制库文件。您不得自行从源代码编译，即使编译时未修改源代码。
+- (b) **未经修改**：您没有以任何方式修改本软件的源代码或官方二进制库。
+- (c) **显著署名**：您在组合作品的文档、关于页面、或源代码的显著位置中明确声明（如果产品无交互界面，则需在随附的书面材料或 README 中声明）：
+  > “本软件使用了 [本软件名称]（[项目URL]），遵循 GNU AGPL v3.0 协议及 TT23XR Studio 的附加权限。”
+  该声明必须对最终用户清晰可见（例如在“关于”对话框、README 文件或用户手册中）。
+
+**3. 不适用情形（必须完整遵守 AGPL v3.0）**
+
+以下任何情形**不**享受上述附加权限，您必须完整遵守 AGPL v3.0 的所有条款（包括将整个组合作品以 AGPL 协议开源）：
+
+- (a) 您对本软件的源代码进行了任何修改（即使是极小的修改，如修复拼写错误）；
+- (b) 您自行从源代码编译了本软件的二进制库（即使未修改源代码）；
+- (c) 您对本软件的官方二进制库进行了任何形式的修改、反编译或逆向工程；
+- (d) 您以源代码形式将本软件的任何部分集成到组合作品中；
+- (e) 您未满足上述第2条中(a)(b)(c)的任何一项条件。
+
+**4. 第三方代码的独立许可**
+
+本附加权限仅适用于 TT23XR Studio 拥有完整版权的代码。本软件中可能包含基于其他许可证（例如 MIT、Apache-2.0、BSD）的第三方代码。这些第三方代码不受本附加权限约束，您必须遵循其原始许可证条款。
+
+**5. 终止**
+
+如果您违反本附加权限的任何规定，您依据本附加权限获得的所有权利将自动终止（同时依据 AGPL v3.0 第8节，您在本软件下的所有许可也可能终止）。对于遵循 AGPL v3.0 的纯开源使用，本附加权限的终止不影响 AGPL v3.0 本身的效力。
+
+尽管有上述规定，若您违反本附加权限的非实质性条款（如署名位置不当），且在收到作者通知后30日内予以纠正，则您的权利自动恢复。作者保留对恶意、反复违规者严格执行终止条款的权利。
+
+**6. 无其他限制**
+
+本附加权限不限制您以 AGPL v3.0 规定的原始方式（即完整遵守 AGPL 的开源要求）使用、修改和分发本软件。您始终可以选择不使用本附加权限，而单纯遵守 AGPL v3.0 的原始条款。
+
+---
+
+### 关于商业使用的说明
+
+本项目默认采用 GNU AGPL v3.0 + 附加权限进行许可。  
+该协议已经允许你在**不修改源码、使用官方二进制库的前提下闭源使用**，无需任何额外许可。
+
+如果你因公司内部政策等原因，**认为必须获得一份书面的商业许可**，请注意：
+
+- 作者发布本项目时为未成年人，**本项目的开发与发布已获得法定代理人的知情与同意**；
+- 尽管如此，本项目**目前不提供任何形式的商业许可销售**；
+- 建议你直接遵守 AGPL v3.0 + 附加权限，该协议已覆盖绝大多数商业使用场景。
+
+若你通过公开信息或推算发现作者已成年而此处尚未更新，可提醒作者修改，并届时获取**一份书面的商业许可**。
+
+如有疑问，可通过 [B站链接](https://space.bilibili.com/1532090388) 联系作者（但不保证回复时效）。
+
+---
+
+### English Version (for reference only)
+
+**NOTE: This English version is provided for convenience only. The legally binding version is the Chinese text above.**
+
+#### TT23XR Studio Additional Permission: Closed-Source Use Exception for Unmodified Binary Libraries
+
+Pursuant to Section 7 of the GNU Affero General Public License version 3 ("AGPL v3.0"), TT23XR Studio ("Copyright Holder") hereby grants the following additional permission.
+
+**1. Definitions**
+
+- **"The Software"** : The source code and compiled binary forms distributed by TT23XR Studio that are explicitly stated to be subject to this Additional Permission and whose copyright is owned by TT23XR Studio.
+- **"Official Binary Library"** : A pre-compiled binary library file (including but not limited to `.dll`, `.so`, `.dylib` ) distributed by TT23XR Studio through its official channels (e.g., GitHub Releases) without any modification. Libraries compiled by yourself from the source code (even without changes) are **not** Official Binary Libraries.
+- **"Unmodified"** : With respect to an Official Binary Library, means that its binary content has not been altered in any way (including but not limited to decompilation, modification, patching, repackaging / rebuilding). With respect to source code, means that the source code has not been altered in any way (including but not limited to adding, deleting, or rewriting any function, class, module, or data structure). Any change to compilation parameters (e.g., optimization level, macro definitions) resulting in a rebuilt library is also considered a modification.
+- **"Linking"** : Any means of combining the Official Binary Library of The Software with other independent modules into a single executable or library, including but not limited to static linking, dynamic linking, implicit linking, explicit loading. This Additional Permission **does not require** that users be able to replace the binary library.
+
+**2. Additional Permission**
+
+Notwithstanding any other provision of AGPL v3.0, when you meet **all** of the following conditions, you may use, copy, and distribute the **unmodified Official Binary Library** through any form of linking together with other independent modules (the "Combined Work"), and the **other independent modules** of the Combined Work (i.e., the parts that are not The Software) are **not** required to comply with any terms of AGPL v3.0 (including but not limited to Section 5 "Conveying Modified Source Versions" and Section 13 "Remote Network Interaction"):
+
+- (a) **Use of Official Binary Library** : You must use the pre-compiled binary library officially distributed by TT23XR Studio without any modification. You may not compile the library yourself from source code, even if you make no changes to the source.
+- (b) **Unmodified** : You have not modified The Software's source code or the Official Binary Library in any way.
+- (c) **Prominent Acknowledgment** : You must clearly state in the Combined Work's documentation, about page, or source code at a prominent location (if the product has no interactive user interface, then in accompanying written materials or the README file) :
+  > "This software uses [Name of The Software] ([Project URL]) under the GNU AGPL v3.0 license and additional permissions granted by TT23XR Studio."
+  The statement must be reasonably visible to end users (e.g., in an "About" dialog, README file, or user manual).
+
+**3. Non-Applicable Situations (Full AGPL v3.0 Compliance Required)**
+
+None of the following situations are covered by this Additional Permission, and you must fully comply with all terms of AGPL v3.0 (including licensing the entire Combined Work under AGPL):
+
+- (a) You make any modification to The Software's source code (even a minor change, such as fixing a typo);
+- (b) You compile the binary library of The Software from source code yourself (even if you do not modify the source);
+- (c) You modify, decompile, or reverse engineer the Official Binary Library of The Software in any way;
+- (d) You integrate any part of The Software in source code form into the Combined Work;
+- (e) You fail to meet any of the conditions (a), (b), or (c) in Section 2 above.
+
+**4. Independent Licensing of Third-Party Code**
+
+This Additional Permission applies only to code whose complete copyright is owned by TT23XR Studio. The Software may contain third-party code based on other licenses (e.g., MIT, Apache-2.0, BSD). Such third-party code is not subject to this Additional Permission, and you must comply with their original license terms.
+
+**5. Termination**
+
+If you violate any provision of this Additional Permission, all rights granted to you under this Additional Permission will automatically terminate (and under Section 8 of AGPL v3.0, all your licenses under The Software may also terminate). For purely open-source use that complies with AGPL v3.0, termination of this Additional Permission does not affect the effectiveness of AGPL v3.0 itself.
+
+Notwithstanding the foregoing, if you violate a non-substantive provision of this Additional Permission (e.g., improper placement of the required acknowledgment) and you cure such violation within 30 days of receiving notice from the author, your rights shall be automatically reinstated. The author reserves the right to strictly enforce the termination provisions against malicious or repeat violators.
+
+**6. No Other Restrictions**
+
+This Additional Permission does not restrict you from using, modifying, and distributing The Software in the original manner prescribed by AGPL v3.0 (i.e., fully complying with AGPL's open-source requirements). You may always choose not to use this Additional Permission and instead comply solely with the original terms of AGPL v3.0.
+
+---
+
+### Regarding Commercial Use
+
+This project is licensed under GNU AGPL v3.0 with Additional Permissions by default.  
+This license already permits you to **use the software in closed-source applications without modifying the source code, provided you use the official binary libraries**—no additional license is required.
+
+If, due to internal company policies or other reasons, you **believe a written commercial license is necessary**, please note the following:
+
+- The author was a minor at the time this project was published. **The development and release of this project have been made with the knowledge and consent of the author's legal guardian.**
+- Nevertheless, this project **does not currently offer any form of commercial license for sale**.
+- It is recommended that you comply directly with AGPL v3.0 and the Additional Permissions, which already cover the vast majority of commercial use scenarios.
+
+If you obtain information or deduce that the author has reached the age of majority and this text has not been updated, you may remind the author to revise it and obtain **a written commercial license** at that time.
+
+For inquiries, you may contact the author via [Bilibili link](https://space.bilibili.com/1532090388) (please note that response is not guaranteed).
