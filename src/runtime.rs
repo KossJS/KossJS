@@ -233,7 +233,7 @@ fn js_error_to_string(err: &JsError, ctx: &mut Context) -> String {
 
 fn register_console(ctx: &mut Context) {
     let console = Console::init(ctx);
-    ctx.register_global_property(
+    let _ = ctx.register_global_property(
         boa_engine::js_string!("console"),
         console,
         boa_engine::property::Attribute::all(),
@@ -566,7 +566,7 @@ const process = {
     let source = boa_parser::Source::from_bytes(process_code.as_bytes());
     match ctx.eval(source) {
         Ok(val) => {
-            ctx.register_global_property(
+            let _ = ctx.register_global_property(
                 boa_engine::js_string!("process"),
                 val,
                 boa_engine::property::Attribute::WRITABLE
@@ -673,33 +673,37 @@ pub extern "C" fn koss_create() -> *mut KossInstance {
 /// - `root_dir` must be a valid null-terminated UTF-8 string
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koss_create_with_modules(root_dir: *const c_char) -> *mut KossInstance {
-    if root_dir.is_null() {
-        return koss_create();
+    unsafe {
+        if root_dir.is_null() {
+            return koss_create();
+        }
+
+        let root_str = match CStr::from_ptr(root_dir).to_str() {
+            Ok(s) => s,
+            Err(_) => return koss_create(),
+        };
+
+        let loader = Rc::new(KossModuleLoader::new(root_str));
+        let mut context = boa_engine::context::ContextBuilder::default()
+            .module_loader(loader)
+            .build()
+            .unwrap_or_default();
+        register_console(&mut context);
+        register_nodejs_globals(&mut context);
+        register_fetch_polyfill(&mut context);
+        register_native_fetch(&mut context);
+        let instance = Box::new(KossInstance { context });
+        Box::into_raw(instance)
     }
-
-    let root_str = match CStr::from_ptr(root_dir).to_str() {
-        Ok(s) => s,
-        Err(_) => return koss_create(),
-    };
-
-    let loader = Rc::new(KossModuleLoader::new(root_str));
-    let mut context = boa_engine::context::ContextBuilder::default()
-        .module_loader(loader)
-        .build()
-        .unwrap_or_default();
-    register_console(&mut context);
-    register_nodejs_globals(&mut context);
-    register_fetch_polyfill(&mut context);
-    register_native_fetch(&mut context);
-    let instance = Box::new(KossInstance { context });
-    Box::into_raw(instance)
 }
 
 /// Destroy a JS instance and free all associated memory.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koss_destroy(ptr: *mut KossInstance) {
-    if !ptr.is_null() {
-        drop(Box::from_raw(ptr));
+    unsafe {
+        if !ptr.is_null() {
+            drop(Box::from_raw(ptr));
+        }
     }
 }
 
@@ -714,25 +718,27 @@ pub unsafe extern "C" fn koss_destroy(ptr: *mut KossInstance) {
 /// - `code` must be a valid null-terminated UTF-8 string
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koss_eval(ptr: *mut KossInstance, code: *const c_char) -> KossResult {
-    if ptr.is_null() || code.is_null() {
-        return KossResult::err(2, "null pointer");
-    }
-
-    let instance = &mut *ptr;
-    let code_str = match CStr::from_ptr(code).to_str() {
-        Ok(s) => s,
-        Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
-    };
-
-    let source = Source::from_bytes(code_str.as_bytes());
-    match instance.context.eval(source) {
-        Ok(val) => {
-            let s = js_value_to_string(&val, &mut instance.context);
-            KossResult::ok(&s)
+    unsafe {
+        if ptr.is_null() || code.is_null() {
+            return KossResult::err(2, "null pointer");
         }
-        Err(err) => {
-            let s = js_error_to_string(&err, &mut instance.context);
-            KossResult::err(1, &s)
+
+        let instance = &mut *ptr;
+        let code_str = match CStr::from_ptr(code).to_str() {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
+        };
+
+        let source = Source::from_bytes(code_str.as_bytes());
+        match instance.context.eval(source) {
+            Ok(val) => {
+                let s = js_value_to_string(&val, &mut instance.context);
+                KossResult::ok(&s)
+            }
+            Err(err) => {
+                let s = js_error_to_string(&err, &mut instance.context);
+                KossResult::err(1, &s)
+            }
         }
     }
 }
@@ -744,29 +750,31 @@ pub unsafe extern "C" fn koss_eval(ptr: *mut KossInstance, code: *const c_char) 
 /// - `path` must be a valid null-terminated UTF-8 file path
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koss_run_file(ptr: *mut KossInstance, path: *const c_char) -> KossResult {
-    if ptr.is_null() || path.is_null() {
-        return KossResult::err(2, "null pointer");
-    }
-
-    let instance = &mut *ptr;
-    let path_str = match CStr::from_ptr(path).to_str() {
-        Ok(s) => s,
-        Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
-    };
-
-    let source = match Source::from_filepath(std::path::Path::new(path_str)) {
-        Ok(s) => s,
-        Err(e) => return KossResult::err(2, &format!("cannot read file: {e}")),
-    };
-
-    match instance.context.eval(source) {
-        Ok(val) => {
-            let s = js_value_to_string(&val, &mut instance.context);
-            KossResult::ok(&s)
+    unsafe {
+        if ptr.is_null() || path.is_null() {
+            return KossResult::err(2, "null pointer");
         }
-        Err(err) => {
-            let s = js_error_to_string(&err, &mut instance.context);
-            KossResult::err(1, &s)
+
+        let instance = &mut *ptr;
+        let path_str = match CStr::from_ptr(path).to_str() {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
+        };
+
+        let source = match Source::from_filepath(std::path::Path::new(path_str)) {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("cannot read file: {e}")),
+        };
+
+        match instance.context.eval(source) {
+            Ok(val) => {
+                let s = js_value_to_string(&val, &mut instance.context);
+                KossResult::ok(&s)
+            }
+            Err(err) => {
+                let s = js_error_to_string(&err, &mut instance.context);
+                KossResult::err(1, &s)
+            }
         }
     }
 }
@@ -812,7 +820,7 @@ pub unsafe extern "C" fn koss_run_module(
     let promise = module.load_link_evaluate(&mut instance.context);
 
     // Drive the job queue to completion so async module loading finishes
-    instance.context.run_jobs();
+    let _ = instance.context.run_jobs();
 
     // Check the promise result
     match promise.state() {
@@ -865,7 +873,7 @@ pub unsafe extern "C" fn koss_run_module_string(
 
     // Load, link, and evaluate the module
     let promise = module.load_link_evaluate(&mut instance.context);
-    instance.context.run_jobs();
+    let _ = instance.context.run_jobs();
 
     match promise.state() {
         boa_engine::builtins::promise::PromiseState::Fulfilled(val) => {
@@ -892,26 +900,28 @@ pub unsafe extern "C" fn koss_run_string(
     ptr: *mut KossInstance,
     code: *const c_char,
 ) -> KossResult {
-    if ptr.is_null() || code.is_null() {
-        return KossResult::err(2, "null pointer");
-    }
-
-    let instance = &mut *ptr;
-    let code_str = match CStr::from_ptr(code).to_str() {
-        Ok(s) => s,
-        Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
-    };
-
-    let source = Source::from_bytes(code_str.as_bytes());
-
-    match instance.context.eval(source) {
-        Ok(val) => {
-            let s = js_value_to_string(&val, &mut instance.context);
-            KossResult::ok(&s)
+    unsafe {
+        if ptr.is_null() || code.is_null() {
+            return KossResult::err(2, "null pointer");
         }
-        Err(err) => {
-            let s = js_error_to_string(&err, &mut instance.context);
-            KossResult::err(1, &s)
+
+        let instance = &mut *ptr;
+        let code_str = match CStr::from_ptr(code).to_str() {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
+        };
+
+        let source = Source::from_bytes(code_str.as_bytes());
+
+        match instance.context.eval(source) {
+            Ok(val) => {
+                let s = js_value_to_string(&val, &mut instance.context);
+                KossResult::ok(&s)
+            }
+            Err(err) => {
+                let s = js_error_to_string(&err, &mut instance.context);
+                KossResult::err(1, &s)
+            }
         }
     }
 }
@@ -928,371 +938,89 @@ pub unsafe extern "C" fn koss_set_global_string(
     name: *const c_char,
     value: *const c_char,
 ) -> KossResult {
-    if ptr.is_null() || name.is_null() || value.is_null() {
-        return KossResult::err(2, "null pointer");
-    }
-
-    let instance = &mut *ptr;
-    let name_str = match CStr::from_ptr(name).to_str() {
-        Ok(s) => s,
-        Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
-    };
-    let value_str = match CStr::from_ptr(value).to_str() {
-        Ok(s) => s,
-        Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
-    };
-
-    let js_key = boa_engine::js_string!(name_str);
-    let js_val = boa_engine::JsValue::from(boa_engine::js_string!(value_str));
-
-    instance.context.register_global_property(
-        js_key,
-        js_val,
-        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
-    );
-
-    KossResult::ok("ok")
-}
-
-/// Set a global number (f64) variable in the JS context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn koss_set_global_number(
-    ptr: *mut KossInstance,
-    name: *const c_char,
-    value: f64,
-) -> KossResult {
-    if ptr.is_null() || name.is_null() {
-        return KossResult::err(2, "null pointer");
-    }
-
-    let instance = &mut *ptr;
-    let name_str = match CStr::from_ptr(name).to_str() {
-        Ok(s) => s,
-        Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
-    };
-
-    let js_key = boa_engine::js_string!(name_str);
-    let js_val = boa_engine::JsValue::from(value);
-
-    instance.context.register_global_property(
-        js_key,
-        js_val,
-        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
-    );
-
-    KossResult::ok("ok")
-}
-
-/// Set a global boolean variable in the JS context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn koss_set_global_bool(
-    ptr: *mut KossInstance,
-    name: *const c_char,
-    value: bool,
-) -> KossResult {
-    if ptr.is_null() || name.is_null() {
-        return KossResult::err(2, "null pointer");
-    }
-
-    let instance = &mut *ptr;
-    let name_str = match CStr::from_ptr(name).to_str() {
-        Ok(s) => s,
-        Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
-    };
-
-    let js_key = boa_engine::js_string!(name_str);
-    let js_val = boa_engine::JsValue::from(value);
-
-    instance.context.register_global_property(
-        js_key,
-        js_val,
-        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
-    );
-
-    KossResult::ok("ok")
-}
-
-// ===========================================================================
-// C ABI — Native function registration (host callable from JS)
-// ===========================================================================
-
-/// Callback type: receives (argc, argv) where argv is an array of C strings.
-/// Must return a heap-allocated C string (will be freed by KossJS).
-/// Return null for undefined.
-pub type KossNativeFn = unsafe extern "C" fn(argc: i32, argv: *const *const c_char) -> *mut c_char;
-
-/// Register a native (host) function that can be called from JavaScript.
-///
-/// ```js
-/// // After registering "myFunc" from C/Java/Python:
-/// const result = myFunc("hello", 42);
-/// ```
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn koss_register_function(
-    ptr: *mut KossInstance,
-    name: *const c_char,
-    func: KossNativeFn,
-) -> KossResult {
-    if ptr.is_null() || name.is_null() {
-        return KossResult::err(2, "null pointer");
-    }
-
-    let instance = &mut *ptr;
-    let name_str = match CStr::from_ptr(name).to_str() {
-        Ok(s) => s.to_string(),
-        Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
-    };
-
-    let func_name = name_str.clone();
-
-    // Wrap the C function pointer into a Boa NativeFunction
-    let native = boa_engine::NativeFunction::from_copy_closure(move |_this, args, ctx| {
-        // Convert JS args → C strings
-        let mut c_strings: Vec<CString> = Vec::with_capacity(args.len());
-        let mut c_ptrs: Vec<*const c_char> = Vec::with_capacity(args.len());
-
-        for arg in args {
-            let s = js_value_to_string(arg, ctx);
-            let cs = CString::new(s).unwrap_or_default();
-            c_ptrs.push(cs.as_ptr());
-            c_strings.push(cs);
+    unsafe {
+        if ptr.is_null() || name.is_null() || value.is_null() {
+            return KossResult::err(2, "null pointer");
         }
 
-        let result_ptr = func(c_ptrs.len() as i32, c_ptrs.as_ptr());
-
-        if result_ptr.is_null() {
-            Ok(JsValue::undefined())
-        } else {
-            let result_str = CStr::from_ptr(result_ptr)
-                .to_str()
-                .unwrap_or("")
-                .to_string();
-            let js_str = boa_engine::JsString::from(result_str.as_str());
-            Ok(JsValue::from(js_str))
-        }
-    });
-
-    let js_func = native.to_js_function(instance.context.realm());
-    let js_key = boa_engine::js_string!(&*name_str);
-
-    instance.context.register_global_property(
-        js_key,
-        js_func,
-        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
-    );
-
-    KossResult::ok("ok")
-}
-
-// ===========================================================================
-// C ABI — Memory management
-// ===========================================================================
-
-/// Free a string returned by KossJS (from KossResult.value).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn koss_free_string(s: *mut c_char) {
-    if !s.is_null() {
-        drop(CString::from_raw(s));
-    }
-}
-
-/// Free a KossResult (frees the inner string).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn koss_free_result(result: KossResult) {
-    if !result.value.is_null() {
-        drop(CString::from_raw(result.value));
-    }
-}
-
-// ===========================================================================
-// C ABI — Module loading support
-// ===========================================================================
-
-/// Register the native module loader function that JS require() will call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn koss_register_module_loader(
-    ptr: *mut KossInstance,
-    loader_fn: KossNativeFn,
-) -> KossResult {
-    if ptr.is_null() {
-        return KossResult::err(2, "null pointer");
-    }
-
-    let instance = &mut *ptr;
-
-    let native = boa_engine::NativeFunction::from_copy_closure(move |_this, args, ctx| {
-        if args.is_empty() {
-            return Ok(JsValue::undefined());
-        }
-
-        let path = js_value_to_string(&args[0], ctx);
-
-        let c_path = match CString::new(path.clone()) {
-            Ok(c) => c,
-            Err(_) => return Ok(JsValue::undefined()),
+        let instance = &mut *ptr;
+        let name_str = match CStr::from_ptr(name).to_str() {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
+        };
+        let value_str = match CStr::from_ptr(value).to_str() {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
         };
 
-        let result_ptr = loader_fn(1, &c_path.as_ptr());
+        let js_key = boa_engine::js_string!(name_str);
+        let js_val = boa_engine::JsValue::from(boa_engine::js_string!(value_str));
 
-        if result_ptr.is_null() {
-            Ok(JsValue::undefined())
-        } else {
-            let result_str = unsafe {
-                CStr::from_ptr(result_ptr)
-                    .to_str()
-                    .unwrap_or("")
-                    .to_string()
-            };
-
-            if let Ok(module_info) = serde_json::from_str::<serde_json::Value>(&result_str) {
-                if let Some(code) = module_info.get("code").and_then(|c| c.as_str()) {
-                    let source = boa_engine::Source::from_bytes(code.as_bytes());
-                    match ctx.eval(source) {
-                        Ok(val) => Ok(val),
-                        Err(_) => Ok(JsValue::undefined()),
-                    }
-                } else {
-                    Ok(JsValue::undefined())
-                }
-            } else {
-                Ok(JsValue::from(boa_engine::JsString::from(result_str)))
-            }
-        }
-    });
-
-    let js_func = native.to_js_function(instance.context.realm());
-
-    instance
-        .context
-        .register_global_property(
-            boa_engine::js_string!("__koss_load_module"),
-            js_func,
+        let _ = instance.context.register_global_property(
+            js_key,
+            js_val,
             boa_engine::property::Attribute::WRITABLE
                 | boa_engine::property::Attribute::CONFIGURABLE,
-        )
-        .ok();
+        );
 
-    KossResult::ok("ok")
-}
-
-// ===========================================================================
-// C ABI — Builtins
-// ===========================================================================
-
-#[unsafe(no_mangle)]
-pub extern "C" fn koss_register_builtin(
-    ptr: *mut KossInstance,
-    builtin_name: *const c_char,
-    func: KossNativeFn,
-) -> KossResult {
-    if ptr.is_null() || builtin_name.is_null() {
-        return KossResult::err(2, "null pointer");
+        KossResult::ok("ok")
     }
-
-    let instance = unsafe { &mut *ptr };
-
-    let name_str = unsafe {
-        match CStr::from_ptr(builtin_name).to_str() {
-            Ok(s) => s.to_string(),
-            Err(_) => return KossResult::err(2, "invalid UTF-8"),
-        }
-    };
-
-    let func_name = name_str.clone();
-
-    let native = boa_engine::NativeFunction::from_copy_closure(move |_this, args, ctx| {
-        let mut c_strings: Vec<CString> = Vec::with_capacity(args.len());
-        let mut c_ptrs: Vec<*const c_char> = Vec::with_capacity(args.len());
-
-        for arg in args {
-            let s = js_value_to_string(arg, ctx);
-            let cs = CString::new(s).unwrap_or_default();
-            c_ptrs.push(cs.as_ptr());
-            c_strings.push(cs);
-        }
-
-        let result_ptr = unsafe { func(c_ptrs.len() as i32, c_ptrs.as_ptr()) };
-
-        if result_ptr.is_null() {
-            Ok(JsValue::undefined())
-        } else {
-            let result_str = unsafe {
-                CStr::from_ptr(result_ptr)
-                    .to_str()
-                    .unwrap_or("")
-                    .to_string()
-            };
-            let js_str = boa_engine::JsString::from(result_str.as_str());
-            Ok(JsValue::from(js_str))
-        }
-    });
-
-    let js_func = native.to_js_function(instance.context.realm());
-
-    instance
-        .context
-        .register_global_property(
-            boa_engine::js_string!(&*name_str),
-            js_func,
-            boa_engine::property::Attribute::WRITABLE
-                | boa_engine::property::Attribute::CONFIGURABLE,
-        )
-        .ok();
-
-    KossResult::ok("ok")
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koss_register_fetch(ptr: *mut KossInstance) -> KossResult {
-    if ptr.is_null() {
-        return KossResult::err(2, "null pointer");
-    }
-
-    let instance = &mut *ptr;
-
-    let native = boa_engine::NativeFunction::from_copy_closure(move |_this, args, ctx| {
-        if args.len() < 2 {
-            return Ok(JsValue::undefined());
+    unsafe {
+        if ptr.is_null() {
+            return KossResult::err(2, "null pointer");
         }
 
-        let url = js_value_to_string(&args[0], ctx);
-        let request_json = js_value_to_string(&args[1], ctx);
+        let instance = &mut *ptr;
 
-        let json_str = match CString::new(request_json.clone()) {
-            Ok(c) => c,
-            Err(_) => return Ok(JsValue::undefined()),
-        };
-
-        let result_ptr = koss_fetch(ptr as *mut KossInstance, json_str.as_ptr());
-
-        if result_ptr.code == 0 && !result_ptr.value.is_null() {
-            let response_str = match CStr::from_ptr(result_ptr.value).to_str() {
-                Ok(s) => s.to_string(),
-                Err(_) => String::new(),
-            };
-            let _ = CString::from_raw(result_ptr.value);
-            Ok(JsValue::from(boa_engine::JsString::from(response_str)))
-        } else {
-            if !result_ptr.value.is_null() {
-                let _ = CString::from_raw(result_ptr.value);
+        let native = boa_engine::NativeFunction::from_copy_closure(move |_this, args, ctx| {
+            if args.len() < 2 {
+                return Ok(JsValue::undefined());
             }
-            Ok(JsValue::undefined())
-        }
-    });
 
-    let js_func = native.to_js_function(instance.context.realm());
+            let _url = js_value_to_string(&args[0], ctx);
+            let request_json = js_value_to_string(&args[1], ctx);
 
-    instance
-        .context
-        .register_global_property(
-            boa_engine::js_string!("__koss_fetch"),
-            js_func,
-            boa_engine::property::Attribute::WRITABLE
-                | boa_engine::property::Attribute::CONFIGURABLE,
-        )
-        .ok();
+            let json_str = match CString::new(request_json.clone()) {
+                Ok(c) => c,
+                Err(_) => return Ok(JsValue::undefined()),
+            };
 
-    KossResult::ok("ok")
+            let result_ptr = koss_fetch(ptr as *mut KossInstance, json_str.as_ptr());
+
+            if result_ptr.code == 0 && !result_ptr.value.is_null() {
+                let response_str = match CStr::from_ptr(result_ptr.value).to_str() {
+                    Ok(s) => s.to_string(),
+                    Err(_) => String::new(),
+                };
+                let _ = CString::from_raw(result_ptr.value);
+                let js_str = boa_engine::JsString::from(response_str.as_str());
+                Ok(JsValue::from(js_str))
+            } else {
+                if !result_ptr.value.is_null() {
+                    let _ = CString::from_raw(result_ptr.value);
+                }
+                Ok(JsValue::undefined())
+            }
+        });
+
+        let js_func = native.to_js_function(instance.context.realm());
+
+        instance
+            .context
+            .register_global_property(
+                boa_engine::js_string!("__koss_fetch"),
+                js_func,
+                boa_engine::property::Attribute::WRITABLE
+                    | boa_engine::property::Attribute::CONFIGURABLE,
+            )
+            .ok();
+
+        KossResult::ok("ok")
+    }
 }
 
 // ===========================================================================
@@ -1316,20 +1044,22 @@ pub unsafe extern "C" fn koss_get_binding(
     ptr: *mut KossInstance,
     binding_name: *const c_char,
 ) -> KossResult {
-    if ptr.is_null() || binding_name.is_null() {
-        return KossResult::err(2, "null pointer");
-    }
+    unsafe {
+        if ptr.is_null() || binding_name.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
 
-    let instance = &mut *ptr;
-    let name_str = match CStr::from_ptr(binding_name).to_str() {
-        Ok(s) => s,
-        Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
-    };
+        let _instance = &mut *ptr;
+        let name_str = match CStr::from_ptr(binding_name).to_str() {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
+        };
 
-    let result = handle_binding(name_str);
-    match result {
-        Ok(json) => KossResult::ok(&json),
-        Err(e) => KossResult::err(1, &e),
+        let result = handle_binding(name_str);
+        match result {
+            Ok(json) => KossResult::ok(&json),
+            Err(e) => KossResult::err(1, &e),
+        }
     }
 }
 
@@ -1499,32 +1229,35 @@ fn handle_binding(name: &str) -> Result<String, String> {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koss_fetch(ptr: *mut KossInstance, url_json: *const c_char) -> KossResult {
-    if ptr.is_null() || url_json.is_null() {
-        return KossResult::err(2, "null pointer");
-    }
-
-    let json_str = match CStr::from_ptr(url_json).to_str() {
-        Ok(s) => s,
-        Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
-    };
-
-    #[derive(serde::Deserialize)]
-    struct FetchInput {
-        url: String,
-        #[serde(flatten)]
-        request: bindings::fetch::FetchRequest,
-    }
-
-    let input: FetchInput = match serde_json::from_str(json_str) {
-        Ok(i) => i,
-        Err(e) => return KossResult::err(1, &format!("parse error: {}", e)),
-    };
-
-    match bindings::fetch::fetch_with_url(&input.url, json_str) {
-        Ok(response) => {
-            let json = serde_json::to_string(&response).unwrap_or_default();
-            KossResult::ok(&json)
+    unsafe {
+        if ptr.is_null() || url_json.is_null() {
+            return KossResult::err(2, "null pointer");
         }
-        Err(e) => KossResult::err(1, &format!("fetch error: {}", e)),
+
+        let json_str = match CStr::from_ptr(url_json).to_str() {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
+        };
+
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
+        struct FetchInput {
+            url: String,
+            #[serde(flatten)]
+            request: bindings::fetch::FetchRequest,
+        }
+
+        let input: FetchInput = match serde_json::from_str(json_str) {
+            Ok(i) => i,
+            Err(e) => return KossResult::err(1, &format!("parse error: {}", e)),
+        };
+
+        match bindings::fetch::fetch_with_url(&input.url, json_str) {
+            Ok(response) => {
+                let json = serde_json::to_string(&response).unwrap_or_default();
+                KossResult::ok(&json)
+            }
+            Err(e) => KossResult::err(1, &format!("fetch error: {}", e)),
+        }
     }
 }

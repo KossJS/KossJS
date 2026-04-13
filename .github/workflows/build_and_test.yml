@@ -283,14 +283,18 @@ jobs:
       - name: 🔪 使用 strip 减小 Android 库体积
         run: |
           ARTIFACT="kossjs_android_${{ matrix.suffix }}.so"
-          # 安装 binutils (包含 strip)
-          sudo apt-get update && sudo apt-get install -y binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi binutils-x86_64-linux-gnu
-          # 根据架构选择对应的 strip
-          case "${{ matrix.suffix }}" in
-            arm64) aarch64-linux-gnu-strip "$ARTIFACT" ;;
-            armv7) arm-linux-gnueabi-strip "$ARTIFACT" ;;
-            x86_64) x86_64-linux-gnu-strip "$ARTIFACT" ;;
-          esac
+          # 使用 NDK 自带的 llvm-strip
+          NDK_STRIP="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          if [ -f "$NDK_STRIP" ]; then
+            "$NDK_STRIP" --strip-unneeded "$ARTIFACT"
+          else
+            # 备用方案：使用系统 binutils
+            case "${{ matrix.suffix }}" in
+              arm64) strip -s "$ARTIFACT" || aarch64-linux-gnu-strip "$ARTIFACT" ;;
+              armv7) strip -s "$ARTIFACT" || arm-linux-gnueabihf-strip "$ARTIFACT" ;;
+              x86_64) strip -s "$ARTIFACT" ;;
+            esac
+          fi
 
       - name: 📤 上传产物
         uses: actions/upload-artifact@v4

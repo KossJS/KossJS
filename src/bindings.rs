@@ -1,7 +1,5 @@
 //! KossJS Internal Bindings - Native implementations for Node.js style bindings
 
-#![recursion_limit = "512"]
-
 pub mod fs {
     use std::fs as std_fs;
     use std::time::SystemTime;
@@ -216,7 +214,7 @@ pub mod fs {
         _bigint: bool,
         _throw_if_no_entry: bool,
     ) -> Result<serde_json::Value, String> {
-        let metadata = std_fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        let _metadata = std_fs::symlink_metadata(path).map_err(|e| e.to_string())?;
         let stats = Stats::from_path(path)?;
 
         Ok(serde_json::json!([
@@ -261,15 +259,13 @@ pub mod fs {
         std_fs::hard_link(existing_path, new_path).map_err(|e| e.to_string())
     }
 
-    pub fn truncate(path: &str, len: i64) -> Result<(), String> {
+    pub fn truncate(path: &str, _len: i64) -> Result<(), String> {
         if let Ok(metadata) = std_fs::metadata(path) {
             if metadata.is_file() {
-                use std::io::Write;
-                let file = std::fs::OpenOptions::new()
+                let _file = std::fs::OpenOptions::new()
                     .write(true)
                     .open(path)
                     .map_err(|e| e.to_string())?;
-                // Just truncate silently
             }
         }
         Ok(())
@@ -761,7 +757,7 @@ pub mod crypto {
             return Err("Iterations must be positive".to_string());
         }
 
-        let mut result = format!("pbkdf2:{}:{}:{}", password, salt, iterations);
+        let result = format!("pbkdf2:{}:{}:{}", password, salt, iterations);
         for _ in 0..iterations {
             let mut hasher = RandomState::new().build_hasher();
             result.hash(&mut hasher);
@@ -835,7 +831,7 @@ pub mod net {
     pub fn tcp_bind(address: &str, port: u16) -> Result<String, String> {
         let addr = format!("{}:{}", address, port);
         match TcpListener::bind(&addr) {
-            Ok(listener) => Ok(format!("Bound to {}", addr)),
+            Ok(_listener) => Ok(format!("Bound to {}", addr)),
             Err(e) => Err(format!("Bind failed: {}", e)),
         }
     }
@@ -851,7 +847,7 @@ pub mod net {
     pub fn udp_bind(address: &str, port: u16) -> Result<String, String> {
         let addr = format!("{}:{}", address, port);
         match UdpSocket::bind(&addr) {
-            Ok(socket) => Ok(format!("Bound to {}", addr)),
+            Ok(_socket) => Ok(format!("Bound to {}", addr)),
             Err(e) => Err(format!("Bind failed: {}", e)),
         }
     }
