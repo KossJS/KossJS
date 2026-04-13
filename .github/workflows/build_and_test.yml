@@ -33,22 +33,22 @@ jobs:
           # ── Linux ──
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact_name: libkossjs.so
+            artifact_name: kossjs.so
             lib_name: libkossjs.so
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            artifact_name: libkossjs_arm64.so
+            artifact_name: kossjs_arm64.so
             lib_name: libkossjs.so
             cross: true
 
           # ── macOS ──
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact_name: libkossjs.dylib
+            artifact_name: kossjs.dylib
             lib_name: libkossjs.dylib
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact_name: libkossjs_arm64.dylib
+            artifact_name: kossjs_arm64.dylib
             lib_name: libkossjs.dylib
 
     runs-on: ${{ matrix.os }}
