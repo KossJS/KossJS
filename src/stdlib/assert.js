@@ -30,7 +30,7 @@ function assertFail(message) {
     throw new Err(message || 'Assertion failed');
 }
 
-function assert.ok(condition, message) {
+function assertok(condition, message) {
     if (!condition) {
         throw new Err(message || 'Assertion failed');
     }

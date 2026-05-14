@@ -2,6 +2,49 @@
 
 本项目所有重要变更都将记录在此文件中。
 
+## 0.1.0-dev.5 - 2026-05-14
+
+### 新增 (Added)
+
+- **异步/事件循环系统** — 新增 `KossEventLoop` 结构体，集成 tokio 运行时驱动异步 I/O：
+  - `register_native_fetch` 改为基于 Promise 的异步 fetch
+  - `reqwest` 从 blocking 改为 async，新增 tokio 依赖
+  - 新增 `koss_run_async`、`koss_tick` C ABI 接口
+- **Worker 线程池** — 新增 `src/worker.rs`：
+  - `WorkerPool` 实现，每个 worker 独立 OS 线程 + 独立 Boa Context
+  - JS 端 worker API（`__koss_create_worker_pool`、`post_message`、`execute` 等）
+  - 对应 C ABI 接口
+- **C ABI 扩展**：
+  - 内存管理：`koss_free_string`、`koss_free_result`
+  - 类型化全局变量设置：`koss_set_global_number/bool/null/undefined/json`
+  - 函数注册：`koss_register_function`（支持点号路径，如 `Math.max`）
+  - 模块加载器注册：`koss_register_module_loader`
+  - 类注册：`koss_register_class`（基于原生回调的 JS 类）
+- **测试目录** — 新增 `test/` 测试目录
+
+### 更改 (Changed)
+
+- **模块系统改进**：
+  - `primordials` 新增 SafeMap/Set/WeakMap/WeakSet
+  - 新增 `internalBinding` / `getInternalBinding` / `getLinkedBinding` 桩
+  - 模块加载支持 type 分发（module/object）
+  - 新增 `register_native_bindings()` 结构化绑定系统
+- **标准库重写**：
+  - `buffer.js`：移除 primordials 依赖，改用原生 API 兼容 Boa
+  - `events.js`：惰性加载 `internal/util/inspect` 避免循环依赖
+  - `assert.js`：`assert.ok` → `assertok` 避免关键字冲突
+  - `path.js` 系列：自包含实现，消除循环依赖
+  - `internal/worker.js` + `worker_threads.js`：重写为 KossJS 原生 worker API
+  - 移除对 Node.js C++ 内部绑定的依赖
+- **依赖更新** (`Cargo.toml`)：
+  - `reqwest` 0.13.2 blocking → 0.12 async（feature: json）
+  - 新增 `tokio` 1.x（features: rt-multi-thread, macros, sync, fs, net, time）
+
+### 修复 (Fixed)
+
+- **Android 崩溃修复** — `koss_create` 改用 `ContextBuilder` 替代 `Context::default()`，解决安卓上 Boa 引擎初始化崩溃的问题
+- Worker 线程 Context 创建也用 `ContextBuilder`，失败时优雅返回错误事件
+
 ## 0.1.0-dev.4 - 2026-04-13
 
 ### 修复 (Fixed)

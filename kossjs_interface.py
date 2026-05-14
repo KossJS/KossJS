@@ -24,6 +24,7 @@ class KossJS:
     RESULT_INVALID_ARG = 2
 
     def __init__(self, lib_path: str | None = None, with_modules: bool = False, root_dir: str | None = None):
+        self._ptr: ctypes.c_void_p | None = None
         if lib_path is None:
             lib_path = self._find_library()
         
@@ -87,6 +88,15 @@ class KossJS:
         lib.koss_set_global_bool.restype = KossResult
         lib.koss_set_global_bool.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_bool]
         
+        lib.koss_set_global_null.restype = KossResult
+        lib.koss_set_global_null.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        
+        lib.koss_set_global_undefined.restype = KossResult
+        lib.koss_set_global_undefined.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        
+        lib.koss_set_global_json.restype = KossResult
+        lib.koss_set_global_json.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+        
         lib.koss_register_function.restype = KossResult
         lib.koss_register_function.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
         
@@ -96,14 +106,41 @@ class KossJS:
         lib.koss_version.restype = ctypes.c_char_p
         lib.koss_version.argtypes = []
         
-        lib.koss_register_module_loader.restype = KossResult
-        lib.koss_register_module_loader.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-        
         lib.koss_get_binding.restype = KossResult
         lib.koss_get_binding.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         
         lib.koss_fetch.restype = KossResult
         lib.koss_fetch.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+
+        lib.koss_run_async.restype = KossResult
+        lib.koss_run_async.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint64]
+
+        lib.koss_tick.restype = KossResult
+        lib.koss_tick.argtypes = [ctypes.c_void_p]
+
+        lib.koss_create_worker_pool.restype = KossResult
+        lib.koss_create_worker_pool.argtypes = [ctypes.c_void_p, ctypes.c_int32]
+
+        lib.koss_worker_post_message.restype = KossResult
+        lib.koss_worker_post_message.argtypes = [ctypes.c_void_p, ctypes.c_int32, ctypes.c_char_p]
+
+        lib.koss_worker_execute.restype = KossResult
+        lib.koss_worker_execute.argtypes = [ctypes.c_void_p, ctypes.c_int32, ctypes.c_char_p]
+
+        lib.koss_worker_try_recv.restype = KossResult
+        lib.koss_worker_try_recv.argtypes = [ctypes.c_void_p]
+
+        lib.koss_worker_terminate.restype = KossResult
+        lib.koss_worker_terminate.argtypes = [ctypes.c_void_p, ctypes.c_int32]
+
+        lib.koss_worker_shutdown.restype = KossResult
+        lib.koss_worker_shutdown.argtypes = [ctypes.c_void_p]
+
+        lib.koss_register_module_loader.restype = KossResult
+        lib.koss_register_module_loader.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+
+        lib.koss_register_class.restype = KossResult
+        lib.koss_register_class.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
     
     def _get_binding(self, name: str) -> dict[str, Any]:
         """Get internal binding info from Rust."""
@@ -130,8 +167,59 @@ class KossJS:
             raise ValueError(f"Invalid argument: {value}")
     
     def eval(self, code: str) -> str:
-        """Evaluate JavaScript code and return the result as a string."""
+        """Evaluate JavaScript code synchronously and return the result."""
         result = self._lib.koss_eval(self._ptr, code.encode("utf-8"))
+        return self._check_result(result)
+
+    def run_async(self, code: str, timeout_ms: int = 30000) -> str:
+        """Evaluate JavaScript code and drive the async event loop to completion.
+        
+        Use this for code that uses await/async (e.g., fetch() which returns a Promise).
+        The event loop processes async I/O and drains microtasks for up to timeout_ms.
+        """
+        result = self._lib.koss_run_async(self._ptr, code.encode("utf-8"), timeout_ms)
+        return self._check_result(result)
+
+    def tick(self) -> bool:
+        """Run one iteration of the event loop. Returns True if pending async ops remain."""
+        result = self._lib.koss_tick(self._ptr)
+        val = self._check_result(result)
+        return val == "1"
+
+    def create_worker_pool(self, size: int) -> str:
+        """Create a pool of worker threads for parallel execution."""
+        result = self._lib.koss_create_worker_pool(self._ptr, size)
+        return self._check_result(result)
+
+    def worker_post_message(self, worker_id: int, data: str) -> str:
+        """Post a JSON message to a worker thread."""
+        result = self._lib.koss_worker_post_message(self._ptr, worker_id, data.encode("utf-8"))
+        return self._check_result(result)
+
+    def worker_execute(self, worker_id: int, code: str) -> str:
+        """Execute JavaScript code on a worker thread."""
+        result = self._lib.koss_worker_execute(self._ptr, worker_id, code.encode("utf-8"))
+        return self._check_result(result)
+
+    def worker_try_recv(self) -> str | None:
+        """Try to receive a message from any worker (non-blocking). Returns None if no message."""
+        result = self._lib.koss_worker_try_recv(self._ptr)
+        try:
+            val = self._check_result(result)
+            if val == "null" or not val:
+                return None
+            return val
+        except Exception:
+            return None
+
+    def worker_terminate(self, worker_id: int) -> str:
+        """Terminate a specific worker thread."""
+        result = self._lib.koss_worker_terminate(self._ptr, worker_id)
+        return self._check_result(result)
+
+    def worker_shutdown(self) -> str:
+        """Shut down all worker threads and clean up the pool."""
+        result = self._lib.koss_worker_shutdown(self._ptr)
         return self._check_result(result)
     
     def run_file(self, path: str) -> str:
@@ -155,34 +243,52 @@ class KossJS:
         return self._check_result(result)
 
     def set_global(self, name: str, value: Any) -> None:
-        """Set a global variable in the JavaScript context."""
+        """Set a global variable in the JavaScript context.
+
+        Supports: str, int, float, bool, None, list, dict, and JavaScript undefined.
+        Lists and dicts are serialized to JSON for object/array support.
+        """
         name_bytes = name.encode("utf-8")
-        
-        if isinstance(value, str):
-            result = self._lib.koss_set_global_string(self._ptr, name_bytes, value.encode("utf-8"))
+
+        if value is None:
+            result = self._lib.koss_set_global_null(self._ptr, name_bytes)
+        elif isinstance(value, str):
+            if value == "__undefined__":
+                result = self._lib.koss_set_global_undefined(self._ptr, name_bytes)
+            else:
+                result = self._lib.koss_set_global_string(self._ptr, name_bytes, value.encode("utf-8"))
         elif isinstance(value, (int, float)):
             result = self._lib.koss_set_global_number(self._ptr, name_bytes, float(value))
         elif isinstance(value, bool):
             result = self._lib.koss_set_global_bool(self._ptr, name_bytes, value)
+        elif isinstance(value, (list, dict)):
+            json_str = json.dumps(value, ensure_ascii=False).encode("utf-8")
+            result = self._lib.koss_set_global_json(self._ptr, name_bytes, json_str)
         else:
-            raise TypeError(f"Unsupported type: {type(value)}")
-        
+            json_str = json.dumps(value, ensure_ascii=False).encode("utf-8")
+            result = self._lib.koss_set_global_json(self._ptr, name_bytes, json_str)
+
         self._check_result(result)
     
     def register_function(self, name: str, func: Callable[..., Any]) -> None:
-        """Register a Python function callable from JavaScript."""
+        """Register a Python function callable from JavaScript.
+
+        Supports dotted paths for mounting to nested objects:
+          register_function("Math.max", fn)  -> globalThis.Math.max = fn
+          register_function("console.log", fn) -> globalThis.console.log = fn
+        """
         if sys.platform == "win32":
             libc = ctypes.CDLL('msvcrt.dll')
         else:
             libc = ctypes.CDLL(ctypes.util.find_library('c'))
-        
+
         libc.malloc.argtypes = [ctypes.c_size_t]
         libc.malloc.restype = ctypes.c_void_p
         libc.free.argtypes = [ctypes.c_void_p]
-        
+
         if not hasattr(self, "_callback_allocations"):
             self._callback_allocations: list[ctypes.c_void_p] = []
-        
+
         def wrapper(argc: int, argv: ctypes.c_void_p) -> ctypes.c_void_p | None:
             try:
                 args: list[str] = []
@@ -198,7 +304,7 @@ class KossJS:
                 if not buf:
                     return None
                 ctypes.memmove(buf, encoded, len(encoded))
-                ctypes.memset(ctypes.c_void_p(buf + len(encoded)), 0, 1) # pyright: ignore[reportOperatorIssue, reportUnknownArgumentType]
+                ctypes.memset(ctypes.c_void_p(int(buf) + len(encoded)), 0, 1) # pyright: ignore[reportOperatorIssue, reportUnknownArgumentType]
                 self._callback_allocations.append(buf)
                 return buf
             except Exception as e:
@@ -206,13 +312,13 @@ class KossJS:
                 print(f"Callback error: {e}")
                 traceback.print_exc()
                 return None
-        
+
         CALLBACK_TYPE = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p)
         wrapped: ctypes._CFunctionType = CALLBACK_TYPE(wrapper) # pyright: ignore[reportPrivateUsage]
         name_bytes = name.encode("utf-8")
         result = self._lib.koss_register_function(self._ptr, name_bytes, wrapped)
         self._check_result(result)
-        
+
         if not hasattr(self, "_callbacks"):
             self._callbacks: list[ctypes._CFunctionType] = [] # pyright: ignore[reportPrivateUsage]
         self._callbacks.append(wrapped)
@@ -420,6 +526,80 @@ class KossJS:
             self._module_loader_callback: list[ctypes._CFunctionType] = [] # pyright: ignore[reportPrivateUsage]
         self._module_loader_callback.append(wrapped)
     
+    def register_class(self, class_name: str, methods: dict[str, Callable[..., Any]]) -> None:
+        """Register a Python class/methods object as a JavaScript class.
+
+        Args:
+            class_name: Name for the JavaScript constructor (e.g. "MyClass")
+            methods: Dict of {method_name: callable} to expose on instances
+
+        The created JS class supports `new` keyword:
+            const obj = new MyClass();
+            obj.method1(arg1, arg2);
+
+        Each method call invokes the Python callable with string arguments.
+        The method should return a string (or None for undefined).
+        """
+        if sys.platform == "win32":
+            libc = ctypes.CDLL('msvcrt.dll')
+        else:
+            libc = ctypes.CDLL(ctypes.util.find_library('c'))
+
+        libc.malloc.argtypes = [ctypes.c_size_t]
+        libc.malloc.restype = ctypes.c_void_p
+        libc.free.argtypes = [ctypes.c_void_p]
+
+        if not hasattr(self, "_callback_allocations"):
+            self._callback_allocations: list[ctypes.c_void_p] = []
+
+        # Build method dispatch list
+        method_names = list(methods.keys())
+
+        # Create a C callback that dispatches by method name
+        # The callback receives: (method_name: str, ...args)
+        def class_callback(argc: int, argv: ctypes.c_void_p) -> ctypes.c_void_p | None:
+            try:
+                args: list[str] = []
+                for i in range(argc):
+                    str_ptr: int = ctypes.cast(argv + i * ctypes.sizeof(ctypes.c_char_p), ctypes.POINTER(ctypes.c_char_p))[0] # pyright: ignore[reportOperatorIssue, reportUnknownArgumentType]
+                    args.append(ctypes.string_at(str_ptr).decode("utf-8"))
+                if not args:
+                    return None
+                method_name: str = args[0]
+                method_args = args[1:]
+                if method_name in methods:
+                    result = methods[method_name](*method_args)
+                    if result is None:
+                        return None
+                    encoded = str(result).encode('utf-8')
+                    size = len(encoded) + 1
+                    buf: ctypes.c_void_p = libc.malloc(size)
+                    if not buf:
+                        return None
+                    ctypes.memmove(buf, encoded, len(encoded))
+                    ctypes.memset(ctypes.c_void_p(int(buf) + len(encoded)), 0, 1)
+                    self._callback_allocations.append(buf)
+                    return buf
+                return None
+            except Exception as e:
+                method_name: str = args[0] if isinstance(args, list) else "?" # pyright: ignore[reportPossiblyUnboundVariable]
+                import traceback
+                print(f"Class callback error ({class_name}.{method_name if 'method_name' in dir() else '?'}): {e}")
+                traceback.print_exc()
+                return None
+
+        CALLBACK_TYPE = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p)
+        wrapped: ctypes._CFunctionType = CALLBACK_TYPE(class_callback) # pyright: ignore[reportPrivateUsage]
+
+        methods_json = json.dumps(method_names, ensure_ascii=False).encode("utf-8")
+        name_bytes = class_name.encode("utf-8")
+        result = self._lib.koss_register_class(self._ptr, name_bytes, methods_json, wrapped)
+        self._check_result(result)
+
+        if not hasattr(self, "_class_callbacks"):
+            self._class_callbacks: list[ctypes._CFunctionType] = [] # pyright: ignore[reportPrivateUsage]
+        self._class_callbacks.append(wrapped)
+
     def version(self) -> str:
         """Get the KossJS version string."""
         return self._lib.koss_version().decode("utf-8")
@@ -450,6 +630,7 @@ def koss_module_loader(module_path: str) -> dict[str, Any] | None:
     
     This function is called by the JS require() when it can't find a module
     in the regular module cache. It loads modules from src/stdlib.
+    Supports sub-modules like path/posix -> src/stdlib/path/posix.js
     """
     base_dir = Path(__file__).parent
     stdlib_dir = base_dir / "src" / "stdlib"
@@ -469,7 +650,24 @@ def koss_module_loader(module_path: str) -> dict[str, Any] | None:
         'perf_hooks', 'http2', 'http3', 'sqlite', 'test', 'wasi', 'sea'
     ]
     
-    # Check if it's a built-in module
+    # Check if it's a sub-module (e.g., "path/posix")
+    if "/" in module_path:
+        parts = module_path.split("/", 1)
+        base_module = parts[0]
+        sub_path = parts[1]
+        # Try: stdlib/path/posix.js
+        js_file = stdlib_dir / base_module / f"{sub_path}.js"
+        if js_file.exists():
+            with open(js_file, 'r', encoding='utf-8') as f:
+                return {"type": "module", "code": f.read()}
+        # Try: stdlib/path/posix/index.js
+        js_file = stdlib_dir / base_module / sub_path / "index.js"
+        if js_file.exists():
+            with open(js_file, 'r', encoding='utf-8') as f:
+                return {"type": "module", "code": f.read()}
+        # Fall through to module not found
+    
+    # Check if it's a built-in module (full name match)
     if module_path in builtin_modules:
         # Try to load from stdlib
         js_file = stdlib_dir / f"{module_path}.js"
@@ -483,5 +681,5 @@ def koss_module_loader(module_path: str) -> dict[str, Any] | None:
             with open(js_file, 'r', encoding='utf-8') as f:
                 return {"type": "module", "code": f.read()}
     
-    # Return simple stub for unknown modules
+    # Module not found
     return None

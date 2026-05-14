@@ -1,7 +1,5 @@
 'use strict';
 
-const { basename: basename_, dirname: dirname_, extname: extname_, join: join_, parse: parse_, format: format_, isAbsolute: isAbsolute_, normalize: normalize_, resolve: resolve_, relative: relative_, sep: sep_ } = require('path/posix');
-
 function basename(path, ext) {
     const parts = path.split('/');
     let name = parts[parts.length - 1];
@@ -92,7 +90,7 @@ function sep() {
     return '/';
 }
 
-module.exports = {
+var exports = {
     basename,
     dirname,
     extname,
@@ -104,7 +102,10 @@ module.exports = {
     parse,
     format,
     sep,
-    win32: require('path/win32'),
-    posix: require('path/posix'),
     delimiter: ':',
 };
+// Self-reference to avoid circular dependency issues.
+// path.posix === path and path.win32 === path in this implementation.
+exports.win32 = exports;
+exports.posix = exports;
+module.exports = exports;

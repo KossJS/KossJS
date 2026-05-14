@@ -1,12 +1,19 @@
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
+use std::os::raw::c_void;
 use std::rc::Rc;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
-use boa_engine::{Context, JsError, JsValue, Module, Source};
+use boa_engine::object::builtins::{JsFunction, JsPromise};
+use boa_engine::{Context, JsError, JsValue, Module, Source, NativeFunction};
 use boa_runtime::Console;
+use tokio::runtime::Runtime;
 
 use crate::bindings;
 use crate::module_loader::KossModuleLoader;
+use crate::worker::{WorkerEvent, WorkerPool};
 
 const FETCH_POLYFILL_CODE: &str = r#"
 'use strict';
@@ -137,18 +144,19 @@ function buildRequest(url, options) {
     };
 }
 
-function fetchSync(url, options) {
+async function fetchSync(url, options) {
     const req = buildRequest(url, options);
     
     let responseJson;
     try {
-        responseJson = __koss_fetch(req.url, JSON.stringify({
+        const promise = __koss_fetch(req.url, JSON.stringify({
             method: req.method,
             headers: req.headers,
             body: req.body,
         }));
+        responseJson = await promise;
     } catch (e) {
-        throw new FetchError('network error', 'system', e);
+        throw new FetchError('network error: ' + (e.message || e), 'system', e);
     }
     
     let response;
@@ -179,10 +187,136 @@ globalThis.fetchSync = fetchSync;
 "#;
 
 // ---------------------------------------------------------------------------
+// Async I/O event loop infrastructure
+// ---------------------------------------------------------------------------
+
+/// Result from an async I/O operation (sent across threads)
+pub(crate) struct AsyncIoResult {
+    promise_id: u64,
+    result: Result<String, String>,
+}
+
+/// Resolver functions for a pending Promise (main thread only)
+pub struct PendingResolver {
+    pub resolve: JsFunction,
+    pub reject: JsFunction,
+}
+
+/// Per-instance event loop driving async I/O and microtasks
+pub struct KossEventLoop {
+    pub runtime: Runtime,
+    pub(crate) io_tx: mpsc::Sender<AsyncIoResult>,
+    pub(crate) io_rx: mpsc::Receiver<AsyncIoResult>,
+    pub next_promise_id: u64,
+    pub pending: HashMap<u64, PendingResolver>,
+}
+
+impl KossEventLoop {
+    pub fn new() -> Self {
+        let (io_tx, io_rx) = mpsc::channel();
+        let runtime = Runtime::new().expect("failed to create tokio runtime");
+        KossEventLoop {
+            runtime,
+            io_tx,
+            io_rx,
+            next_promise_id: 1,
+            pending: HashMap::new(),
+        }
+    }
+
+    /// Process all completed async I/O operations and resolve their promises.
+    /// Must be called from the main thread (where the Boa Context lives).
+    pub fn process_io_results(&mut self, ctx: &mut Context) {
+        while let Ok(AsyncIoResult { promise_id, result }) = self.io_rx.try_recv() {
+            if let Some(resolver) = self.pending.remove(&promise_id) {
+                match result {
+                    Ok(json) => {
+                        let js_val = JsValue::from(boa_engine::js_string!(json));
+                        let _ = resolver.resolve.call(
+                            &JsValue::undefined(),
+                            &[js_val],
+                            ctx,
+                        );
+                    }
+                    Err(err) => {
+                        let js_err = JsValue::from(boa_engine::js_string!(err));
+                        let _ = resolver.reject.call(
+                            &JsValue::undefined(),
+                            &[js_err],
+                            ctx,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Allocate a new promise ID and store the resolvers
+    pub fn register_promise(&mut self, resolve: JsFunction, reject: JsFunction) -> u64 {
+        let id = self.next_promise_id;
+        self.next_promise_id += 1;
+        self.pending.insert(id, PendingResolver { resolve, reject });
+        id
+    }
+
+    /// Spawn an async task on the tokio runtime
+    pub fn spawn<F>(&self, future: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.runtime.spawn(future);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Opaque handle — each KossInstance is an isolated JS VM
 // ---------------------------------------------------------------------------
 pub struct KossInstance {
-    context: Context,
+    pub context: Context,
+    pub event_loop: Option<KossEventLoop>,
+    pub worker_pool: Option<WorkerPool>,
+}
+
+impl KossInstance {
+    pub fn new(context: Context) -> Self {
+        KossInstance {
+            context,
+            event_loop: Some(KossEventLoop::new()),
+            worker_pool: None,
+        }
+    }
+
+    /// Drive the event loop: process I/O results, run microtasks, return false when idle
+    pub fn tick(&mut self) -> bool {
+        if let Some(ref mut el) = self.event_loop {
+            el.process_io_results(&mut self.context);
+            let _ = self.context.run_jobs();
+            // Return true if there are still pending promises
+            !el.pending.is_empty()
+        } else {
+            false
+        }
+    }
+
+    /// Run the event loop until the main promise resolves or timeout
+    pub fn run_until_complete(&mut self, promise: &JsPromise, timeout_ms: u64) -> bool {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            self.tick();
+
+            match promise.state() {
+                boa_engine::builtins::promise::PromiseState::Fulfilled(_) => return true,
+                boa_engine::builtins::promise::PromiseState::Rejected(_) => return true,
+                boa_engine::builtins::promise::PromiseState::Pending => {}
+            }
+
+            if Instant::now() >= deadline {
+                return false;
+            }
+
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -247,47 +381,263 @@ fn register_fetch_polyfill(ctx: &mut Context) {
     }
 }
 
-fn register_native_fetch(ctx: &mut Context) {
-    use boa_engine::NativeFunction;
+fn register_native_bindings(instance: &mut KossInstance) {
+    let instance_ptr = instance as *mut KossInstance;
+
+    let native = NativeFunction::from_copy_closure(move |_this, args, ctx| {
+        if args.is_empty() {
+            return Ok(JsValue::undefined());
+        }
+        let name = args[0].to_string(ctx).unwrap_or_default();
+        let _inst = unsafe { &*instance_ptr };
+        let name_str = name.to_std_string_escaped();
+        match handle_binding(&name_str) {
+            Ok(json) => Ok(JsValue::from(boa_engine::js_string!(json))),
+            Err(_) => Ok(JsValue::undefined()),
+        }
+    });
+
+    let js_func = native.to_js_function(instance.context.realm());
+
+    instance
+        .context
+        .register_global_property(
+            boa_engine::js_string!("__koss_bindings"),
+            js_func,
+            boa_engine::property::Attribute::WRITABLE
+                | boa_engine::property::Attribute::CONFIGURABLE,
+        )
+        .ok();
+}
+
+fn register_native_fetch(instance: &mut KossInstance) {
+    let instance_ptr = instance as *mut KossInstance;
 
     let native = NativeFunction::from_copy_closure(move |_this, args, ctx| {
         if args.len() < 2 {
             return Ok(JsValue::undefined());
         }
 
+        let inst = unsafe { &mut *instance_ptr };
+        let event_loop = match inst.event_loop.as_mut() {
+            Some(el) => el,
+            None => {
+                // No event loop, fall back to synchronous
+                let url = js_value_to_string(&args[0], ctx);
+                let request_json = js_value_to_string(&args[1], ctx);
+                let json_str = match CString::new(request_json) {
+                    Ok(c) => c,
+                    Err(_) => return Ok(JsValue::undefined()),
+                };
+                return match bindings::fetch::fetch_with_url(&url, json_str.to_str().unwrap_or("")) {
+                    Ok(response) => {
+                        let json = serde_json::to_string(&response).unwrap_or_default();
+                        Ok(JsValue::from(boa_engine::js_string!(json)))
+                    }
+                    Err(_) => Ok(JsValue::undefined()),
+                };
+            }
+        };
+
         let url = js_value_to_string(&args[0], ctx);
         let request_json = js_value_to_string(&args[1], ctx);
 
-        let json_str = match CString::new(request_json) {
-            Ok(c) => c,
-            Err(_) => return Ok(JsValue::undefined()),
+        // Create a pending Promise with resolving functions
+        let (promise, resolvers) = JsPromise::new_pending(ctx);
+
+        let promise_id = event_loop.register_promise(resolvers.resolve.clone(), resolvers.reject.clone());
+        let io_tx_clone = event_loop.io_tx.clone();
+
+        // Clone the strings for the async task
+        let url_clone = url.clone();
+        let json_clone = request_json.clone();
+
+        // Spawn the async HTTP request on tokio
+        event_loop.runtime.spawn(async move {
+            let result = bindings::fetch::fetch_async(&url_clone, &json_clone).await;
+            let _ = io_tx_clone.send(AsyncIoResult {
+                promise_id,
+                result,
+            });
+        });
+
+        Ok(promise.into())
+    });
+
+    let js_func = native.to_js_function(instance.context.realm());
+
+    instance
+        .context
+        .register_global_property(
+            boa_engine::js_string!("__koss_fetch"),
+            js_func,
+            boa_engine::property::Attribute::WRITABLE
+                | boa_engine::property::Attribute::CONFIGURABLE,
+        )
+        .ok();
+}
+
+fn register_worker_api(instance: &mut KossInstance) {
+    let instance_ptr = instance as *mut KossInstance;
+
+    // __koss_create_worker_pool(size) → creates worker pool
+    let create_pool = NativeFunction::from_copy_closure(move |_this, args, _ctx| {
+        let inst = unsafe { &mut *instance_ptr };
+        let size = args.first().and_then(|v| v.as_number()).unwrap_or(1.0) as i32;
+        if size <= 0 {
+            return Ok(JsValue::undefined());
+        }
+        inst.worker_pool = Some(WorkerPool::new(size as usize));
+        Ok(JsValue::from(boa_engine::js_string!(format!("{{\"created\":{size}}}"))))
+    });
+
+    let js_create_pool = create_pool.to_js_function(instance.context.realm());
+    instance.context.register_global_property(
+        boa_engine::js_string!("__koss_create_worker_pool"),
+        js_create_pool,
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_worker_post_message(workerId, data)
+    let instance_ptr2 = instance as *mut KossInstance;
+    let post_msg = NativeFunction::from_copy_closure(move |_this, args, ctx| {
+        let inst = unsafe { &mut *instance_ptr2 };
+        let pool = match inst.worker_pool.as_ref() {
+            Some(p) => p,
+            None => return Ok(JsValue::undefined()),
         };
-
-        let result = bindings::fetch::fetch_with_url(&url, json_str.to_str().unwrap_or(""));
-
-        match result {
-            Ok(response) => {
-                let json = serde_json::to_string(&response).unwrap_or_default();
-                Ok(JsValue::from(boa_engine::JsString::from(json)))
-            }
-            Err(_) => Ok(JsValue::undefined()),
+        let worker_id = args.get(0).and_then(|v| v.as_number()).unwrap_or(0.0) as usize;
+        let data = args.get(1).map(|v| js_value_to_string(v, ctx)).unwrap_or_default();
+        match pool.post_message(worker_id, &data) {
+            Ok(()) => Ok(JsValue::from(boa_engine::js_string!("ok"))),
+            Err(e) => Ok(JsValue::from(boa_engine::js_string!(e))),
         }
     });
 
-    let js_func = native.to_js_function(ctx.realm());
-
-    ctx.register_global_property(
-        boa_engine::js_string!("__koss_fetch"),
-        js_func,
+    let js_post_msg = post_msg.to_js_function(instance.context.realm());
+    instance.context.register_global_property(
+        boa_engine::js_string!("__koss_worker_post_message"),
+        js_post_msg,
         boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
-    )
-    .ok();
+    ).ok();
+
+    // __koss_worker_execute(workerId, code)
+    let instance_ptr3 = instance as *mut KossInstance;
+    let exec = NativeFunction::from_copy_closure(move |_this, args, ctx| {
+        let inst = unsafe { &mut *instance_ptr3 };
+        let pool = match inst.worker_pool.as_ref() {
+            Some(p) => p,
+            None => return Ok(JsValue::undefined()),
+        };
+        let worker_id = args.get(0).and_then(|v| v.as_number()).unwrap_or(0.0) as usize;
+        let code = args.get(1).map(|v| js_value_to_string(v, ctx)).unwrap_or_default();
+        match pool.execute(worker_id, &code) {
+            Ok(cmd_id) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"commandId\":{cmd_id}}}")))),
+            Err(e) => Ok(JsValue::from(boa_engine::js_string!(e))),
+        }
+    });
+
+    let js_exec = exec.to_js_function(instance.context.realm());
+    instance.context.register_global_property(
+        boa_engine::js_string!("__koss_worker_execute"),
+        js_exec,
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_worker_try_recv() → gets next message from any worker
+    let instance_ptr4 = instance as *mut KossInstance;
+    let recv = NativeFunction::from_copy_closure(move |_this, _args, _ctx| {
+        let inst = unsafe { &mut *instance_ptr4 };
+        let pool = match inst.worker_pool.as_ref() {
+            Some(p) => p,
+            None => return Ok(JsValue::null()),
+        };
+        match pool.try_recv() {
+            Some(event) => {
+                let json = match event {
+                    WorkerEvent::Result { worker_id, id, success, value } => {
+                        serde_json::json!({
+                            "type": "result",
+                            "workerId": worker_id,
+                            "id": id,
+                            "success": success,
+                            "value": value,
+                        })
+                    }
+                    WorkerEvent::Message { worker_id, data } => {
+                        serde_json::json!({
+                            "type": "message",
+                            "workerId": worker_id,
+                            "data": data,
+                        })
+                    }
+                    WorkerEvent::Error { worker_id, message } => {
+                        serde_json::json!({
+                            "type": "error",
+                            "workerId": worker_id,
+                            "message": message,
+                        })
+                    }
+                };
+                let s = serde_json::to_string(&json).unwrap_or_default();
+                Ok(JsValue::from(boa_engine::js_string!(s)))
+            }
+            None => Ok(JsValue::null()),
+        }
+    });
+
+    let js_recv = recv.to_js_function(instance.context.realm());
+    instance.context.register_global_property(
+        boa_engine::js_string!("__koss_worker_try_recv"),
+        js_recv,
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_worker_terminate(workerId)
+    let instance_ptr5 = instance as *mut KossInstance;
+    let term = NativeFunction::from_copy_closure(move |_this, args, _ctx| {
+        let inst = unsafe { &mut *instance_ptr5 };
+        let pool = match inst.worker_pool.as_mut() {
+            Some(p) => p,
+            None => return Ok(JsValue::undefined()),
+        };
+        let worker_id = args.get(0).and_then(|v| v.as_number()).unwrap_or(0.0) as usize;
+        match pool.terminate(worker_id) {
+            Ok(()) => Ok(JsValue::from(boa_engine::js_string!("ok"))),
+            Err(e) => Ok(JsValue::from(boa_engine::js_string!(e))),
+        }
+    });
+
+    let js_term = term.to_js_function(instance.context.realm());
+    instance.context.register_global_property(
+        boa_engine::js_string!("__koss_worker_terminate"),
+        js_term,
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_worker_shutdown()
+    let instance_ptr6 = instance as *mut KossInstance;
+    let shutdown = NativeFunction::from_copy_closure(move |_this, _args, _ctx| {
+        let inst = unsafe { &mut *instance_ptr6 };
+        if let Some(ref mut pool) = inst.worker_pool {
+            pool.shutdown();
+        }
+        inst.worker_pool = None;
+        Ok(JsValue::from(boa_engine::js_string!("ok")))
+    });
+
+    let js_shutdown = shutdown.to_js_function(instance.context.realm());
+    instance.context.register_global_property(
+        boa_engine::js_string!("__koss_worker_shutdown"),
+        js_shutdown,
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
 }
 
 fn register_nodejs_globals(ctx: &mut Context) {
     // Register primordials
     let primordials_code = r#"
-    const primordials = {
+    const primordials = globalThis.primordials = {
         Array: Array,
         ArrayBuffer: ArrayBuffer,
         ArrayBufferIsView: ArrayBuffer.isView,
@@ -503,13 +853,32 @@ fn register_nodejs_globals(ctx: &mut Context) {
         DateNow: Date.now,
         DateParse: Date.parse,
         DateUTC: Date.UTC,
+        SafeMap: Map,
+        SafeSet: Set,
+        SafeWeakMap: WeakMap,
+        SafeWeakSet: WeakSet,
     };
     
     // internalBinding - calls Rust implementations via __koss_bindings
     const internalBinding = function(name) {
-        return __koss_bindings(name);
+        const result = __koss_bindings(name);
+        if (typeof result === 'string') {
+            return JSON.parse(result);
+        }
+        return result || {};
     };
     globalThis.internalBinding = internalBinding;
+
+    // Stubs for Node.js internal functions
+    const getInternalBinding = function(name) {
+        return {};
+    };
+    globalThis.getInternalBinding = getInternalBinding;
+
+    const getLinkedBinding = function(name) {
+        return {};
+    };
+    globalThis.getLinkedBinding = getLinkedBinding;
     "#;
 
     let source = boa_parser::Source::from_bytes(primordials_code.as_bytes());
@@ -582,6 +951,10 @@ const process = {
     let module_system_code = r#"
 (function(globalThis) {
     'use strict';
+    const primordials = globalThis.primordials;
+    const internalBinding = globalThis.internalBinding;
+    const getInternalBinding = globalThis.getInternalBinding;
+    const getLinkedBinding = globalThis.getLinkedBinding;
     
     const Module = {
         _cache: {},
@@ -621,7 +994,16 @@ const process = {
         try {
             if (typeof __koss_load_module === 'function') {
                 const result = __koss_load_module(normalizedPath);
-                module.exports = result;
+                if (result !== null && result !== undefined) {
+                    const parsed = JSON.parse(result);
+                    if (parsed.type === 'module' && typeof parsed.code === 'string') {
+                        const wrappedCode = '(function(exports, require, module, __filename, __dirname) {\n' + parsed.code + '\n})';
+                        const wrapper = eval(wrappedCode);
+                        wrapper(module.exports, require, module, normalizedPath, normalizedPath);
+                    } else if (parsed.type === 'object') {
+                        module.exports = parsed.value;
+                    }
+                }
             }
             module.loaded = true;
         } catch (e) {
@@ -657,12 +1039,16 @@ const process = {
 /// The caller owns this pointer and must free it with `koss_destroy`.
 #[unsafe(no_mangle)]
 pub extern "C" fn koss_create() -> *mut KossInstance {
-    let mut context = Context::default();
-    register_console(&mut context);
-    register_nodejs_globals(&mut context);
-    register_fetch_polyfill(&mut context);
-    register_native_fetch(&mut context);
-    let instance = Box::new(KossInstance { context });
+    let context = boa_engine::context::ContextBuilder::default()
+        .build()
+        .unwrap_or_default();
+    let mut instance = Box::new(KossInstance::new(context));
+    register_console(&mut instance.context);
+    register_native_bindings(&mut instance);
+    register_nodejs_globals(&mut instance.context);
+    register_fetch_polyfill(&mut instance.context);
+    register_native_fetch(&mut instance);
+    register_worker_api(&mut instance);
     Box::into_raw(instance)
 }
 
@@ -684,15 +1070,17 @@ pub unsafe extern "C" fn koss_create_with_modules(root_dir: *const c_char) -> *m
         };
 
         let loader = Rc::new(KossModuleLoader::new(root_str));
-        let mut context = boa_engine::context::ContextBuilder::default()
+        let context = boa_engine::context::ContextBuilder::default()
             .module_loader(loader)
             .build()
             .unwrap_or_default();
-        register_console(&mut context);
-        register_nodejs_globals(&mut context);
-        register_fetch_polyfill(&mut context);
-        register_native_fetch(&mut context);
-        let instance = Box::new(KossInstance { context });
+        let mut instance = Box::new(KossInstance::new(context));
+        register_console(&mut instance.context);
+        register_native_bindings(&mut instance);
+        register_nodejs_globals(&mut instance.context);
+        register_fetch_polyfill(&mut instance.context);
+        register_native_fetch(&mut instance);
+        register_worker_api(&mut instance);
         Box::into_raw(instance)
     }
 }
@@ -926,6 +1314,145 @@ pub unsafe extern "C" fn koss_run_string(
     }
 }
 
+/// Evaluate JavaScript code and drive the async event loop to completion.
+/// The event loop processes async I/O (fetch, timers) and drains microtasks
+/// until either all pending operations complete or the timeout is reached.
+///
+/// # Safety
+/// - `ptr` must be a valid pointer from `koss_create`
+/// - `code` must be a valid null-terminated UTF-8 string
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_run_async(
+    ptr: *mut KossInstance,
+    code: *const c_char,
+    timeout_ms: u64,
+) -> KossResult {
+    unsafe {
+        if ptr.is_null() || code.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
+
+        let instance = &mut *ptr;
+        let code_str = match CStr::from_ptr(code).to_str() {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
+        };
+
+        let source = Source::from_bytes(code_str.as_bytes());
+        let val = match instance.context.eval(source) {
+            Ok(v) => v,
+            Err(err) => {
+                let s = js_error_to_string(&err, &mut instance.context);
+                return KossResult::err(1, &s);
+            }
+        };
+
+        if let Some(ref mut el) = instance.event_loop {
+            let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+            loop {
+                el.process_io_results(&mut instance.context);
+                let _ = instance.context.run_jobs();
+
+                let idle = el.pending.is_empty();
+                if idle {
+                    let _ = instance.context.run_jobs();
+                    break;
+                }
+
+                if Instant::now() >= deadline {
+                    return KossResult::err(1, "async execution timed out");
+                }
+
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        // Try to extract the resolved value if the result is a Promise
+        let is_promise_obj = val.is_object()
+            && JsPromise::from_object(
+                match val.as_object() {
+                    Some(o) => o.clone(),
+                    None => {
+                        let s = js_value_to_string(&val, &mut instance.context);
+                        return KossResult::ok(&s);
+                    }
+                },
+            )
+            .is_ok();
+
+        if is_promise_obj {
+            let obj = val.as_object().unwrap().clone();
+            if let Ok(promise) = JsPromise::from_object(obj) {
+                match promise.state() {
+                    boa_engine::builtins::promise::PromiseState::Fulfilled(resolved) => {
+                        let s = js_value_to_string(&resolved, &mut instance.context);
+                        KossResult::ok(&s)
+                    }
+                    boa_engine::builtins::promise::PromiseState::Rejected(err) => {
+                        let s = js_value_to_string(&err, &mut instance.context);
+                        KossResult::err(1, &s)
+                    }
+                    boa_engine::builtins::promise::PromiseState::Pending => {
+                        let s = js_value_to_string(&val, &mut instance.context);
+                        KossResult::ok(&s)
+                    }
+                }
+            } else {
+                let s = js_value_to_string(&val, &mut instance.context);
+                KossResult::ok(&s)
+            }
+        } else {
+            let s = js_value_to_string(&val, &mut instance.context);
+            KossResult::ok(&s)
+        }
+    }
+}
+
+/// Run a single tick of the event loop: process completed async I/O
+/// and drain the microtask queue. Returns "1" if there are still pending
+/// async operations, "0" if idle.
+///
+/// # Safety
+/// - `ptr` must be a valid pointer from `koss_create`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_tick(ptr: *mut KossInstance) -> KossResult {
+    unsafe {
+        if ptr.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
+
+        let instance = &mut *ptr;
+        let has_pending = instance.tick();
+        let _ = instance.context.run_jobs();
+
+        KossResult::ok(if has_pending { "1" } else { "0" })
+    }
+}
+
+// ===========================================================================
+// C ABI — Memory management
+// ===========================================================================
+
+/// Free a C string that was allocated by the Rust side (e.g., from KossResult).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_free_string(ptr: *mut c_char) {
+    if !ptr.is_null() {
+        unsafe {
+            drop(CString::from_raw(ptr));
+        }
+    }
+}
+
+/// Free a KossResult struct and its associated value string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_free_result(result: KossResult) {
+    if !result.value.is_null() {
+        unsafe {
+            drop(CString::from_raw(result.value));
+        }
+    }
+}
+
 // ===========================================================================
 // C ABI — Global variable injection (host → JS)
 // ===========================================================================
@@ -1030,8 +1557,187 @@ pub unsafe extern "C" fn koss_register_fetch(ptr: *mut KossInstance) -> KossResu
 /// Returns the KossJS version string.
 #[unsafe(no_mangle)]
 pub extern "C" fn koss_version() -> *const c_char {
-    static VERSION: &[u8] = b"0.1.0-dev.2\0";
+    static VERSION: &[u8] = b"0.1.0-dev.5\0";
     VERSION.as_ptr() as *const c_char
+}
+
+// ===========================================================================
+// C ABI — Worker pool management
+// ===========================================================================
+
+/// Create a worker pool with the given number of worker threads.
+/// Each worker runs in its own OS thread with an isolated JS Context.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_create_worker_pool(
+    ptr: *mut KossInstance,
+    size: i32,
+) -> KossResult {
+    unsafe {
+        if ptr.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
+        if size <= 0 {
+            return KossResult::err(2, "worker pool size must be positive");
+        }
+
+        let instance = &mut *ptr;
+        instance.worker_pool = Some(WorkerPool::new(size as usize));
+        KossResult::ok(&format!("{{\"created\":{size}}}"))
+    }
+}
+
+/// Post a message to a worker thread. The message is a JSON string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_worker_post_message(
+    ptr: *mut KossInstance,
+    worker_id: i32,
+    data: *const c_char,
+) -> KossResult {
+    unsafe {
+        if ptr.is_null() || data.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
+
+        let instance = &mut *ptr;
+        let pool = match instance.worker_pool.as_ref() {
+            Some(p) => p,
+            None => return KossResult::err(1, "no worker pool created"),
+        };
+
+        let data_str = match CStr::from_ptr(data).to_str() {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
+        };
+
+        match pool.post_message(worker_id as usize, data_str) {
+            Ok(()) => KossResult::ok("ok"),
+            Err(e) => KossResult::err(1, &e),
+        }
+    }
+}
+
+/// Execute JavaScript code on a worker thread. Returns a command ID.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_worker_execute(
+    ptr: *mut KossInstance,
+    worker_id: i32,
+    code: *const c_char,
+) -> KossResult {
+    unsafe {
+        if ptr.is_null() || code.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
+
+        let instance = &mut *ptr;
+        let pool = match instance.worker_pool.as_ref() {
+            Some(p) => p,
+            None => return KossResult::err(1, "no worker pool created"),
+        };
+
+        let code_str = match CStr::from_ptr(code).to_str() {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
+        };
+
+        match pool.execute(worker_id as usize, code_str) {
+            Ok(cmd_id) => KossResult::ok(&format!("{{\"commandId\":{cmd_id}}}")),
+            Err(e) => KossResult::err(1, &e),
+        }
+    }
+}
+
+/// Try to receive a message from any worker (non-blocking).
+/// Returns JSON or "null" if no message available.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_worker_try_recv(
+    ptr: *mut KossInstance,
+) -> KossResult {
+    unsafe {
+        if ptr.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
+
+        let instance = &mut *ptr;
+        let pool = match instance.worker_pool.as_ref() {
+            Some(p) => p,
+            None => return KossResult::err(1, "no worker pool created"),
+        };
+
+        match pool.try_recv() {
+            Some(event) => {
+                let json = match event {
+                    WorkerEvent::Result { worker_id, id, success, value } => {
+                        serde_json::json!({
+                            "type": "result",
+                            "workerId": worker_id,
+                            "id": id,
+                            "success": success,
+                            "value": value,
+                        })
+                    }
+                    WorkerEvent::Message { worker_id, data } => {
+                        serde_json::json!({
+                            "type": "message",
+                            "workerId": worker_id,
+                            "data": data,
+                        })
+                    }
+                    WorkerEvent::Error { worker_id, message } => {
+                        serde_json::json!({
+                            "type": "error",
+                            "workerId": worker_id,
+                            "message": message,
+                        })
+                    }
+                };
+                KossResult::ok(&json.to_string())
+            }
+            None => KossResult::ok("null"),
+        }
+    }
+}
+
+/// Terminate a specific worker thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_worker_terminate(
+    ptr: *mut KossInstance,
+    worker_id: i32,
+) -> KossResult {
+    unsafe {
+        if ptr.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
+
+        let instance = &mut *ptr;
+        let pool = match instance.worker_pool.as_mut() {
+            Some(p) => p,
+            None => return KossResult::err(1, "no worker pool created"),
+        };
+
+        match pool.terminate(worker_id as usize) {
+            Ok(()) => KossResult::ok("ok"),
+            Err(e) => KossResult::err(1, &e),
+        }
+    }
+}
+
+/// Shut down all worker threads and clean up the pool.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_worker_shutdown(
+    ptr: *mut KossInstance,
+) -> KossResult {
+    unsafe {
+        if ptr.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
+
+        let instance = &mut *ptr;
+        if let Some(ref mut pool) = instance.worker_pool {
+            pool.shutdown();
+        }
+        instance.worker_pool = None;
+        KossResult::ok("ok")
+    }
 }
 
 // ===========================================================================
@@ -1210,6 +1916,20 @@ fn handle_binding(name: &str) -> Result<String, String> {
             "getSystemErrorName": true,
             "getSystemErrorCode": true,
             "inspect": true,
+            "constants": {
+                "ALL_PROPERTIES": 0,
+                "ONLY_ENUMERABLE": 1,
+                "kPending": 0,
+                "kRejected": 1
+            },
+            "getOwnNonIndexProperties": null,
+            "getPromiseDetails": null,
+            "getProxyDetails": null,
+            "previewEntries": null,
+            "getConstructorName": null,
+            "getExternalValue": null,
+            "arrayBufferViewType": null,
+            "getCrypto": null,
         })
         .to_string()),
         "trace_events" => Ok(serde_json::json!({
@@ -1223,6 +1943,41 @@ fn handle_binding(name: &str) -> Result<String, String> {
             "fetch": true,
         })
         .to_string()),
+        "worker_threads" => Ok(serde_json::json!({
+            "Worker": true,
+            "isMainThread": true,
+            "parentPort": null,
+            "workerData": null,
+            "getEnvironmentData": true,
+            "setEnvironmentData": true,
+            "SHARE_ENV": true,
+            "threadId": 0,
+        })
+        .to_string()),
+        "worker" => Ok(serde_json::json!({
+            "createWorker": true,
+            "postMessage": true,
+            "onMessage": true,
+            "terminate": true,
+        })
+        .to_string()),
+        // "util" => Ok(serde_json::json!({
+        //     "constants": {
+        //         "ALL_PROPERTIES": 0,
+        //         "ONLY_ENUMERABLE": 1,
+        //         "kPending": 0,
+        //         "kRejected": 1
+        //     },
+        //     "getOwnNonIndexProperties": null,
+        //     "getPromiseDetails": null,
+        //     "getProxyDetails": null,
+        //     "previewEntries": null,
+        //     "getConstructorName": null,
+        //     "getExternalValue": null,
+        //     "arrayBufferViewType": null,
+        //     "getCrypto": null,
+        // })
+        // .to_string()),
         _ => Ok("{}".to_string()),
     }
 }
@@ -1258,6 +2013,449 @@ pub unsafe extern "C" fn koss_fetch(ptr: *mut KossInstance, url_json: *const c_c
                 KossResult::ok(&json)
             }
             Err(e) => KossResult::err(1, &format!("fetch error: {}", e)),
+        }
+    }
+}
+
+// ===========================================================================
+// Type aliases for native callbacks
+// ===========================================================================
+
+/// Native callback type: receives (argc, argv) and returns a C string or null.
+/// The returned string must be freed by the caller (Python side manages this).
+type NativeCallback = unsafe extern "C" fn(argc: i32, argv: *mut c_void) -> *mut c_void;
+
+// ===========================================================================
+// C ABI — Global variable injection (extended)
+// ===========================================================================
+
+/// Set a global number variable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_set_global_number(
+    ptr: *mut KossInstance,
+    name: *const c_char,
+    value: f64,
+) -> KossResult {
+    unsafe {
+        if ptr.is_null() || name.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
+        let instance = &mut *ptr;
+        let name_str = match CStr::from_ptr(name).to_str() {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
+        };
+        let js_key = boa_engine::js_string!(name_str);
+        let js_val = JsValue::from(value);
+        let _ = instance.context.register_global_property(
+            js_key,
+            js_val,
+            boa_engine::property::Attribute::WRITABLE
+                | boa_engine::property::Attribute::CONFIGURABLE,
+        );
+        KossResult::ok("ok")
+    }
+}
+
+/// Set a global boolean variable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_set_global_bool(
+    ptr: *mut KossInstance,
+    name: *const c_char,
+    value: bool,
+) -> KossResult {
+    unsafe {
+        if ptr.is_null() || name.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
+        let instance = &mut *ptr;
+        let name_str = match CStr::from_ptr(name).to_str() {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
+        };
+        let js_key = boa_engine::js_string!(name_str);
+        let js_val = JsValue::from(value);
+        let _ = instance.context.register_global_property(
+            js_key,
+            js_val,
+            boa_engine::property::Attribute::WRITABLE
+                | boa_engine::property::Attribute::CONFIGURABLE,
+        );
+        KossResult::ok("ok")
+    }
+}
+
+/// Set a global null variable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_set_global_null(
+    ptr: *mut KossInstance,
+    name: *const c_char,
+) -> KossResult {
+    unsafe {
+        if ptr.is_null() || name.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
+        let instance = &mut *ptr;
+        let name_str = match CStr::from_ptr(name).to_str() {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
+        };
+        let js_key = boa_engine::js_string!(name_str);
+        let _ = instance.context.register_global_property(
+            js_key,
+            JsValue::null(),
+            boa_engine::property::Attribute::WRITABLE
+                | boa_engine::property::Attribute::CONFIGURABLE,
+        );
+        KossResult::ok("ok")
+    }
+}
+
+/// Set a global undefined variable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_set_global_undefined(
+    ptr: *mut KossInstance,
+    name: *const c_char,
+) -> KossResult {
+    unsafe {
+        if ptr.is_null() || name.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
+        let instance = &mut *ptr;
+        let name_str = match CStr::from_ptr(name).to_str() {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
+        };
+        let js_key = boa_engine::js_string!(name_str);
+        let _ = instance.context.register_global_property(
+            js_key,
+            JsValue::undefined(),
+            boa_engine::property::Attribute::WRITABLE
+                | boa_engine::property::Attribute::CONFIGURABLE,
+        );
+        KossResult::ok("ok")
+    }
+}
+
+/// Set a global variable from a JSON string (supports objects, arrays, strings, numbers).
+/// Uses JS JSON.parse internally for safe parsing.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_set_global_json(
+    ptr: *mut KossInstance,
+    name: *const c_char,
+    json_str: *const c_char,
+) -> KossResult {
+    unsafe {
+        if ptr.is_null() || name.is_null() || json_str.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
+        let instance = &mut *ptr;
+        let name_str = match CStr::from_ptr(name).to_str() {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
+        };
+        let json = match CStr::from_ptr(json_str).to_str() {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
+        };
+
+        // Validate JSON with serde_json
+        if let Err(e) = serde_json::from_str::<serde_json::Value>(json) {
+            return KossResult::err(1, &format!("invalid JSON: {e}"));
+        }
+
+        // Wrap in parentheses to handle objects correctly (avoid block parsing)
+        let wrapped = format!("({})", json);
+        let source = Source::from_bytes(wrapped.as_bytes());
+        match instance.context.eval(source) {
+            Ok(val) => {
+                let js_key = boa_engine::js_string!(name_str);
+                let _ = instance.context.register_global_property(
+                    js_key,
+                    val,
+                    boa_engine::property::Attribute::WRITABLE
+                        | boa_engine::property::Attribute::CONFIGURABLE,
+                );
+                KossResult::ok("ok")
+            }
+            Err(e) => KossResult::err(1, &format!("JSON eval error: {e}")),
+        }
+    }
+}
+
+// ===========================================================================
+// C ABI — Function registration (host → JS)
+// ===========================================================================
+
+/// Internal helper to create a JS NativeFunction from a C callback and register it
+/// as a global. Returns the JsValue so callers can use it for further operations.
+fn register_native_function(
+    ctx: &mut Context,
+    callback: NativeCallback,
+) -> boa_engine::JsValue {
+    let native = NativeFunction::from_copy_closure(move |_this, args, ctx| {
+        let argc = args.len() as i32;
+        let mut c_strings: Vec<CString> = Vec::with_capacity(args.len());
+        let mut ptrs: Vec<*const c_char> = Vec::with_capacity(args.len());
+
+        for arg in args {
+            let s = js_value_to_string(arg, ctx);
+            let c_str = CString::new(s).unwrap_or(CString::new("").unwrap());
+            ptrs.push(c_str.as_ptr());
+            c_strings.push(c_str);
+        }
+
+        let result = unsafe { callback(argc, ptrs.as_ptr() as *mut c_void) };
+
+        if result.is_null() {
+            return Ok(JsValue::undefined());
+        }
+
+        let result_str = unsafe {
+            CStr::from_ptr(result as *const c_char)
+                .to_str()
+                .unwrap_or("")
+                .to_string()
+        };
+        // Note: result memory is managed by Python (callback_allocations)
+        // We do NOT free it here since Python allocated it with msvcrt malloc
+        Ok(JsValue::from(boa_engine::js_string!(result_str)))
+    });
+
+    let js_func = native.to_js_function(ctx.realm());
+    js_func.into()
+}
+
+/// Set a nested property path using JS eval.
+/// Creates intermediate objects as needed (e.g., "Math.max" -> globalThis.Math.max = value)
+fn set_nested_property(ctx: &mut Context, path: &str, value: boa_engine::JsValue) {
+    // Register with a temp name first
+    let temp_key = format!("__koss_tmp_{}", path.replace('.', "_"));
+    let _ = ctx.register_global_property(
+        boa_engine::js_string!(temp_key.as_str()),
+        value,
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    );
+
+    // Use JS eval to nest it into the correct location and clean up temp
+    let eval_code = format!(
+        r#"
+(function() {{
+    var parts = '{}'.split('.');
+    var obj = globalThis;
+    for (var i = 0; i < parts.length - 1; i++) {{
+        if (typeof obj[parts[i]] !== 'object' || obj[parts[i]] === null) {{
+            obj[parts[i]] = {{}};
+        }}
+        obj = obj[parts[i]];
+    }}
+    obj[parts[parts.length - 1]] = globalThis.{};  // Copy from temp
+    delete globalThis.{};                           // Clean up temp
+}})();
+"#,
+        path, temp_key, temp_key
+    );
+
+    let source = Source::from_bytes(eval_code.as_bytes());
+    let _ = ctx.eval(source);
+}
+
+/// Register a global function from a C callback.
+/// Supports dotted paths (e.g., "Math.max") for mounting to nested objects.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_register_function(
+    ptr: *mut KossInstance,
+    name: *const c_char,
+    callback: *mut c_void,
+) -> KossResult {
+    unsafe {
+        if ptr.is_null() || name.is_null() || callback.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
+
+        let instance = &mut *ptr;
+        let name_str = match CStr::from_ptr(name).to_str() {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
+        };
+
+        let cb: NativeCallback = std::mem::transmute(callback);
+
+        if name_str.contains('.') {
+            let js_func = register_native_function(&mut instance.context, cb);
+            set_nested_property(&mut instance.context, name_str, js_func);
+        } else {
+            let js_func = register_native_function(&mut instance.context, cb);
+            let _ = instance.context.register_global_property(
+                boa_engine::js_string!(name_str),
+                js_func,
+                boa_engine::property::Attribute::WRITABLE
+                    | boa_engine::property::Attribute::CONFIGURABLE,
+            );
+        }
+
+        KossResult::ok("ok")
+    }
+}
+
+// ===========================================================================
+// C ABI — Module loader registration
+// ===========================================================================
+
+/// Register the CommonJS module loader callback.
+/// The callback receives (module_name_string) and returns JSON string or null.
+/// The returned JSON should be `{"type": "module", "code": "..."}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_register_module_loader(
+    ptr: *mut KossInstance,
+    callback: *mut c_void,
+) -> KossResult {
+    unsafe {
+        if ptr.is_null() || callback.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
+
+        let instance = &mut *ptr;
+        let cb: NativeCallback = std::mem::transmute(callback);
+
+        let js_func = register_native_function(&mut instance.context, cb);
+        let _ = instance.context.register_global_property(
+            boa_engine::js_string!("__koss_load_module"),
+            js_func,
+            boa_engine::property::Attribute::WRITABLE
+                | boa_engine::property::Attribute::CONFIGURABLE,
+        );
+
+        KossResult::ok("ok")
+    }
+}
+
+// ===========================================================================
+// C ABI — Class registration
+// ===========================================================================
+
+/// Register a JavaScript class backed by a native callback.
+///
+/// `class_name` - the JS class name
+/// `methods_json` - JSON array of method names (e.g., `["method1", "method2"]`)
+/// `callback` - receives (method_name, argc, argv) and returns JSON string or null
+///
+/// The callback will be invoked as `callback(method_name, argc, argv)` where:
+/// - `method_name` is a C string naming the method to call
+/// - `argc` is the argument count
+/// - `argv` is an array of C strings
+/// - Returns a C string (JSON) or null
+///
+/// The class constructor creates instances with methods that call back to the native
+/// callback. Each method passes the method name as the first argument.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_register_class(
+    ptr: *mut KossInstance,
+    class_name: *const c_char,
+    methods_json: *const c_char,
+    callback: *mut c_void,
+) -> KossResult {
+    unsafe {
+        if ptr.is_null() || class_name.is_null() || methods_json.is_null() || callback.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
+
+        let instance = &mut *ptr;
+        let name_str = match CStr::from_ptr(class_name).to_str() {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
+        };
+        let methods_str = match CStr::from_ptr(methods_json).to_str() {
+            Ok(s) => s,
+            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
+        };
+
+        // Validate methods JSON
+        let method_names: Vec<String> = match serde_json::from_str(methods_str) {
+            Ok(v) => v,
+            Err(e) => return KossResult::err(2, &format!("invalid methods JSON: {e}")),
+        };
+
+        let cb: NativeCallback = std::mem::transmute(callback);
+
+        // Register the method dispatcher function
+        let dispatcher = NativeFunction::from_copy_closure(move |_this, args, ctx| {
+            // First arg is the method name
+            if args.is_empty() {
+                return Ok(JsValue::undefined());
+            }
+            let method_name = js_value_to_string(&args[0], ctx);
+
+            // Remaining args are the method arguments
+            let argc = (args.len() - 1) as i32;
+            let mut c_strings: Vec<CString> = Vec::with_capacity(args.len());
+            let mut ptrs: Vec<*const c_char> = Vec::with_capacity(args.len());
+
+            // First pointer is the method name
+            let name_cstr = CString::new(method_name.clone()).unwrap_or(CString::new("").unwrap());
+            ptrs.push(name_cstr.as_ptr());
+            c_strings.push(name_cstr);
+
+            // Remaining pointers are the args
+            for arg in &args[1..] {
+                let s = js_value_to_string(arg, ctx);
+                let c_str = CString::new(s).unwrap_or(CString::new("").unwrap());
+                ptrs.push(c_str.as_ptr());
+                c_strings.push(c_str);
+            }
+
+            // Callback receives (method_name, argc, argv)
+            let result = cb(argc + 1, ptrs.as_ptr() as *mut c_void);
+
+            if result.is_null() {
+                return Ok(JsValue::undefined());
+            }
+
+            let result_str = CStr::from_ptr(result as *const c_char)
+                .to_str()
+                .unwrap_or("")
+                .to_string();
+            Ok(JsValue::from(boa_engine::js_string!(result_str)))
+        });
+
+        let dispatcher_func = dispatcher.to_js_function(instance.context.realm());
+
+        // Register the dispatcher with a unique name
+        let dispatcher_key = format!("__koss_class_{}", name_str);
+        let _ = instance.context.register_global_property(
+            boa_engine::js_string!(dispatcher_key.as_str()),
+            dispatcher_func,
+            boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+        );
+
+        // Create the JS class constructor via eval
+        let methods_array_json = serde_json::to_string(&method_names).unwrap_or_default();
+        let class_code = format!(
+            r#"
+(function() {{
+    var methods = {};
+    var dispatcher = globalThis.{} || function() {{}};
+    function {}() {{
+        var self = {{}};
+        methods.forEach(function(m) {{
+            self[m] = function() {{
+                var args = Array.prototype.slice.call(arguments);
+                var allArgs = [m].concat(args);
+                return dispatcher.apply(null, allArgs);
+            }};
+        }});
+        return self;
+    }}
+    globalThis.{} = {};
+}})();
+"#,
+            methods_array_json, dispatcher_key, name_str, name_str, name_str
+        );
+
+        let source = Source::from_bytes(class_code.as_bytes());
+        match instance.context.eval(source) {
+            Ok(_) => KossResult::ok("ok"),
+            Err(e) => KossResult::err(1, &format!("class registration error: {e}")),
         }
     }
 }

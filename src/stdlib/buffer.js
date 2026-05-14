@@ -1,19 +1,5 @@
 'use strict';
 
-const {
-  ArrayBufferIsView,
-  ArrayIsArray,
-  MathFloor,
-  MathMin,
-  MathTrunc,
-  NumberIsInteger,
-  NumberIsNaN,
-  ObjectDefineProperties,
-  ObjectDefineProperty,
-  Symbol,
-  Uint8Array,
-} = globalThis;
-
 const kMaxLength = 2147483647;
 const kStringMaxLength = 536870888;
 
@@ -23,7 +9,7 @@ class FastBuffer extends Uint8Array {
       super(buffer);
     } else if (buffer instanceof ArrayBuffer) {
       super(buffer, byteOffset, length);
-    } else if (ArrayBufferIsView(buffer)) {
+    } else if (ArrayBuffer.isView(buffer)) {
       super(buffer.buffer, buffer.byteOffset, buffer.byteLength);
     } else {
       super(buffer);
@@ -43,7 +29,7 @@ function addBufferPrototypeMethods(proto) {
     
     const sourceLen = sourceEnd - sourceStart;
     const targetLen = target.length - targetStart;
-    const len = MathMin(sourceLen, targetLen);
+    const len = Math.min(sourceLen, targetLen);
     
     for (let i = 0; i < len; i++) {
       target[targetStart + i] = this[sourceStart + i];
@@ -113,7 +99,7 @@ function addBufferPrototypeMethods(proto) {
   };
 
   proto.equals = function(otherBuffer) {
-    if (!ArrayBufferIsView(otherBuffer)) return false;
+    if (!ArrayBuffer.isView(otherBuffer)) return false;
     if (this.length !== otherBuffer.length) return false;
     for (let i = 0; i < this.length; i++) {
       if (this[i] !== otherBuffer[i]) return false;
@@ -215,7 +201,7 @@ function Buffer(arg, encodingOrOffset, length) {
   return Buffer.from(arg, encodingOrOffset, length);
 }
 
-ObjectDefineProperty(Buffer, Symbol('species'), {
+Object.defineProperty(Buffer, Symbol('species'), {
   __proto__: null,
   enumerable: false,
   configurable: true,
@@ -231,7 +217,7 @@ Buffer.from = function(value, encodingOrOffset, length) {
     return arr;
   }
   
-  if (ArrayIsArray(value)) {
+  if (Array.isArray(value)) {
     const arr = new FastBuffer(value.length);
     for (let i = 0; i < value.length; i++) {
       arr[i] = value[i];
@@ -243,7 +229,7 @@ Buffer.from = function(value, encodingOrOffset, length) {
     return new FastBuffer(value, encodingOrOffset, length);
   }
   
-  if (ArrayBufferIsView(value)) {
+  if (ArrayBuffer.isView(value)) {
     const arr = new FastBuffer(value.byteLength);
     arr.set(value);
     return arr;
@@ -276,7 +262,7 @@ Buffer.isBuffer = function(b) {
 };
 
 Buffer.compare = function(buf1, buf2) {
-  if (!(ArrayBufferIsView(buf1)) || !(ArrayBufferIsView(buf2))) {
+  if (!(ArrayBuffer.isView(buf1)) || !(ArrayBuffer.isView(buf2))) {
     throw new TypeError('Argument must be a buffer');
   }
   if (buf1 === buf2) return 0;
@@ -295,7 +281,7 @@ Buffer.isEncoding = function(encoding) {
 };
 
 Buffer.concat = function(list, length) {
-  if (!ArrayIsArray(list)) {
+  if (!Array.isArray(list)) {
     throw new TypeError('list argument must be an Array');
   }
   
@@ -306,7 +292,7 @@ Buffer.concat = function(list, length) {
   if (length === undefined) {
     length = 0;
     for (let i = 0; i < list.length; i++) {
-      if (ArrayBufferIsView(list[i])) {
+      if (ArrayBuffer.isView(list[i])) {
         length += list[i].length;
       }
     }
@@ -316,7 +302,7 @@ Buffer.concat = function(list, length) {
   let offset = 0;
   for (let i = 0; i < list.length && offset < length; i++) {
     const item = list[i];
-    if (ArrayBufferIsView(item)) {
+    if (ArrayBuffer.isView(item)) {
       const len = MathMin(item.length, length - offset);
       for (let j = 0; j < len; j++) {
         buf[offset++] = item[j];
@@ -328,7 +314,7 @@ Buffer.concat = function(list, length) {
 
 Buffer.byteLength = function(string, encoding) {
   if (typeof string !== 'string') {
-    if (ArrayBufferIsView(string)) {
+    if (ArrayBuffer.isView(string)) {
       return string.byteLength;
     }
     if (string instanceof ArrayBuffer) {
@@ -341,7 +327,7 @@ Buffer.byteLength = function(string, encoding) {
 
 Buffer.poolSize = 8 * 1024;
 
-const constants = ObjectDefineProperties({}, {
+const constants = Object.defineProperties({}, {
   MAX_LENGTH: {
     __proto__: null,
     value: kMaxLength,
@@ -421,7 +407,7 @@ module.exports = {
   atob,
 };
 
-ObjectDefineProperties(module.exports, {
+Object.defineProperties(module.exports, {
   constants: {
     __proto__: null,
     configurable: false,

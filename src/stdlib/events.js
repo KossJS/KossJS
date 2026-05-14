@@ -63,10 +63,11 @@ const kRejection = SymbolFor('nodejs.rejection');
 
 const { kEmptyObject, spliceOne } = require('internal/util');
 
-const {
-  inspect,
-  identicalSequenceRange,
-} = require('internal/util/inspect');
+let inspect;
+let identicalSequenceRange;
+try {
+  ({ inspect, identicalSequenceRange } = require('internal/util/inspect'));
+} catch {}  // Lazy — only used in error/warning paths
 
 let FixedQueue;
 let kFirstEventParam;

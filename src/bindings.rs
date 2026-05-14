@@ -1415,20 +1415,27 @@ pub mod fetch {
         pub headers: HashMap<String, String>,
     }
 
-    pub fn fetch_with_url(url: &str, request_json: &str) -> Result<FetchResponse, String> {
+    /// Build a reqwest client (async)
+    fn build_client() -> Result<reqwest::Client, String> {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| format!("client build error: {}", e))
+    }
+
+    fn build_request(url: &str, request_json: &str) -> Result<(String, FetchRequest), String> {
         let request: FetchRequest = serde_json::from_str(request_json)
             .map_err(|e| format!("parse request error: {}", e))?;
+        Ok((url.to_string(), request))
+    }
 
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .danger_accept_invalid_certs(true)
-            .build()
-            .map_err(|e| format!("client build error: {}", e))?;
+    async fn do_fetch(url: String, request: FetchRequest) -> Result<FetchResponse, String> {
+        let client = build_client()?;
 
         let method = reqwest::Method::from_bytes(request.method.to_uppercase().as_bytes())
             .unwrap_or(reqwest::Method::GET);
 
-        let mut req_builder = client.request(method, url);
+        let mut req_builder = client.request(method, &url);
 
         for (key, value) in &request.headers {
             req_builder = req_builder.header(key, value);
@@ -1440,6 +1447,7 @@ pub mod fetch {
 
         let response = req_builder
             .send()
+            .await
             .map_err(|e| format!("request error: {}", e))?;
 
         let status = response.status();
@@ -1455,6 +1463,7 @@ pub mod fetch {
 
         let body = response
             .text()
+            .await
             .map_err(|e| format!("read body error: {}", e))?;
 
         Ok(FetchResponse {
@@ -1465,8 +1474,18 @@ pub mod fetch {
         })
     }
 
-    #[allow(dead_code)]
-    pub fn fetch(_request_json: &str) -> Result<FetchResponse, String> {
-        Err("use fetch_with_url instead".to_string())
+    /// Async fetch - call from tokio tasks
+    pub async fn fetch_async(url: &str, request_json: &str) -> Result<String, String> {
+        let (url, request) = build_request(url, request_json)?;
+        let response = do_fetch(url, request).await?;
+        serde_json::to_string(&response).map_err(|e| format!("serialize error: {e}"))
+    }
+
+    /// Synchronous fetch - blocks the current thread (fallback)
+    pub fn fetch_with_url(url: &str, request_json: &str) -> Result<FetchResponse, String> {
+        let (url, request) = build_request(url, request_json)?;
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("runtime error: {e}"))?;
+        rt.block_on(do_fetch(url, request))
     }
 }
