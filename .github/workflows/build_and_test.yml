@@ -26,6 +26,10 @@ jobs:
             artifact_name: kossjs.dll
             lib_name: kossjs.dll
           - os: windows-latest
+            target: i686-pc-windows-msvc
+            artifact_name: kossjs_x86.dll
+            lib_name: kossjs.dll
+          - os: windows-latest
             target: aarch64-pc-windows-msvc
             artifact_name: kossjs_arm64.dll
             lib_name: kossjs.dll
@@ -112,13 +116,13 @@ jobs:
           cp "$SRC" "$DST"
           echo "产物: $DST ($(du -h "$DST" | cut -f1))"
 
-      # 安装 UPX 并压缩 Windows x64
-      - name: 🔧 安装 UPX (Windows x64)
-        if: runner.os == 'Windows' && matrix.target == 'x86_64-pc-windows-msvc'
+      # 安装 UPX 并压缩 Windows x64 / x86
+      - name: 🔧 安装 UPX (Windows x64/x86)
+        if: runner.os == 'Windows' && (matrix.target == 'x86_64-pc-windows-msvc' || matrix.target == 'i686-pc-windows-msvc')
         run: choco install upx
 
-      - name: 📦 使用 UPX 压缩 Windows x64 产物
-        if: runner.os == 'Windows' && matrix.target == 'x86_64-pc-windows-msvc'
+      - name: 📦 使用 UPX 压缩 Windows x64/x86 产物
+        if: runner.os == 'Windows' && (matrix.target == 'x86_64-pc-windows-msvc' || matrix.target == 'i686-pc-windows-msvc')
         run: upx --best --lzma ${{ matrix.artifact_name }}
 
       # 安装 LLVM 并使用 llvm-strip 处理 Windows ARM64
@@ -663,6 +667,7 @@ jobs:
           cp artifacts/libkossjs.so/libkossjs.so release_pkg/ 2>/dev/null || true
           cp artifacts/libkossjs_arm64.so/libkossjs_arm64.so release_pkg/ 2>/dev/null || true
           cp artifacts/kossjs.dll/kossjs.dll release_pkg/ 2>/dev/null || true
+          cp artifacts/kossjs_x86.dll/kossjs_x86.dll release_pkg/ 2>/dev/null || true
           cp artifacts/kossjs_arm64.dll/kossjs_arm64.dll release_pkg/ 2>/dev/null || true
           cp artifacts/libkossjs.dylib/libkossjs.dylib release_pkg/ 2>/dev/null || true
           cp artifacts/libkossjs_arm64.dylib/libkossjs_arm64.dylib release_pkg/ 2>/dev/null || true
