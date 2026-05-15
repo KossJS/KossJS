@@ -24,13 +24,6 @@ Cargo.lock
 .gradle/
 *.lock
 
-
-!.github/
-!.gitignore
-!.cargo/
-
-*_Docs/
-
 # Python
 __pycache__/
 *.py[cod]
@@ -55,6 +48,20 @@ temp_*/
 test_env/
 logs/
 
+# Else
+
 *.7z
 *.txt
 problem*
+
+!.github/
+!.gitignore
+!.cargo/
+
+*_Docs/
+
+# Dymamic library outputs
+
+*.dll
+*.so
+*.dylib

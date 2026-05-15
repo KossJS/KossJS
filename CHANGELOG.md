@@ -2,6 +2,36 @@
 
 本项目所有重要变更都将记录在此文件中。
 
+## 0.1.0-dev.5.fix - 2026-05-15
+
+### 新增 (Added)
+
+- **内联模块加载器** — 新增 `register_internal_module_loader()`，为 CommonJS `require()` 提供内置模块加载支持：
+  - 优先从嵌入式 stdlib（编译时嵌入的 JS 文件）加载模块
+  - 未找到时回退到外部模块加载器回调（`external_module_loader`）
+- **`KossInstance.external_module_loader` 字段** — 可选的外部模块加载器回调，供 C ABI 注册
+- **`safe_js_value_to_json()`** — 安全的对象→JSON 转换函数，处理循环引用和函数类型
+- **`embedded_stdlib` 模块公开** — `src/lib.rs` 中公开 `embedded_stdlib` 模块，供模块加载器直接读取嵌入式源码
+- **`koss_register_module_loader` 支持清除** — 传入 `null` 回调可清除已注册的外部加载器
+
+### 更改 (Changed)
+
+- **模块系统重构**：
+  - `module_loader.rs`：内置模块从文件系统读取改为直接从嵌入的 Rust 字符串读取，减少运行时 I/O
+  - `resolver.rs`：stdlib 路径匹配使用 `embedded_stdlib_exists()` 替代 `file_exists()`，避免依赖磁盘文件存在性
+  - JS 端 `require()` 重写：移除硬编码的内置模块列表，移除 `primordials`/`internalBinding` 依赖，改进 `exports` 自定义支持
+- **`koss_eval` 返回值改进**：对象类型结果自动返回 JSON 字符串（循环安全），不再一律调用 `.toString()`
+- **`koss_register_module_loader` 改为存储回调引用**：不再直接注册 JS 函数，而是将回调存储在 `external_module_loader` 字段中，由 `register_internal_module_loader` 统一调度
+- **Python 测试接口**：`eval()` 返回自动解析 JSON（对象/数组），测试 stdlib 路径改为相对于项目根目录
+
+### 修复 (Fixed)
+
+- **Android 崩溃彻底修复**（`src/runtime.rs`）：
+  - `KossEventLoop::new()`：tokio 多线程运行时 → `new_current_thread()` 单线程运行时，避免 Android 上线程创建限制导致的 SIGABRT；失败时返回 `None` 而非 panic
+  - `koss_create()` / `koss_create_with_modules()`：`ContextBuilder::build()` 失败时返回 `null` 指针，而非 fallback 到 `Context::default()`（后者在 Android 上同样崩溃）
+  - `KossInstance::new()`：适配可选的 `event_loop`，无事件循环时仍可正常使用（同步执行）
+- **`koss_register_module_loader`**：允许 `callback` 为 `null` 以清除加载器
+
 ## 0.1.0-dev.5 - 2026-05-14
 
 ### 新增 (Added)

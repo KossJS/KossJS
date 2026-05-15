@@ -82,14 +82,37 @@ impl ModuleLoader for KossModuleLoader {
                 return Ok(module);
             }
 
-            // Read and parse the module
-            let source = Source::from_filepath(&resolved).map_err(|err| {
-                JsError::from(JsNativeError::typ().with_message(format!(
-                    "cannot read module '{}': {}",
-                    resolved.display(),
-                    err
-                )))
-            })?;
+            // Determine if the resolved path is under the stdlib directory
+            let stdlib_path = self.resolver.stdlib_path();
+            let stdlib_rel = resolved.strip_prefix(stdlib_path).ok().and_then(|r| {
+                let s = r.to_str()?.replace('\\', "/");
+                Some(s)
+            });
+
+            // Read the module source
+            let source_bytes = if let Some(rel) = stdlib_rel {
+                // Stdlib module: use directly embedded JS source
+                match crate::embedded_stdlib::get(&rel) {
+                    Some(content) => content.as_bytes().to_vec(),
+                    None => {
+                        return Err(JsError::from(
+                            JsNativeError::typ().with_message(format!(
+                                "cannot load stdlib module '{}': '{}' not found",
+                                spec, rel,
+                            )),
+                        ));
+                    }
+                }
+            } else {
+                std::fs::read(&resolved).map_err(|err| {
+                    JsError::from(JsNativeError::typ().with_message(format!(
+                        "cannot read module '{}': {}",
+                        resolved.display(),
+                        err
+                    )))
+                })?
+            };
+            let source = Source::from_bytes(&source_bytes);
 
             let module = Module::parse(source, None, &mut context.borrow_mut()).map_err(|err| {
                 JsError::from(

@@ -212,16 +212,25 @@ pub struct KossEventLoop {
 }
 
 impl KossEventLoop {
-    pub fn new() -> Self {
+    pub fn new() -> Option<Self> {
         let (io_tx, io_rx) = mpsc::channel();
-        let runtime = Runtime::new().expect("failed to create tokio runtime");
-        KossEventLoop {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                eprintln!("Warning: Failed to create tokio runtime: {e}");
+                return None;
+            }
+        };
+        Some(KossEventLoop {
             runtime,
             io_tx,
             io_rx,
             next_promise_id: 1,
             pending: HashMap::new(),
-        }
+        })
     }
 
     /// Process all completed async I/O operations and resolve their promises.
@@ -275,14 +284,18 @@ pub struct KossInstance {
     pub context: Context,
     pub event_loop: Option<KossEventLoop>,
     pub worker_pool: Option<WorkerPool>,
+    /// Optional external module loader callback (e.g. from Python).
+    /// Called as a fallback when the embedded stdlib doesn't contain the module.
+    pub external_module_loader: Option<NativeCallback>,
 }
 
 impl KossInstance {
     pub fn new(context: Context) -> Self {
         KossInstance {
             context,
-            event_loop: Some(KossEventLoop::new()),
+            event_loop: KossEventLoop::new(),
             worker_pool: None,
+            external_module_loader: None,
         }
     }
 
@@ -408,6 +421,70 @@ fn register_native_bindings(instance: &mut KossInstance) {
                 | boa_engine::property::Attribute::CONFIGURABLE,
         )
         .ok();
+}
+
+/// Register `__koss_load_module` for CommonJS `require()`.
+/// First tries embedded stdlib; if not found, delegates to an
+/// externally-registered module loader (set via `koss_register_module_loader`).
+fn register_internal_module_loader(instance: &mut KossInstance) {
+    let instance_ptr = instance as *mut KossInstance;
+
+    let native = NativeFunction::from_copy_closure(move |_this, args, context| {
+        if args.is_empty() {
+            return Ok(JsValue::null());
+        }
+        let name = match args[0].to_string(context) {
+            Ok(s) => s.to_std_string_escaped(),
+            Err(_) => return Ok(JsValue::null()),
+        };
+
+        let module_name = if name.starts_with("node:") {
+            &name[5..]
+        } else {
+            &name
+        };
+
+        // 1. Try embedded stdlib
+        let direct_rel = format!("{}.js", module_name);
+        if let Some(content) = crate::embedded_stdlib::get(&direct_rel) {
+            let json = serde_json::json!({"type": "module", "code": content});
+            return Ok(JsValue::from(boa_engine::js_string!(json.to_string())));
+        }
+
+        let index_rel = format!("{}/index.js", module_name);
+        if let Some(content) = crate::embedded_stdlib::get(&index_rel) {
+            let json = serde_json::json!({"type": "module", "code": content});
+            return Ok(JsValue::from(boa_engine::js_string!(json.to_string())));
+        }
+
+        // 2. Fallback: try externally-registered module loader
+        let inst = unsafe { &*instance_ptr };
+        if let Some(external) = inst.external_module_loader {
+            let argc = 1i32;
+            let c_name = CString::new(name.as_str()).unwrap_or(CString::new("").unwrap());
+            let mut ptrs = [c_name.as_ptr()];
+            let result = unsafe { external(argc, ptrs.as_mut_ptr() as *mut c_void) };
+
+            if !result.is_null() {
+                let result_str = unsafe {
+                    CStr::from_ptr(result as *const c_char)
+                        .to_str()
+                        .unwrap_or("")
+                        .to_string()
+                };
+                return Ok(JsValue::from(boa_engine::js_string!(result_str)));
+            }
+        }
+
+        Ok(JsValue::null())
+    });
+
+    let js_func = native.to_js_function(instance.context.realm());
+    let _ = instance.context.register_global_property(
+        boa_engine::js_string!("__koss_load_module"),
+        js_func,
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    );
 }
 
 fn register_native_fetch(instance: &mut KossInstance) {
@@ -951,31 +1028,33 @@ const process = {
     let module_system_code = r#"
 (function(globalThis) {
     'use strict';
-    const primordials = globalThis.primordials;
-    const internalBinding = globalThis.internalBinding;
-    const getInternalBinding = globalThis.getInternalBinding;
-    const getLinkedBinding = globalThis.getLinkedBinding;
     
     const Module = {
         _cache: {},
         _extensions: { '.js': function(module, filename) {} }
     };
     
-    let currentModule = { id: '<root>', filename: '<root>', loaded: false };
+    let _exportsCustomized = false;
+    let _customExports = {};
+    
+    let currentModule = {
+        id: '<root>',
+        filename: '<root>',
+        loaded: false
+    };
+    
+    Object.defineProperty(currentModule, 'exports', {
+        get: function() { return _customExports; },
+        set: function(val) {
+            _customExports = val;
+            _exportsCustomized = true;
+            Module._cache = {};
+        },
+        configurable: true,
+        enumerable: true
+    });
     
     function require(path) {
-        const builtinModules = [
-            'assert', 'buffer', 'child_process', 'cluster', 'console', 'constants',
-            'crypto', 'dgram', 'dns', 'domain', 'events', 'fs', 'http', 'https',
-            'module', 'net', 'os', 'path', 'process', 'punycode', 'querystring',
-            'readline', 'repl', 'stream', 'string_decoder', 'sys', 'timers',
-            'tls', 'trace_events', 'tty', 'url', 'util', 'v8', 'vm', 'wasi',
-            'worker_threads', 'zlib', 'async_hooks', 'diagnostics_channel',
-            'perf_hooks', 'http2', 'http3', 'sqlite', 'test', 'wasi', 'sea',
-            'events', 'url', 'string_decoder', 'stream', 'http', 'https',
-            'net', 'tls', 'http2', 'zlib', 'assert', 'buffer', 'console'
-        ];
-        
         const normalizedPath = path;
         
         if (Module._cache[normalizedPath]) {
@@ -992,9 +1071,11 @@ const process = {
         Module._cache[normalizedPath] = module;
         
         try {
+            let loadedViaLoader = false;
             if (typeof __koss_load_module === 'function') {
                 const result = __koss_load_module(normalizedPath);
                 if (result !== null && result !== undefined) {
+                    loadedViaLoader = true;
                     const parsed = JSON.parse(result);
                     if (parsed.type === 'module' && typeof parsed.code === 'string') {
                         const wrappedCode = '(function(exports, require, module, __filename, __dirname) {\n' + parsed.code + '\n})';
@@ -1004,6 +1085,10 @@ const process = {
                         module.exports = parsed.value;
                     }
                 }
+            }
+            if (!loadedViaLoader && _exportsCustomized) {
+                module.exports = _customExports;
+                _exportsCustomized = false;
             }
             module.loaded = true;
         } catch (e) {
@@ -1039,12 +1124,17 @@ const process = {
 /// The caller owns this pointer and must free it with `koss_destroy`.
 #[unsafe(no_mangle)]
 pub extern "C" fn koss_create() -> *mut KossInstance {
-    let context = boa_engine::context::ContextBuilder::default()
-        .build()
-        .unwrap_or_default();
+    let context = match boa_engine::context::ContextBuilder::default().build() {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            eprintln!("Warning: Failed to create Boa context: {e}");
+            return std::ptr::null_mut();
+        }
+    };
     let mut instance = Box::new(KossInstance::new(context));
     register_console(&mut instance.context);
     register_native_bindings(&mut instance);
+    register_internal_module_loader(&mut instance);
     register_nodejs_globals(&mut instance.context);
     register_fetch_polyfill(&mut instance.context);
     register_native_fetch(&mut instance);
@@ -1070,13 +1160,20 @@ pub unsafe extern "C" fn koss_create_with_modules(root_dir: *const c_char) -> *m
         };
 
         let loader = Rc::new(KossModuleLoader::new(root_str));
-        let context = boa_engine::context::ContextBuilder::default()
+        let context = match boa_engine::context::ContextBuilder::default()
             .module_loader(loader)
             .build()
-            .unwrap_or_default();
+        {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                eprintln!("Warning: Failed to create Boa context: {e}");
+                return std::ptr::null_mut();
+            }
+        };
         let mut instance = Box::new(KossInstance::new(context));
         register_console(&mut instance.context);
         register_native_bindings(&mut instance);
+        register_internal_module_loader(&mut instance);
         register_nodejs_globals(&mut instance.context);
         register_fetch_polyfill(&mut instance.context);
         register_native_fetch(&mut instance);
@@ -1120,7 +1217,12 @@ pub unsafe extern "C" fn koss_eval(ptr: *mut KossInstance, code: *const c_char) 
         let source = Source::from_bytes(code_str.as_bytes());
         match instance.context.eval(source) {
             Ok(val) => {
-                let s = js_value_to_string(&val, &mut instance.context);
+                let s = if val.is_object() {
+                    safe_js_value_to_json(&val, &mut instance.context)
+                        .unwrap_or_else(|| js_value_to_string(&val, &mut instance.context))
+                } else {
+                    js_value_to_string(&val, &mut instance.context)
+                };
                 KossResult::ok(&s)
             }
             Err(err) => {
@@ -1128,6 +1230,45 @@ pub unsafe extern "C" fn koss_eval(ptr: *mut KossInstance, code: *const c_char) 
                 KossResult::err(1, &s)
             }
         }
+    }
+}
+
+/// Safely convert a JsValue (object) to a JSON string, handling cycles and functions.
+fn safe_js_value_to_json(val: &JsValue, ctx: &mut Context) -> Option<String> {
+    let temp_key = "__koss_safe_json_val__";
+    let _ = ctx.register_global_property(
+        boa_engine::js_string!(temp_key),
+        val.clone(),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    );
+    let json_code = r#"(function() {
+        var seen = new WeakSet();
+        return JSON.stringify(globalThis.__koss_safe_json_val__, function(k, v) {
+            if (typeof v === 'object' && v !== null) {
+                if (seen.has(v)) return undefined;
+                seen.add(v);
+            }
+            if (typeof v === 'function') return undefined;
+            return v;
+        });
+    })()"#;
+    let result = ctx.eval(Source::from_bytes(json_code.as_bytes()));
+    let _ = ctx.eval(Source::from_bytes(
+        format!("delete globalThis.{}", temp_key).as_bytes(),
+    ));
+    match result {
+        Ok(js_val) => match js_val.to_string(ctx) {
+            Ok(s) => {
+                let std_str = s.to_std_string_escaped();
+                if std_str == "null" || std_str.is_empty() {
+                    None
+                } else {
+                    Some(std_str)
+                }
+            }
+            Err(_) => None,
+        },
+        Err(_) => None,
     }
 }
 
@@ -1557,7 +1698,7 @@ pub unsafe extern "C" fn koss_register_fetch(ptr: *mut KossInstance) -> KossResu
 /// Returns the KossJS version string.
 #[unsafe(no_mangle)]
 pub extern "C" fn koss_version() -> *const c_char {
-    static VERSION: &[u8] = b"0.1.0-dev.5\0";
+    static VERSION: &[u8] = b"0.1.0-dev.5.fix\0";
     VERSION.as_ptr() as *const c_char
 }
 
@@ -2311,20 +2452,18 @@ pub unsafe extern "C" fn koss_register_module_loader(
     callback: *mut c_void,
 ) -> KossResult {
     unsafe {
-        if ptr.is_null() || callback.is_null() {
+        if ptr.is_null() {
             return KossResult::err(2, "null pointer");
         }
 
         let instance = &mut *ptr;
-        let cb: NativeCallback = std::mem::transmute(callback);
+        if callback.is_null() {
+            instance.external_module_loader = None;
+            return KossResult::ok("external loader cleared");
+        }
 
-        let js_func = register_native_function(&mut instance.context, cb);
-        let _ = instance.context.register_global_property(
-            boa_engine::js_string!("__koss_load_module"),
-            js_func,
-            boa_engine::property::Attribute::WRITABLE
-                | boa_engine::property::Attribute::CONFIGURABLE,
-        );
+        let cb: NativeCallback = std::mem::transmute(callback);
+        instance.external_module_loader = Some(cb);
 
         KossResult::ok("ok")
     }

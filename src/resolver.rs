@@ -141,6 +141,11 @@ impl ModuleResolver {
         }
     }
 
+    /// Check if a relative stdlib path exists in the embedded store
+    fn embedded_stdlib_exists(rel_path: &str) -> bool {
+        crate::embedded_stdlib::get(rel_path).is_some()
+    }
+
     /// Resolve a Node.js built-in module from stdlib
     fn resolve_nodejs_stdlib(&self, specifier: &str) -> Result<PathBuf, ResolveError> {
         // Handle node: prefix
@@ -150,24 +155,26 @@ impl ModuleResolver {
             specifier
         };
 
-        // Try to find in stdlib folder
         let stdlib_path = &self.stdlib_path;
 
         // Direct file match
+        let direct_rel = format!("{}.js", module_name);
         let direct_path = stdlib_path.join(module_name).with_extension("js");
-        if self.file_exists(&direct_path) {
+        if Self::embedded_stdlib_exists(&direct_rel) {
             return Ok(direct_path);
         }
 
         // Try as directory with index.js
+        let index_rel = format!("{}/index.js", module_name);
         let index_path = stdlib_path.join(module_name).join("index.js");
-        if self.file_exists(&index_path) {
+        if Self::embedded_stdlib_exists(&index_rel) {
             return Ok(index_path);
         }
 
         // Handle internal modules (_http_client, etc.)
+        let internal_rel = format!("{}.js", module_name);
         let internal_path = stdlib_path.join(format!("{}.js", module_name));
-        if self.file_exists(&internal_path) {
+        if Self::embedded_stdlib_exists(&internal_rel) {
             return Ok(internal_path);
         }
 

@@ -41,6 +41,8 @@ class KossJS:
         if not self._ptr:
             raise RuntimeError("Failed to create KossJS instance")
         
+        # External module loader: called as a fallback when the module is not
+        # found in the embedded stdlib (e.g. custom modules on disk).
         self.register_module_loader()
         # self.register_fetch()
     
