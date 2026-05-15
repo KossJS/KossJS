@@ -168,10 +168,20 @@ class KossJS:
         else:
             raise ValueError(f"Invalid argument: {value}")
     
-    def eval(self, code: str) -> str:
-        """Evaluate JavaScript code synchronously and return the result."""
-        result = self._lib.koss_eval(self._ptr, code.encode("utf-8"))
-        return self._check_result(result)
+    def eval(self, code: str) -> Any:
+        """Evaluate JavaScript code synchronously and return the result.
+        
+        If the result is a JSON object/array string, it is automatically parsed.
+        Primitive values (strings, numbers, booleans) are returned as plain strings.
+        """
+        import json
+        value = self._check_result(self._lib.koss_eval(self._ptr, code.encode("utf-8")))
+        if value and value[0] in ('{', '['):
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                pass
+        return value
 
     def run_async(self, code: str, timeout_ms: int = 30000) -> str:
         """Evaluate JavaScript code and drive the async event loop to completion.
@@ -634,8 +644,9 @@ def koss_module_loader(module_path: str) -> dict[str, Any] | None:
     in the regular module cache. It loads modules from src/stdlib.
     Supports sub-modules like path/posix -> src/stdlib/path/posix.js
     """
-    base_dir = Path(__file__).parent
-    stdlib_dir = base_dir / "src" / "stdlib"
+    base_dir = Path(__file__).parent.resolve()
+    # Walk up from test/ to project root to find src/stdlib/
+    stdlib_dir = base_dir.parent / "src" / "stdlib"
     
     # Handle node: prefix
     if module_path.startswith("node:"):
