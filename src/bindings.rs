@@ -1415,9 +1415,26 @@ pub mod fetch {
         pub headers: HashMap<String, String>,
     }
 
-    /// Build a reqwest client (async)
+    /// Build a reqwest client (async) with both webpki roots and platform native certs.
     fn build_client() -> Result<reqwest::Client, String> {
+        let mut root_store = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
+        let native_result = rustls_native_certs::load_native_certs();
+        for cert in native_result.certs {
+            root_store.add(cert).ok();
+        }
+        if !native_result.errors.is_empty() {
+            eprintln!(
+                "Warning: {} error(s) loading native certificates",
+                native_result.errors.len()
+            );
+        }
+        let tls_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
         reqwest::Client::builder()
+            .use_preconfigured_tls(tls_config)
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| format!("client build error: {}", e))
@@ -1484,7 +1501,9 @@ pub mod fetch {
     /// Synchronous fetch - blocks the current thread (fallback)
     pub fn fetch_with_url(url: &str, request_json: &str) -> Result<FetchResponse, String> {
         let (url, request) = build_request(url, request_json)?;
-        let rt = tokio::runtime::Runtime::new()
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
             .map_err(|e| format!("runtime error: {e}"))?;
         rt.block_on(do_fetch(url, request))
     }

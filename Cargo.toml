@@ -4,6 +4,7 @@ version = "0.1.0-dev.5.fix"
 edition = "2024"
 description = "Embeddable JavaScript runtime as a dynamic library"
 license = "GNU Affero General Public License v3.0"
+authors = ["TT23XR Studio"]
 
 [lib]
 name = "kossjs"
@@ -22,6 +23,9 @@ base64 = "0.22"
 num_cpus = "1"
 url = "2"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+rustls = "0.23"
+rustls-native-certs = "0.8"
+webpki-roots = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "net", "time"] }
 
 [target.'cfg(windows)'.dependencies]

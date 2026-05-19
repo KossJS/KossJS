@@ -7,7 +7,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use boa_engine::object::builtins::{JsFunction, JsPromise};
-use boa_engine::{Context, JsError, JsValue, Module, Source, NativeFunction};
+use boa_engine::{Context, JsError, JsNativeError, JsValue, Module, Source, NativeFunction};
 use boa_runtime::Console;
 use tokio::runtime::Runtime;
 
@@ -504,14 +504,14 @@ fn register_native_fetch(instance: &mut KossInstance) {
                 let request_json = js_value_to_string(&args[1], ctx);
                 let json_str = match CString::new(request_json) {
                     Ok(c) => c,
-                    Err(_) => return Ok(JsValue::undefined()),
+                    Err(_) => return Err(JsError::from(JsNativeError::typ().with_message("fetch: invalid request body encoding"))),
                 };
                 return match bindings::fetch::fetch_with_url(&url, json_str.to_str().unwrap_or("")) {
                     Ok(response) => {
                         let json = serde_json::to_string(&response).unwrap_or_default();
                         Ok(JsValue::from(boa_engine::js_string!(json)))
                     }
-                    Err(_) => Ok(JsValue::undefined()),
+                    Err(e) => Err(JsError::from(JsNativeError::typ().with_message(format!("fetch: {e}")))),
                 };
             }
         };
@@ -967,7 +967,19 @@ fn register_nodejs_globals(ctx: &mut Context) {
     }
 
     // Register process as a minimal stub
-    let process_code = r#"
+    let platform_str = match std::env::consts::OS {
+        "windows" => "win32",
+        "macos" => "darwin",
+        other => other,
+    };
+    let arch_str = match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        "arm" => "arm",
+        other => other,
+    };
+
+    let process_code_template = r#"
 const process = {
     version: '20.0.0',
     versions: {
@@ -1008,6 +1020,10 @@ const process = {
     mainModule: undefined,
 };
 "#;
+
+    let process_code = process_code_template
+        .replace("'win32'", &format!("'{platform_str}'"))
+        .replace("'x64'", &format!("'{arch_str}'"));
 
     let source = boa_parser::Source::from_bytes(process_code.as_bytes());
     match ctx.eval(source) {
