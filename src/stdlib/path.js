@@ -25,7 +25,8 @@ function extname(path) {
 }
 
 function join(...paths) {
-    return paths.filter(p => p).join('/').replace(/\/+/g, '/');
+    const result = paths.filter(p => p).join('/').replace(/\/+/g, '/');
+    return result || '.';
 }
 
 function normalize(path) {
@@ -101,7 +102,7 @@ var exports = {
     relative,
     parse,
     format,
-    sep,
+    sep: '/',
     delimiter: ':',
 };
 // Self-reference to avoid circular dependency issues.

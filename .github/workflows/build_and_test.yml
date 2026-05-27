@@ -625,21 +625,15 @@ jobs:
               sys.exit(1)
           "
 
-      - name: 🧪 运行 Python 单元测试
+      - name: 🦀 运行 Rust 单元测试
+        shell: bash
+        run: cargo test --workspace
+
+      - name: 🧪 运行 Python 测试
         shell: bash
         run: |
-          echo "运行 KossJS Python 单元测试..."
-          python3 -c "
-          import sys
-          sys.path.insert(0, '.')
-          from kossjs_interface import KossJS
-          k = KossJS()
-          result = k.eval('1 + 1')
-          print(f'eval result: {result}')
-          k.destroy()
-          print('Python test passed!')
-          " || true
-        continue-on-error: true
+          pip install pytest
+          python -m pytest test/ -v --tb=short
 
   # ═══════════════════════════════════════════════════════════════
   #  发布 Release (仅在 tag 推送时触发)

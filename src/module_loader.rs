@@ -104,13 +104,53 @@ impl ModuleLoader for KossModuleLoader {
                     }
                 }
             } else {
-                std::fs::read(&resolved).map_err(|err| {
-                    JsError::from(JsNativeError::typ().with_message(format!(
-                        "cannot read module '{}': {}",
-                        resolved.display(),
-                        err
-                    )))
-                })?
+                // Security: verify the resolved path is within the root directory
+                let canonical_root = self.root.canonicalize().unwrap_or_else(|_| self.root.clone());
+                let canonical_resolved = match resolved.canonicalize() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        // Resolved path doesn't exist — still verify it's within root
+                        // by ensuring no `..` escapes above root
+                        let normalized = crate::resolver::ModuleResolver::normalize_path_static(&resolved);
+                        match normalized {
+                            Some(p) => {
+                                if !p.starts_with(&canonical_root) {
+                                    return Err(JsError::from(
+                                        JsNativeError::typ().with_message(format!(
+                                            "module '{}' resolves outside root directory",
+                                            spec,
+                                        )),
+                                    ));
+                                }
+                                resolved.clone()
+                            }
+                            None => {
+                                return Err(JsError::from(
+                                    JsNativeError::typ().with_message(format!(
+                                        "module '{}' path traversal detected",
+                                        spec,
+                                    )),
+                                ));
+                            }
+                        }
+                    }
+                };
+                if canonical_resolved.starts_with(&canonical_root) {
+                    std::fs::read(&resolved).map_err(|err| {
+                        JsError::from(JsNativeError::typ().with_message(format!(
+                            "cannot read module '{}': {}",
+                            resolved.display(),
+                            err
+                        )))
+                    })?
+                } else {
+                    return Err(JsError::from(
+                        JsNativeError::typ().with_message(format!(
+                            "module '{}' resolves outside root directory",
+                            spec,
+                        )),
+                    ));
+                }
             };
             let source = Source::from_bytes(&source_bytes);
 

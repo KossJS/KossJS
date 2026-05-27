@@ -22,19 +22,41 @@ extern "C" {
 /* Opaque handle to a JS instance */
 typedef void KossInstance;
 
-/* Result type returned by most APIs */
+/* Result type returned by most APIs.
+ * `value` is a heap-allocated string; the caller MUST free it with
+ * koss_free_string() or koss_free_result(). */
 typedef struct {
     int code;       /* 0=ok, 1=js error, 2=bad argument */
     char *value;    /* heap string — free with koss_free_string */
 } KossResult;
 
-/* Native function callback type */
+/* Native function callback type.
+   Receives (argc, argv) and returns a heap-allocated string that the
+   caller must free with koss_free_string(). Return NULL for undefined. */
 typedef char* (*KossNativeFn)(int argc, const char **argv);
+
+/* ── Capability flags ─────────────────────────────────────────────── */
+typedef enum {
+    KOSS_CAP_FS              = 1 << 0,  /* file system: read/write/delete/mkdir/readdir/link */
+    KOSS_CAP_NET             = 1 << 1,  /* network: fetch() + raw sockets + DNS resolution  */
+    KOSS_CAP_CRYPTO          = 1 << 2,  /* crypto: hash/hmac/pbkdf2/generatePrime/random     */
+    KOSS_CAP_WORKER          = 1 << 3,  /* worker thread pool + Worker JS API                */
+    KOSS_CAP_EXTERNAL_LOADER = 1 << 4,  /* external module loader (koss_register_module_loader) */
+} KossCapability;
+
+#define KOSS_CAP_SANDBOX 0
+#define KOSS_CAP_ALL     (KOSS_CAP_FS | KOSS_CAP_NET | KOSS_CAP_CRYPTO \
+                          | KOSS_CAP_WORKER | KOSS_CAP_EXTERNAL_LOADER)
 
 /* ── Instance lifecycle ─────────────────────────────────────────────── */
 KossInstance *koss_create(void);
+KossInstance *koss_create_with_caps(uint32_t caps);
 KossInstance *koss_create_with_modules(const char *root_dir);
+KossInstance *koss_create_with_modules_and_caps(const char *root_dir, uint32_t caps);
 void          koss_destroy(KossInstance *inst);
+
+/* ── Capability query ───────────────────────────────────────────────── */
+uint32_t koss_get_capabilities(KossInstance *inst);
 
 /* ── Code execution ─────────────────────────────────────────────────── */
 KossResult koss_eval(KossInstance *inst, const char *code);
@@ -74,10 +96,18 @@ KossResult koss_get_binding(KossInstance *inst, const char *binding_name);
 KossResult koss_fetch(KossInstance *inst, const char *url_json);
 
 /* ── Memory management ──────────────────────────────────────────────── */
+/* WARNING: koss_free_string MUST ONLY be called on pointers returned by
+   KossResult.value or by native callbacks that KossJS allocated. Passing
+   a pointer from malloc(), a string literal, or a previously-freed pointer
+   will cause undefined behavior (heap corruption, crash, or double-free).
+   Safe to call with NULL (no-op). */
 void koss_free_string(char *s);
+/* Free a KossResult and its value string. The struct is passed by value.
+   Must only be called once per KossResult — the value is consumed. */
 void koss_free_result(KossResult result);
 
 /* ── Info ────────────────────────────────────────────────────────────── */
+/* Returns a static string (do NOT attempt to free this pointer). */
 const char *koss_version(void);
 
 #ifdef __cplusplus

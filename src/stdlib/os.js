@@ -1,13 +1,6 @@
 'use strict';
 
-const {
-  ArrayPrototypePush,
-  Float64Array,
-  ObjectDefineProperties,
-  ObjectFreeze,
-} = globalThis;
-
-const isWindows = typeof process !== 'undefined' && process.platform === 'win32';
+var isWindows = typeof process !== 'undefined' && process.platform === 'win32';
 
 function getCPUs() {
   return [
@@ -119,7 +112,7 @@ const constants = {
     SIGIO: 29,
     SIGSYS: 31,
   },
-  os: {
+  errno: {
     UV_UDP_REUSEADDR: 4,
     EAFNOSUPPORT: -4095,
     EADDRINUSE: -4094,
@@ -224,7 +217,7 @@ function cpus() {
   const result = [];
   let i = 0;
   while (i < data.length) {
-    ArrayPrototypePush(result, {
+    result.push({
       model: data[i++],
       speed: data[i++],
       times: {
@@ -280,9 +273,9 @@ module.exports = {
   machine: () => 'x64',
 };
 
-ObjectFreeze(constants.signals);
+Object.freeze(constants.signals);
 
-ObjectDefineProperties(module.exports, {
+Object.defineProperties(module.exports, {
   constants: {
     __proto__: null,
     configurable: false,

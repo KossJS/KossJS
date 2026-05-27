@@ -259,20 +259,18 @@ pub mod fs {
         std_fs::hard_link(existing_path, new_path).map_err(|e| e.to_string())
     }
 
-    pub fn truncate(path: &str, _len: i64) -> Result<(), String> {
-        if let Ok(metadata) = std_fs::metadata(path) {
-            if metadata.is_file() {
-                let _file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .open(path)
-                    .map_err(|e| e.to_string())?;
-            }
-        }
-        Ok(())
+    pub fn truncate(path: &str, len: i64) -> Result<(), String> {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .map_err(|e| e.to_string())?;
+        let new_len = if len < 0 { 0u64 } else { len as u64 };
+        file.set_len(new_len).map_err(|e| e.to_string())
     }
 
     pub fn ftruncate(_fd: u32, _len: i64) -> Result<(), String> {
-        Ok(())
+        // TODO: maintain fd → file handle mapping for proper ftruncate
+        Err("ftruncate not yet implemented".to_string())
     }
 
     pub fn chmod(path: &str, mode: u32) -> Result<(), String> {
@@ -600,6 +598,9 @@ pub mod timers {
             .as_millis() as u64
     });
 
+    /// Legacy timer registry — timers are now handled by the JS-side timers.js
+    /// which uses globalThis.setTimeout / Boa's native timer mechanism.
+    /// This registry is retained for potential future native timer integration.
     static ACTIVE_TIMERS: Lazy<Mutex<std::collections::HashMap<u64, TimerInfo>>> =
         Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
@@ -660,72 +661,56 @@ pub mod timers {
 }
 
 pub mod crypto {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hash, Hasher};
+    use rand::Rng;
+    use rand::RngExt;
 
     pub fn get_random_values(size: usize) -> Vec<u8> {
-        let mut result = Vec::with_capacity(size);
-
-        for _ in 0..size {
-            let mut hasher = RandomState::new().build_hasher();
-            std::time::SystemTime::now().hash(&mut hasher);
-            let hash = hasher.finish();
-            result.push((hash % 256) as u8);
-        }
-
-        result
+        let mut buf = vec![0u8; size];
+        rand::rng().fill_bytes(&mut buf);
+        buf
     }
 
     pub fn random_int(min: u32, max: u32) -> u32 {
-        let mut hasher = RandomState::new().build_hasher();
-        std::time::SystemTime::now().hash(&mut hasher);
-        let hash = hasher.finish();
-
         if min >= max {
             return min;
         }
-
-        let range = (max - min + 1) as u64;
-        ((hash % range) + min as u64) as u32
+        rand::rng().random_range(min..=max)
     }
 
     pub fn random_uuid() -> String {
-        let mut parts = Vec::new();
-        for _ in 0..16 {
-            let mut hasher = RandomState::new().build_hasher();
-            std::time::SystemTime::now().hash(&mut hasher);
-            let hash = hasher.finish();
-            parts.push(format!("{:02x}", (hash % 256) as u8));
-        }
-
+        let mut buf = [0u8; 16];
+        rand::rng().fill_bytes(&mut buf);
+        // Set UUID v4 version bits
+        buf[6] = (buf[6] & 0x0f) | 0x40;
+        buf[8] = (buf[8] & 0x3f) | 0x80;
         format!(
-            "{}-{}-{}-{}-{}",
-            parts[0..4].join(""),
-            parts[4..6].join(""),
-            parts[6..8].join(""),
-            parts[8..10].join(""),
-            parts[10..16].join("")
+            "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            buf[0], buf[1], buf[2], buf[3],
+            buf[4], buf[5],
+            buf[6], buf[7],
+            buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
         )
     }
 
-    fn simple_hash(data: &str, _algorithm: &str) -> String {
-        let mut hash: u64 = 0;
-        for byte in data.bytes() {
-            hash = hash.wrapping_mul(31).wrapping_add(byte as u64);
-        }
-        format!("{:016x}", hash)
-    }
-
     pub fn hash_sha1(data: &str) -> String {
-        simple_hash(data, "sha1")
+        use sha1::{Digest, Sha1};
+        let mut hasher = Sha1::new();
+        hasher.update(data.as_bytes());
+        hasher.finalize().iter().map(|b| format!("{:02x}", b)).collect::<String>()
     }
 
     pub fn hash_sha256(data: &str) -> String {
-        simple_hash(data, "sha256")
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(data.as_bytes());
+        hasher.finalize().iter().map(|b| format!("{:02x}", b)).collect::<String>()
     }
 
     pub fn hash_md5(data: &str) -> String {
-        simple_hash(data, "md5")
+        use md5::{Digest, Md5};
+        let mut hasher = Md5::new();
+        hasher.update(data.as_bytes());
+        hasher.finalize().iter().map(|b| format!("{:02x}", b)).collect::<String>()
     }
 
     pub fn create_hash(algorithm: &str, data: &str) -> Result<String, String> {
@@ -737,40 +722,137 @@ pub mod crypto {
         }
     }
 
-    pub fn create_hmac(algorithm: &str, _key: &str, data: &str) -> Result<String, String> {
-        let hash = match algorithm.to_lowercase().as_str() {
-            "sha256" | "sha-256" => hash_sha256(data),
-            "sha1" | "sha-1" => hash_sha1(data),
-            "md5" => hash_md5(data),
-            _ => return Err(format!("Unknown algorithm: {}", algorithm)),
-        };
-        Ok(format!("hmac-{}", hash))
+    pub fn create_hmac(algorithm: &str, key: &str, data: &str) -> Result<String, String> {
+        use hmac::{Hmac, Mac, KeyInit};
+        use sha1::Sha1;
+        use sha2::Sha256;
+        use md5::Md5;
+
+        macro_rules! hmac_for {
+            ($algo:ty) => {{
+                let mut mac = <Hmac<$algo>>::new_from_slice(key.as_bytes())
+                    .map_err(|e| format!("HMAC key error: {e}"))?;
+                mac.update(data.as_bytes());
+                let result = mac.finalize();
+                result.into_bytes().iter().map(|b| format!("{:02x}", b)).collect::<String>()
+            }};
+        }
+
+        match algorithm.to_lowercase().as_str() {
+            "sha256" | "sha-256" => Ok(hmac_for!(Sha256)),
+            "sha1" | "sha-1" => Ok(hmac_for!(Sha1)),
+            "md5" => Ok(hmac_for!(Md5)),
+            _ => Err(format!("Unknown algorithm: {}", algorithm)),
+        }
     }
+
+    const PBKDF2_MAX_KEY_LEN: u32 = 512;
+    const PBKDF2_MIN_ITERATIONS: u32 = 100_000;
 
     pub fn pbkdf2(
         password: &str,
         salt: &str,
         iterations: u32,
-        _key_len: u32,
+        key_len: u32,
     ) -> Result<String, String> {
-        if iterations < 1 {
-            return Err("Iterations must be positive".to_string());
+        use pbkdf2::pbkdf2_hmac;
+        use sha2::Sha256;
+
+        if iterations < PBKDF2_MIN_ITERATIONS {
+            return Err(format!(
+                "Iterations must be at least {}",
+                PBKDF2_MIN_ITERATIONS
+            ));
+        }
+        if key_len == 0 || key_len > PBKDF2_MAX_KEY_LEN {
+            return Err(format!(
+                "key_len must be between 1 and {}",
+                PBKDF2_MAX_KEY_LEN
+            ));
         }
 
-        let result = format!("pbkdf2:{}:{}:{}", password, salt, iterations);
-        for _ in 0..iterations {
-            let mut hasher = RandomState::new().build_hasher();
-            result.hash(&mut hasher);
-        }
-        Ok(format!("{:016x}", result.len()))
+        let mut key = vec![0u8; key_len as usize];
+        pbkdf2_hmac::<Sha256>(
+            password.as_bytes(),
+            salt.as_bytes(),
+            iterations,
+            &mut key,
+        );
+        Ok(key.iter().map(|b| format!("{:02x}", b)).collect::<String>())
     }
 
-    pub fn generate_prime(bits: u32) -> u64 {
-        let mut hasher = RandomState::new().build_hasher();
-        std::time::SystemTime::now().hash(&mut hasher);
-        let base = hasher.finish() % (1 << (bits / 2));
+    pub fn generate_prime(bits: u32) -> Result<u64, String> {
+        if bits < 2 {
+            return Err("bits must be at least 2".to_string());
+        }
+        let max_bits = bits.min(32);
+        let lo = 2u64.pow(max_bits.saturating_sub(1));
+        let hi = 2u64.pow(max_bits);
+        if lo >= hi {
+            return Err("invalid bit range".to_string());
+        }
+        let mut rng = rand::rng();
+        loop {
+            let candidate = rng.random_range(lo..hi) | 1;
+            if is_miller_rabin_prime(candidate, 40) {
+                return Ok(candidate);
+            }
+        }
+    }
 
-        (base | 1) as u64
+    fn mod_pow(base: u64, mut exp: u64, modulus: u64) -> u64 {
+        if modulus == 1 {
+            return 0;
+        }
+        let mut result: u128 = 1;
+        let mut b: u128 = (base % modulus) as u128;
+        let m = modulus as u128;
+        while exp > 0 {
+            if exp & 1 == 1 {
+                result = (result * b) % m;
+            }
+            exp >>= 1;
+            b = (b * b) % m;
+        }
+        result as u64
+    }
+
+    fn is_miller_rabin_prime(n: u64, k: u32) -> bool {
+        if n < 2 {
+            return false;
+        }
+        if n == 2 || n == 3 {
+            return true;
+        }
+        if n % 2 == 0 {
+            return false;
+        }
+        let mut d = n - 1;
+        let mut s: u32 = 0;
+        while d % 2 == 0 {
+            d /= 2;
+            s += 1;
+        }
+        let mut rng = rand::rng();
+        for _ in 0..k {
+            let a: u64 = rng.random_range(2..n - 1);
+            let mut x = mod_pow(a, d, n);
+            if x == 1 || x == n - 1 {
+                continue;
+            }
+            let mut composite = true;
+            for _ in 0..s - 1 {
+                x = mod_pow(x, 2, n);
+                if x == n - 1 {
+                    composite = false;
+                    break;
+                }
+            }
+            if composite {
+                return false;
+            }
+        }
+        true
     }
 
     pub fn get_crypto_constants() -> Vec<(&'static str, i32)> {
@@ -786,7 +868,7 @@ pub mod crypto {
 }
 
 pub mod net {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpListener, TcpStream, UdpSocket};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 
     pub fn is_ip(address: &str) -> bool {
         address.parse::<IpAddr>().is_ok()
@@ -828,26 +910,88 @@ pub mod net {
         Ok("UDP socket created".to_string())
     }
 
+    fn is_ssrf_blocked(host: &str) -> bool {
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            return is_blocked_ip(&ip);
+        }
+        if let Ok(addrs) = format!("{}:0", host).to_socket_addrs() {
+            for addr in addrs {
+                if is_blocked_ip(&addr.ip()) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn is_blocked_ip(ip: &IpAddr) -> bool {
+        match ip {
+            IpAddr::V4(v4) => {
+                if v4.octets()[0] == 127 { return true; }
+                if v4.octets()[0] == 10 { return true; }
+                if v4.octets()[0] == 172 && v4.octets()[1] >= 16 && v4.octets()[1] <= 31 { return true; }
+                if v4.octets()[0] == 192 && v4.octets()[1] == 168 { return true; }
+                if v4.octets()[0] == 169 && v4.octets()[1] == 254 { return true; }
+                if v4.octets()[0] == 0 { return true; }
+                if v4.octets()[0] == 100 && v4.octets()[1] >= 64 && v4.octets()[1] <= 127 { return true; }
+                if v4.octets()[0] == 198 && (v4.octets()[1] == 18 || v4.octets()[1] == 19) { return true; }
+                if v4.octets()[0] >= 224 && v4.octets()[0] <= 239 { return true; }
+                if v4.octets()[0] >= 240 { return true; }
+                false
+            }
+            IpAddr::V6(v6) => {
+                if let Some(v4) = v6.to_ipv4_mapped() {
+                    return is_blocked_ip(&IpAddr::V4(v4));
+                }
+                if v6.is_loopback() { return true; }
+                if v6.segments()[0] & 0xffc0 == 0xfe80 { return true; }
+                if v6.segments()[0] & 0xfe00 == 0xfc00 { return true; }
+                false
+            }
+        }
+    }
+
+    /// Test-only: binds momentarily to verify port availability, then closes.
+    /// For persistent sockets, use the async event loop via tokio integration.
     pub fn tcp_bind(address: &str, port: u16) -> Result<String, String> {
+        if is_ssrf_blocked(address) {
+            return Err(format!("SSRF blocked: {address}"));
+        }
         let addr = format!("{}:{}", address, port);
         match TcpListener::bind(&addr) {
-            Ok(_listener) => Ok(format!("Bound to {}", addr)),
+            Ok(_listener) => {
+                Ok(format!("Bound to {}", addr))
+            }
             Err(e) => Err(format!("Bind failed: {}", e)),
         }
     }
 
+    /// Test-only: connects momentarily to verify reachability, then closes.
+    /// For persistent sockets, use the async event loop via tokio integration.
     pub fn tcp_connect(address: &str, port: u16) -> Result<String, String> {
+        if is_ssrf_blocked(address) {
+            return Err(format!("SSRF blocked: {address}"));
+        }
         let addr = format!("{}:{}", address, port);
         match TcpStream::connect(&addr) {
-            Ok(_) => Ok(format!("Connected to {}", addr)),
+            Ok(_stream) => {
+                Ok(format!("Connected to {}", addr))
+            }
             Err(e) => Err(format!("Connect failed: {}", e)),
         }
     }
 
+    /// Test-only: binds momentarily to verify port availability, then closes.
+    /// For persistent sockets, use the async event loop via tokio integration.
     pub fn udp_bind(address: &str, port: u16) -> Result<String, String> {
+        if is_ssrf_blocked(address) {
+            return Err(format!("SSRF blocked: {address}"));
+        }
         let addr = format!("{}:{}", address, port);
         match UdpSocket::bind(&addr) {
-            Ok(_socket) => Ok(format!("Bound to {}", addr)),
+            Ok(_socket) => {
+                Ok(format!("Bound to {}", addr))
+            }
             Err(e) => Err(format!("Bind failed: {}", e)),
         }
     }
@@ -1050,68 +1194,18 @@ pub mod url {
     }
 
     pub fn parse_url(url_str: &str) -> Result<UrlParts, String> {
-        let mut parts = UrlParts {
-            protocol: String::new(),
-            hostname: String::new(),
-            port: String::new(),
-            pathname: String::new(),
-            query: String::new(),
-            hash: String::new(),
-            username: String::new(),
-            password: String::new(),
-        };
+        let parsed = ::url::Url::parse(url_str).map_err(|e| format!("invalid URL: {e}"))?;
 
-        // Simple URL parsing without regex
-        if let Some((proto, rest)) = url_str.split_once("://") {
-            parts.protocol = proto.to_string();
-
-            // Split host and path
-            let (host_part, path_part) = rest.split_once('/').unwrap_or((rest, ""));
-            let full_path = format!("/{}", path_part);
-
-            // Split host and port
-            if let Some((host, port)) = host_part.rsplit_once(':') {
-                if !host.contains('[') && !host.contains(']') {
-                    parts.hostname = host.to_string();
-                    parts.port = port.to_string();
-                } else {
-                    parts.hostname = host_part.to_string();
-                }
-            } else {
-                parts.hostname = host_part.to_string();
-            }
-
-            // Split path and query/hash - use full_path to avoid borrow issues
-            if let Some((path, query)) = full_path.split_once('?') {
-                parts.pathname = path.to_string();
-                if let Some((q, hash)) = query.split_once('#') {
-                    parts.query = q.to_string();
-                    parts.hash = hash.to_string();
-                } else {
-                    parts.query = query.to_string();
-                }
-            } else if let Some((path, hash)) = full_path.split_once('#') {
-                parts.pathname = path.to_string();
-                parts.hash = hash.to_string();
-            } else {
-                parts.pathname = full_path;
-            }
-
-            // Parse authentication
-            if let Some((auth, host)) = parts.hostname.split_once('@') {
-                if let Some((user, pass)) = auth.split_once(':') {
-                    parts.username = user.to_string();
-                    parts.password = pass.to_string();
-                } else {
-                    parts.username = auth.to_string();
-                }
-                parts.hostname = host.to_string();
-            }
-        } else {
-            parts.pathname = url_str.to_string();
-        }
-
-        Ok(parts)
+        Ok(UrlParts {
+            protocol: parsed.scheme().to_string(),
+            hostname: parsed.host_str().unwrap_or("").to_string(),
+            port: parsed.port().map(|p| p.to_string()).unwrap_or_default(),
+            pathname: parsed.path().to_string(),
+            query: parsed.query().unwrap_or("").to_string(),
+            hash: parsed.fragment().unwrap_or("").to_string(),
+            username: parsed.username().to_string(),
+            password: parsed.password().unwrap_or("").to_string(),
+        })
     }
 
     pub fn format_url(parts: &UrlParts) -> String {
@@ -1399,6 +1493,7 @@ pub mod trace_events {
 pub mod fetch {
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
+    use std::net::{IpAddr, ToSocketAddrs};
 
     #[derive(Debug, Serialize, Deserialize)]
     pub struct FetchRequest {
@@ -1415,8 +1510,92 @@ pub mod fetch {
         pub headers: HashMap<String, String>,
     }
 
+    /// Validate a URL against SSRF attacks: block non-http/https schemes,
+    /// private/internal IP ranges, and unsafe hosts.
+    fn validate_url(url: &str) -> Result<(), String> {
+        let parsed = url::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
+
+        // Block non-http/https schemes
+        let scheme = parsed.scheme().to_lowercase();
+        if scheme != "http" && scheme != "https" {
+            return Err(format!("blocked scheme: {}", scheme));
+        }
+
+        // Resolve hostname to IP and check against blocked ranges
+        let host = parsed.host_str().ok_or("missing host")?;
+
+        // Direct IP check
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            if is_blocked_ip(&ip) {
+                return Err(format!("blocked IP address: {ip}"));
+            }
+            return Ok(());
+        }
+
+        // DNS resolution check for hostnames
+        let lookup = format!("{host}:0").to_socket_addrs().map_err(|e| format!("DNS error: {e}"))?;
+        for addr in lookup {
+            if is_blocked_ip(&addr.ip()) {
+                return Err(format!("host {host} resolves to blocked IP: {}", addr.ip()));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn is_blocked_ip(ip: &IpAddr) -> bool {
+        match ip {
+            IpAddr::V4(v4) => {
+                // Loopback: 127.0.0.0/8
+                if v4.octets()[0] == 127 { return true; }
+                // Private A: 10.0.0.0/8
+                if v4.octets()[0] == 10 { return true; }
+                // Private B: 172.16.0.0/12
+                if v4.octets()[0] == 172 && v4.octets()[1] >= 16 && v4.octets()[1] <= 31 { return true; }
+                // Private C: 192.168.0.0/16
+                if v4.octets()[0] == 192 && v4.octets()[1] == 168 { return true; }
+                // Link-local / cloud metadata: 169.254.0.0/16
+                if v4.octets()[0] == 169 && v4.octets()[1] == 254 { return true; }
+                // Current network (zero config): 0.0.0.0/8
+                if v4.octets()[0] == 0 { return true; }
+                // Carrier-grade NAT: 100.64.0.0/10 (RFC 6598)
+                if v4.octets()[0] == 100 && v4.octets()[1] >= 64 && v4.octets()[1] <= 127 { return true; }
+                // Benchmarking: 198.18.0.0/15 (RFC 2544)
+                if v4.octets()[0] == 198 && (v4.octets()[1] == 18 || v4.octets()[1] == 19) { return true; }
+                // Multicast: 224.0.0.0/4
+                if v4.octets()[0] >= 224 && v4.octets()[0] <= 239 { return true; }
+                // IANA reserved: 240.0.0.0/4
+                if v4.octets()[0] >= 240 { return true; }
+                false
+            }
+            IpAddr::V6(v6) => {
+                // IPv4-mapped IPv6 bypass check: convert and re-check as IPv4
+                if let Some(v4) = v6.to_ipv4_mapped() {
+                    return is_blocked_ip(&IpAddr::V4(v4));
+                }
+                // Loopback: ::1
+                if v6.is_loopback() { return true; }
+                // Link-local: fe80::/10
+                if v6.segments()[0] & 0xffc0 == 0xfe80 { return true; }
+                // Unique local: fc00::/7
+                if v6.segments()[0] & 0xfe00 == 0xfc00 { return true; }
+                false
+            }
+        }
+    }
+
     /// Build a reqwest client (async) with both webpki roots and platform native certs.
     fn build_client() -> Result<reqwest::Client, String> {
+        // Ensure a rustls crypto provider is installed before first use
+        // (rustls 0.23+ no longer auto-installs a crypto provider).
+        use std::sync::OnceLock;
+        static RUSTLS_INIT: OnceLock<()> = OnceLock::new();
+        RUSTLS_INIT.get_or_init(|| {
+            rustls::crypto::aws_lc_rs::default_provider()
+                .install_default()
+                .expect("failed to install rustls aws-lc-rs crypto provider");
+        });
+
         let mut root_store = rustls::RootCertStore {
             roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
         };
@@ -1436,6 +1615,7 @@ pub mod fetch {
         reqwest::Client::builder()
             .use_preconfigured_tls(tls_config)
             .timeout(std::time::Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none()) // Manual redirect handling for SSRF safety
             .build()
             .map_err(|e| format!("client build error: {}", e))
     }
@@ -1447,6 +1627,8 @@ pub mod fetch {
     }
 
     async fn do_fetch(url: String, request: FetchRequest) -> Result<FetchResponse, String> {
+        validate_url(&url)?;
+
         let client = build_client()?;
 
         let method = reqwest::Method::from_bytes(request.method.to_uppercase().as_bytes())
@@ -1506,5 +1688,358 @@ pub mod fetch {
             .build()
             .map_err(|e| format!("runtime error: {e}"))?;
         rt.block_on(do_fetch(url, request))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── buffer tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_byte_length_utf8() {
+        assert_eq!(buffer::byte_length_utf8("hello"), 5);
+        assert_eq!(buffer::byte_length_utf8(""), 0);
+        assert_eq!(buffer::byte_length_utf8("你好"), 6); // 3 bytes per char in UTF-8
+    }
+
+    #[test]
+    fn test_buffer_compare() {
+        assert_eq!(buffer::compare(b"abc", b"abc"), 0);
+        assert_eq!(buffer::compare(b"abc", b"abd"), -1);
+        assert_eq!(buffer::compare(b"abd", b"abc"), 1);
+        assert_eq!(buffer::compare(b"ab", b"abc"), -1);
+        assert_eq!(buffer::compare(b"abc", b"ab"), 1);
+        assert_eq!(buffer::compare(b"", b""), 0);
+    }
+
+    #[test]
+    fn test_buffer_copy() {
+        let src = [1u8, 2, 3, 4, 5];
+        let mut dest = [0u8; 10];
+        buffer::copy(&src, &mut dest, 0);
+        assert_eq!(&dest[..5], &[1, 2, 3, 4, 5]);
+        assert_eq!(dest[5], 0);
+    }
+
+    #[test]
+    fn test_buffer_copy_with_offset() {
+        let src = [9u8, 8, 7];
+        let mut dest = [0u8; 8];
+        buffer::copy(&src, &mut dest, 4);
+        assert_eq!(&dest[4..7], &[9, 8, 7]);
+        assert_eq!(dest[0], 0);
+    }
+
+    #[test]
+    fn test_buffer_copy_truncated() {
+        let src = [1u8, 2, 3, 4, 5];
+        let mut dest = [0u8; 3];
+        buffer::copy(&src, &mut dest, 0);
+        assert_eq!(&dest, &[1, 2, 3]);
+    }
+
+    #[test]
+    fn test_buffer_fill() {
+        let mut buf = [0u8; 10];
+        buffer::fill(&mut buf, 0xFF, 0, 10);
+        assert!(buf.iter().all(|&b| b == 0xFF));
+    }
+
+    #[test]
+    fn test_buffer_fill_partial() {
+        let mut buf = [0u8; 10];
+        buffer::fill(&mut buf, 0xAA, 2, 6);
+        assert_eq!(&buf[0..2], &[0, 0]);
+        assert_eq!(&buf[2..6], &[0xAA; 4]);
+        assert_eq!(&buf[6..10], &[0; 4]);
+    }
+
+    #[test]
+    fn test_buffer_fill_out_of_bounds() {
+        let mut buf = [0u8; 5];
+        buffer::fill(&mut buf, 1, 3, 100);
+        assert_eq!(&buf[0..3], &[0; 3]);
+        assert_eq!(&buf[3..5], &[1, 1]);
+    }
+
+    #[test]
+    fn test_is_ascii() {
+        assert!(buffer::is_ascii(b"hello"));
+        assert!(buffer::is_ascii(b""));
+        assert!(!buffer::is_ascii(&[0x80]));
+        assert!(!buffer::is_ascii("café".as_bytes()));
+    }
+
+    #[test]
+    fn test_is_utf8() {
+        assert!(buffer::is_utf8(b"hello"));
+        assert!(buffer::is_utf8("你好".as_bytes()));
+        assert!(!buffer::is_utf8(&[0xFF, 0xFE]));
+    }
+
+    #[test]
+    fn test_ascii_slice() {
+        assert_eq!(buffer::ascii_slice(b"hello", 1, 4), "ell");
+    }
+
+    #[test]
+    fn test_hex_slice() {
+        assert_eq!(buffer::hex_slice(&[0xAB, 0xCD], 0, 2), "abcd");
+        assert_eq!(buffer::hex_slice(&[0x0F, 0xF0], 0, 2), "0ff0");
+    }
+
+    #[test]
+    fn test_index_of_buffer() {
+        assert_eq!(buffer::index_of_buffer(b"hello world", b"world", 0), Some(6));
+        assert_eq!(buffer::index_of_buffer(b"hello world", b"hello", 0), Some(0));
+        assert_eq!(buffer::index_of_buffer(b"hello world", b"xyz", 0), None);
+        assert_eq!(buffer::index_of_buffer(b"aaaa", b"aa", 2), Some(2));
+    }
+
+    #[test]
+    fn test_index_of_number() {
+        assert_eq!(buffer::index_of_number(b"hello", b'e', 0), Some(1));
+        assert_eq!(buffer::index_of_number(b"hello", b'l', 0), Some(2));
+        assert_eq!(buffer::index_of_number(b"hello", b'z', 0), None);
+        assert_eq!(buffer::index_of_number(b"hello", b'l', 3), Some(3));
+    }
+
+    #[test]
+    fn test_swap16() {
+        let mut data = [0x01u8, 0x02, 0x03, 0x04];
+        buffer::swap16(&mut data);
+        assert_eq!(&data, &[0x02, 0x01, 0x04, 0x03]);
+    }
+
+    #[test]
+    fn test_swap32() {
+        let mut data = [0x01u8, 0x02, 0x03, 0x04];
+        buffer::swap32(&mut data);
+        assert_eq!(&data, &[0x04, 0x03, 0x02, 0x01]);
+    }
+
+    #[test]
+    fn test_swap64() {
+        let mut data = [0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        buffer::swap64(&mut data);
+        assert_eq!(&data, &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]);
+    }
+
+    // ── net tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_is_ip() {
+        assert!(net::is_ip("127.0.0.1"));
+        assert!(net::is_ip("::1"));
+        assert!(!net::is_ip("not_an_ip"));
+        assert!(!net::is_ip(""));
+    }
+
+    #[test]
+    fn test_is_ipv4() {
+        assert!(net::is_ipv4("192.168.1.1"));
+        assert!(net::is_ipv4("0.0.0.0"));
+        assert!(!net::is_ipv4("::1"));
+        assert!(!net::is_ipv4("999.999.999.999"));
+    }
+
+    #[test]
+    fn test_is_ipv6() {
+        assert!(net::is_ipv6("::1"));
+        assert!(net::is_ipv6("2001:db8::1"));
+        assert!(!net::is_ipv6("192.168.1.1"));
+    }
+
+    #[test]
+    fn test_parse_ip() {
+        assert_eq!(net::parse_ip("127.0.0.1"), Some("127.0.0.1".to_string()));
+        assert_eq!(net::parse_ip("::1"), Some("::1".to_string()));
+        assert_eq!(net::parse_ip("invalid"), None);
+    }
+
+    #[test]
+    fn test_get_protocol_family() {
+        assert_eq!(net::get_protocol_family("TCP"), "IPv4");
+        assert_eq!(net::get_protocol_family("UDP"), "IPv4");
+    }
+
+    // ── fs tests ────────────────────────────────────────────────────────
+
+    fn temp_dir() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let d = std::env::temp_dir().join(format!("kossjs_test_{}_{}", std::process::id(), id));
+        let _ = std::fs::create_dir_all(&d);
+        d
+    }
+
+    fn drop_dir(d: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn test_fs_exists_sync() {
+        let dir = temp_dir();
+        let file = dir.join("exists_test.txt");
+        std::fs::write(&file, b"hello").unwrap();
+
+        assert!(fs::exists_sync(file.to_str().unwrap()));
+        assert!(!fs::exists_sync(dir.join("no_such_file").to_str().unwrap()));
+
+        drop_dir(&dir);
+    }
+
+    #[test]
+    fn test_fs_read_file_utf8() {
+        let dir = temp_dir();
+        let file = dir.join("read_test.txt");
+        std::fs::write(&file, "hello world").unwrap();
+
+        let content = fs::read_file_utf8(file.to_str().unwrap(), 0).unwrap();
+        assert_eq!(content, "hello world");
+
+        drop_dir(&dir);
+    }
+
+    #[test]
+    fn test_fs_access() {
+        let dir = temp_dir();
+        let file = dir.join("access_test.txt");
+        std::fs::File::create(&file).unwrap();
+
+        assert!(fs::access(file.to_str().unwrap(), 0).is_ok());
+        assert!(fs::access(dir.join("no_such").to_str().unwrap(), 0).is_err());
+
+        drop_dir(&dir);
+    }
+
+    #[test]
+    fn test_fs_mkdir_rmdir() {
+        let base = std::env::temp_dir().join(format!("kossjs_fs_dir_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let sub = base.join("subdir");
+
+        // mkdir: path, mode, recursive=false (parent exists)
+        assert!(fs::mkdir(sub.to_str().unwrap(), 0o755, false).is_ok());
+        assert!(sub.exists());
+
+        // rmdir
+        assert!(fs::rmdir(sub.to_str().unwrap()).is_ok());
+        assert!(!sub.exists());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_fs_mkdir_recursive() {
+        let base = std::env::temp_dir().join(format!("kossjs_fs_rec_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let deep = base.join("a").join("b").join("c");
+
+        assert!(fs::mkdir(deep.to_str().unwrap(), 0o755, true).is_ok());
+        assert!(deep.exists());
+
+        // rmdir is not recursive, so clean up manually
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_fs_rename() {
+        let dir = temp_dir();
+        let old = dir.join("old.txt");
+        let new = dir.join("new.txt");
+        std::fs::write(&old, b"data").unwrap();
+
+        assert!(fs::rename(old.to_str().unwrap(), new.to_str().unwrap()).is_ok());
+        assert!(!old.exists());
+        assert!(new.exists());
+
+        drop_dir(&dir);
+    }
+
+    #[test]
+    fn test_fs_unlink() {
+        let dir = temp_dir();
+        let file = dir.join("unlink_test.txt");
+        std::fs::write(&file, b"data").unwrap();
+        assert!(file.exists());
+
+        assert!(fs::unlink(file.to_str().unwrap()).is_ok());
+        assert!(!file.exists());
+
+        drop_dir(&dir);
+    }
+
+    #[test]
+    fn test_fs_copy_file() {
+        let dir = temp_dir();
+        let src = dir.join("src.txt");
+        let dst = dir.join("dst.txt");
+        std::fs::write(&src, b"copy me").unwrap();
+
+        assert!(fs::copy_file(src.to_str().unwrap(), dst.to_str().unwrap(), 0).is_ok());
+        assert!(dst.exists());
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "copy me");
+
+        drop_dir(&dir);
+    }
+
+    #[test]
+    fn test_fs_readdir() {
+        let dir = temp_dir();
+        std::fs::write(dir.join("a.txt"), b"").unwrap();
+        std::fs::write(dir.join("b.txt"), b"").unwrap();
+
+        let result = fs::readdir(dir.to_str().unwrap(), "utf8", false);
+        assert!(result.is_ok());
+        let val = result.unwrap();
+        let names: Vec<String> = val
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert!(names.iter().any(|n| n.contains("a.txt")));
+        assert!(names.iter().any(|n| n.contains("b.txt")));
+
+        drop_dir(&dir);
+    }
+
+    // ── constants tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_fs_flags_not_empty() {
+        let flags = constants::fs_flags();
+        assert!(!flags.is_empty());
+        assert!(flags.iter().any(|(name, _)| *name == "O_RDONLY"));
+    }
+
+    #[test]
+    fn test_signals_not_empty() {
+        let sigs = constants::signals();
+        assert!(!sigs.is_empty());
+        assert!(sigs.iter().any(|(name, _)| *name == "SIGINT"));
+    }
+
+    // ── os tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_get_pid() {
+        assert!(os::get_pid() > 0);
+    }
+
+    #[test]
+    fn test_is_big_endian() {
+        // Just ensure it returns a bool (no panic)
+        let _ = os::is_big_endian();
+    }
+
+    #[test]
+    fn test_get_available_parallelism() {
+        assert!(os::get_available_parallelism() > 0);
     }
 }

@@ -59,6 +59,8 @@ problem*
 !.cargo/
 
 *_Docs/
+TTHSD_Docs/
+_internal/
 
 # Dymamic library outputs
 

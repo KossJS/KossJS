@@ -675,8 +675,8 @@ This Additional Permission is written in both Chinese and English. In the event 
 **1. 定义**
 
 - **“本软件”**：指由 TT23XR Studio 发行、明确声明受本附加权限约束且版权归 TT23XR Studio 所有的源代码及编译后的二进制形式。
-- **“官方二进制库”**：指 TT23XR Studio 通过其官方渠道（例如 GitHub Releases）发布的、未经任何修改的预编译二进制库文件（包括但不限于 `.dll`、`.so`、`.dylib` 等形式）。自行从源代码编译得到的库文件（即使未修改源代码）**不属于**官方二进制库。
-- **“未经修改”**：对官方二进制库而言，指未以任何方式变更其二进制内容（包括但不限于反编译、修改、修补、重新打包/编译）。对源代码而言，指未以任何方式变更源代码内容（包括但不限于新增、删除、重写任何函数、类、模块或数据结构）。任何改变编译参数（如优化级别、宏定义）后重新编译得到的库，亦视为“修改”。
+- **“官方二进制库”**：指 TT23XR Studio 通过其官方渠道（例如 GitHub Releases，Github Actions）发布的、未经任何修改的预编译二进制库文件（包括但不限于 `.dll`、`.so`、`.dylib` 等形式）。自行从源代码编译得到的库文件（即使未修改源代码）**不属于**官方二进制库。
+- **“未经修改”**：对官方二进制库而言，指未以任何方式变更其二进制内容（包括但不限于反编译、修改、修补、重新打包/编译、静态链接）。对源代码而言，指未以任何方式变更源代码内容（包括但不限于新增、删除、重写任何函数、类、模块或数据结构）。任何改变编译参数（如优化级别、宏定义）后重新编译得到的库，亦视为“修改”。
 - **“链接”**：指将本软件的官方二进制库与其他独立模块组合成一个可执行程序或库的任何方式，包括但不限于静态链接、动态链接、隐式链接、显式加载等。本附加权限**不要求**用户必须能够替换该二进制库。
 
 **2. 附加权限内容**
@@ -685,7 +685,7 @@ This Additional Permission is written in both Chinese and English. In the event 
 
 - (a) **使用官方二进制库**：您使用的必须是 TT23XR Studio 官方发布的、未经任何修改的预编译二进制库文件。您不得自行从源代码编译，即使编译时未修改源代码。
 - (b) **未经修改**：您没有以任何方式修改本软件的源代码或官方二进制库。
-- (c) **显著署名**：您在组合作品的文档、关于页面、或源代码的显著位置中明确声明（如果产品无交互界面，则需在随附的书面材料或 README 中声明）：
+- (c) **显著署名**：必须在面向最终用户的界面（如‘关于’对话框）或随附的文档（如用户手册、README）中进行显著署名：
   > “本软件使用了 [本软件名称]（[项目URL]），遵循 GNU AGPL v3.0 协议及 TT23XR Studio 的附加权限。”
   该声明必须对最终用户清晰可见（例如在“关于”对话框、README 文件或用户手册中）。
 
@@ -724,7 +724,8 @@ This Additional Permission is written in both Chinese and English. In the event 
 
 - 作者发布本项目时为未成年人，**本项目的开发与发布已获得法定代理人的知情与同意**；
 - 尽管如此，本项目**目前不提供任何形式的商业许可销售**；
-- 建议你直接遵守 AGPL v3.0 + 附加权限，该协议已覆盖绝大多数商业使用场景。
+- 建议直接遵守 AGPL v3.0 + 附加权限，该协议已覆盖绝大多数商业使用场景；
+- 作者成年后才会发布正式可用版本，其他版本不保证是否可用。
 
 若你通过公开信息或推算发现作者已成年而此处尚未更新，可提醒作者修改，并届时获取**一份书面的商业许可**。
 
@@ -743,19 +744,19 @@ Pursuant to Section 7 of the GNU Affero General Public License version 3 ("AGPL 
 **1. Definitions**
 
 - **"The Software"** : The source code and compiled binary forms distributed by TT23XR Studio that are explicitly stated to be subject to this Additional Permission and whose copyright is owned by TT23XR Studio.
-- **"Official Binary Library"** : A pre-compiled binary library file (including but not limited to `.dll`, `.so`, `.dylib` ) distributed by TT23XR Studio through its official channels (e.g., GitHub Releases) without any modification. Libraries compiled by yourself from the source code (even without changes) are **not** Official Binary Libraries.
-- **"Unmodified"** : With respect to an Official Binary Library, means that its binary content has not been altered in any way (including but not limited to decompilation, modification, patching, repackaging / rebuilding). With respect to source code, means that the source code has not been altered in any way (including but not limited to adding, deleting, or rewriting any function, class, module, or data structure). Any change to compilation parameters (e.g., optimization level, macro definitions) resulting in a rebuilt library is also considered a modification.
+- **"Official Binary Library"** : A pre-compiled binary library file (including but not limited to `.dll`, `.so`, `.dylib`) distributed by TT23XR Studio through its official channels (e.g., GitHub Releases, GitHub Actions) without any modification. Libraries compiled by yourself from the source code (even without changes) are **not** Official Binary Libraries.
+- **"Unmodified"** : With respect to an Official Binary Library, means that its binary content has not been altered in any way (including but not limited to decompilation, modification, patching, repackaging / rebuilding, static linking). With respect to source code, means that the source code has not been altered in any way (including but not limited to adding, deleting, or rewriting any function, class, module, or data structure). Any library recompiled after changing compilation parameters (e.g., optimization level, macro definitions) is also considered a modification.
 - **"Linking"** : Any means of combining the Official Binary Library of The Software with other independent modules into a single executable or library, including but not limited to static linking, dynamic linking, implicit linking, explicit loading. This Additional Permission **does not require** that users be able to replace the binary library.
 
 **2. Additional Permission**
 
 Notwithstanding any other provision of AGPL v3.0, when you meet **all** of the following conditions, you may use, copy, and distribute the **unmodified Official Binary Library** through any form of linking together with other independent modules (the "Combined Work"), and the **other independent modules** of the Combined Work (i.e., the parts that are not The Software) are **not** required to comply with any terms of AGPL v3.0 (including but not limited to Section 5 "Conveying Modified Source Versions" and Section 13 "Remote Network Interaction"):
 
-- (a) **Use of Official Binary Library** : You must use the pre-compiled binary library officially distributed by TT23XR Studio without any modification. You may not compile the library yourself from source code, even if you make no changes to the source.
+- (a) **Use of Official Binary Library** : You must use the pre-compiled binary library file officially distributed by TT23XR Studio without any modification. You may not compile the library yourself from source code, even if you make no changes to the source.
 - (b) **Unmodified** : You have not modified The Software's source code or the Official Binary Library in any way.
-- (c) **Prominent Acknowledgment** : You must clearly state in the Combined Work's documentation, about page, or source code at a prominent location (if the product has no interactive user interface, then in accompanying written materials or the README file) :
-  > "This software uses [Name of The Software] ([Project URL]) under the GNU AGPL v3.0 license and additional permissions granted by TT23XR Studio."
-  The statement must be reasonably visible to end users (e.g., in an "About" dialog, README file, or user manual).
+- (c) **Prominent Acknowledgment** : You must provide prominent attribution in the end-user-facing interface (e.g., an "About" dialog) or in accompanying documentation (e.g., user manual, README) :
+  > "This software uses [Name of The Software] ([Project URL]) under the GNU AGPL v3.0 license and the additional permissions granted by TT23XR Studio."
+  The statement must be clearly visible to end users (e.g., in an "About" dialog, README file, or user manual).
 
 **3. Non-Applicable Situations (Full AGPL v3.0 Compliance Required)**
 
@@ -793,6 +794,7 @@ If, due to internal company policies or other reasons, you **believe a written c
 - The author was a minor at the time this project was published. **The development and release of this project have been made with the knowledge and consent of the author's legal guardian.**
 - Nevertheless, this project **does not currently offer any form of commercial license for sale**.
 - It is recommended that you comply directly with AGPL v3.0 and the Additional Permissions, which already cover the vast majority of commercial use scenarios.
+- The author will only release a formally usable version after reaching the age of majority; other versions are not guaranteed to be usable.
 
 If you obtain information or deduce that the author has reached the age of majority and this text has not been updated, you may remind the author to revise it and obtain **a written commercial license** at that time.
 

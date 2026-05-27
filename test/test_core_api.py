@@ -19,16 +19,16 @@ class TestCoreAPI:
         assert koss.eval("Math.abs(-5)") == "5"
 
     def test_json_stringify(self, koss: KossJS):
-        assert koss.eval("JSON.stringify({a: 1, b: 2})") == '{"a":1,"b":2}'
+        assert koss.eval("JSON.stringify({a: 1, b: 2})") == {"a": 1, "b": 2}
 
     def test_json_parse(self, koss: KossJS):
         assert koss.eval("JSON.parse('{\"x\":10}').x") == "10"
 
     def test_array_map(self, koss: KossJS):
-        assert koss.eval("[1, 2, 3].map(x => x * 2)") == "2,4,6"
+        assert koss.eval("[1, 2, 3].map(x => x * 2)") == [2, 4, 6]
 
     def test_array_filter(self, koss: KossJS):
-        assert koss.eval("[1, 2, 3].filter(x => x > 1)") == "2,3"
+        assert koss.eval("[1, 2, 3].filter(x => x > 1)") == [2, 3]
 
     def test_array_reduce(self, koss: KossJS):
         assert koss.eval("[1, 2, 3].reduce((a, b) => a + b, 0)") == "6"
@@ -37,13 +37,13 @@ class TestCoreAPI:
         assert koss.eval("'hello'.toUpperCase()") == "HELLO"
 
     def test_string_split(self, koss: KossJS):
-        assert koss.eval("'hello world'.split(' ')") == "hello,world"
+        assert koss.eval("'hello world'.split(' ')") == ["hello", "world"]
 
     def test_object_keys(self, koss: KossJS):
-        assert koss.eval("Object.keys({a: 1, b: 2})") == "a,b"
+        assert koss.eval("Object.keys({a: 1, b: 2})") == ["a", "b"]
 
     def test_object_values(self, koss: KossJS):
-        assert koss.eval("Object.values({a: 1, b: 2})") == "1,2"
+        assert koss.eval("Object.values({a: 1, b: 2})") == [1, 2]
 
     def test_is_nan(self, koss: KossJS):
         assert koss.eval("Number.isNaN(NaN)") == "true"
@@ -88,7 +88,7 @@ class TestSetGlobal:
 
     def test_set_global_bool_true(self, koss: KossJS):
         koss.set_global("my_bool", True)
-        assert koss.eval("my_bool") == "1"
+        assert koss.eval("my_bool") == "true"
 
     def test_set_global_null(self, koss: KossJS):
         koss.set_global("my_null", None)
@@ -96,7 +96,7 @@ class TestSetGlobal:
 
     def test_set_global_array(self, koss: KossJS):
         koss.set_global("my_arr", [1, 2, 3])
-        assert koss.eval("JSON.stringify(my_arr)") == "[1,2,3]"
+        assert koss.eval("JSON.stringify(my_arr)") == [1, 2, 3]
 
     def test_set_global_object(self, koss: KossJS):
         koss.set_global("my_obj", {"name": "test", "value": 99})
@@ -104,7 +104,7 @@ class TestSetGlobal:
 
     def test_set_global_nested(self, koss: KossJS):
         koss.set_global("nested", {"a": {"b": [1, 2, {"c": 3}]}})
-        assert koss.eval("JSON.stringify(nested)") == '{"a":{"b":[1,2,{"c":3}]}}'
+        assert koss.eval("JSON.stringify(nested)") == {"a": {"b": [1, 2, {"c": 3}]}}
 
     def test_global_used_in_expression(self, koss: KossJS):
         koss.set_global("x", 100)

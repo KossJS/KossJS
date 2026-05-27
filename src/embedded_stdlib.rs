@@ -5311,13 +5311,38 @@ function assertdoesnotthrow(fn, message) {
 
 module.exports = assert;
 module.exports.strict = assertStrictEqual;
-module.exports.ok = assert.ok;
+module.exports.ok = assertok;
 module.exports.equal = assertEqual;
+module.exports.notEqual = function(actual, expected, message) {
+    if (actual == expected) throw new Err(message || `Expected ${actual} to not equal ${expected}`);
+};
 module.exports.deepEqual = assertDeepStrictEqual;
 module.exports.deepStrictEqual = assertDeepStrictEqual;
+module.exports.notDeepStrictEqual = function(actual, expected, message) {
+    if (JSON.stringify(actual) === JSON.stringify(expected))
+        throw new Err(message || 'Expected values to not be deeply equal');
+};
 module.exports.strictEqual = assertStrictEqual;
+module.exports.notStrictEqual = function(actual, expected, message) {
+    if (actual === expected) throw new Err(message || `Expected ${actual} to not strictly equal ${expected}`);
+};
 module.exports.fail = assertFail;
-module.exports.throws = assertthrows;
+module.exports.throws = function(fn, expected, message) {
+    let thrown = false;
+    try { fn(); } catch (e) {
+        thrown = true;
+        if (expected) {
+            if (typeof expected === 'function') {
+                if (!(e instanceof expected))
+                    throw new Err(message || `Expected error to be instance of ${expected.name || 'Error'}`);
+            } else if (expected instanceof RegExp) {
+                if (!expected.test(e.message))
+                    throw new Err(message || `Expected error message to match ${expected}`);
+            }
+        }
+    }
+    if (!thrown) throw new Err(message || 'Expected exception but none was thrown');
+};
 module.exports.doesNotThrow = assertdoesnotthrow;
 module.exports.ifError = function(err) { if (err) throw err; };
 "#),
@@ -5729,8 +5754,10 @@ function addBufferPrototypeMethods(proto) {
     return new FastBuffer(this.buffer, this.byteOffset + start, (end || this.length) - start);
   };
 
-  proto.toString = function(encoding, start, end) {
-    if (encoding === undefined || encoding === 'utf8') {
+  Object.defineProperty(proto, 'toString', {
+    writable: true, configurable: true,
+    value: function(encoding, start, end) {
+    if (encoding === undefined || encoding === 'utf8' || encoding === 'utf-8') {
       let str = '';
       const startIdx = start || 0;
       const endIdx = end || this.length;
@@ -5739,8 +5766,44 @@ function addBufferPrototypeMethods(proto) {
       }
       return decodeURIComponent(encodeURIComponent(str));
     }
+    if (encoding === 'hex') {
+      const startIdx = start || 0;
+      const endIdx = end || this.length;
+      let hex = '';
+      for (let i = startIdx; i < endIdx; i++) {
+        hex += (this[i] < 16 ? '0' : '') + this[i].toString(16);
+      }
+      return hex;
+    }
+    if (encoding === 'base64') {
+      const startIdx = start || 0;
+      const endIdx = end || this.length;
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+      let output = '';
+      for (let i = startIdx; i < endIdx; i += 3) {
+        const a = this[i];
+        const b = i + 1 < endIdx ? this[i + 1] : 0;
+        const c = i + 2 < endIdx ? this[i + 2] : 0;
+        const triplet = (a << 16) | (b << 8) | c;
+        output += chars[(triplet >> 18) & 0x3F];
+        output += chars[(triplet >> 12) & 0x3F];
+        output += i + 1 < endIdx ? chars[(triplet >> 6) & 0x3F] : '=';
+        output += i + 2 < endIdx ? chars[triplet & 0x3F] : '=';
+      }
+      return output;
+    }
+    if (encoding === 'latin1' || encoding === 'binary') {
+      const startIdx = start || 0;
+      const endIdx = end || this.length;
+      let str = '';
+      for (let i = startIdx; i < endIdx; i++) {
+        str += String.fromCharCode(this[i]);
+      }
+      return str;
+    }
     return '';
-  };
+  }
+  });
 
   proto.equals = function(otherBuffer) {
     if (!ArrayBuffer.isView(otherBuffer)) return false;
@@ -5757,7 +5820,7 @@ function addBufferPrototypeMethods(proto) {
     if (sourceStart === undefined) sourceStart = 0;
     if (sourceEnd === undefined) sourceEnd = this.length;
 
-    const minLen = MathMin(targetEnd - targetStart, sourceEnd - sourceStart);
+    const minLen = Math.min(targetEnd - targetStart, sourceEnd - sourceStart);
     for (let i = 0; i < minLen; i++) {
       const cmp = this[sourceStart + i] - target[targetStart + i];
       if (cmp !== 0) return cmp;
@@ -5830,6 +5893,97 @@ function addBufferPrototypeMethods(proto) {
       data.push(this[i]);
     }
     return { type: 'Buffer', data };
+  };
+
+  proto.writeUInt8 = function(value, offset) {
+    this[offset || 0] = value & 0xFF;
+    return offset + 1;
+  };
+
+  proto.writeUInt16LE = function(value, offset) {
+    const o = offset || 0;
+    this[o] = value & 0xFF;
+    this[o + 1] = (value >> 8) & 0xFF;
+    return o + 2;
+  };
+
+  proto.writeUInt16BE = function(value, offset) {
+    const o = offset || 0;
+    this[o] = (value >> 8) & 0xFF;
+    this[o + 1] = value & 0xFF;
+    return o + 2;
+  };
+
+  proto.writeUInt32LE = function(value, offset) {
+    const o = offset || 0;
+    this[o] = value & 0xFF;
+    this[o + 1] = (value >> 8) & 0xFF;
+    this[o + 2] = (value >> 16) & 0xFF;
+    this[o + 3] = (value >> 24) & 0xFF;
+    return o + 4;
+  };
+
+  proto.writeUInt32BE = function(value, offset) {
+    const o = offset || 0;
+    this[o] = (value >> 24) & 0xFF;
+    this[o + 1] = (value >> 16) & 0xFF;
+    this[o + 2] = (value >> 8) & 0xFF;
+    this[o + 3] = value & 0xFF;
+    return o + 4;
+  };
+
+  proto.writeInt8 = function(value, offset) {
+    this[offset || 0] = value & 0xFF;
+    return offset + 1;
+  };
+
+  proto.readUInt8 = function(offset) {
+    return this[offset || 0];
+  };
+
+  proto.readUInt16LE = function(offset) {
+    const o = offset || 0;
+    return this[o] | (this[o + 1] << 8);
+  };
+
+  proto.readUInt16BE = function(offset) {
+    const o = offset || 0;
+    return (this[o] << 8) | this[o + 1];
+  };
+
+  proto.readUInt32LE = function(offset) {
+    const o = offset || 0;
+    return this[o] + (this[o + 1] << 8) + (this[o + 2] << 16) + (this[o + 3] << 24);
+  };
+
+  proto.readUInt32BE = function(offset) {
+    const o = offset || 0;
+    return (this[o] << 24) + (this[o + 1] << 16) + (this[o + 2] << 8) + this[o + 3];
+  };
+
+  proto.readInt8 = function(offset) {
+    const val = this[offset || 0];
+    return val > 127 ? val - 256 : val;
+  };
+
+  proto.readInt16LE = function(offset) {
+    const val = this.readUInt16LE(offset);
+    return val > 32767 ? val - 65536 : val;
+  };
+
+  proto.readInt16BE = function(offset) {
+    const val = this.readUInt16BE(offset);
+    return val > 32767 ? val - 65536 : val;
+  };
+
+  proto.readInt32LE = function(offset) {
+    const val = this.readUInt32LE(offset);
+    return val > 2147483647 ? val - 4294967296 : val;
+  };
+
+  proto.readInt32BE = function(offset) {
+    const val = this.readUInt32BE(offset);
+    return val > 2147483647 ? val - 4294967296 : val;
   };
 }
 
@@ -5910,7 +6064,7 @@ Buffer.compare = function(buf1, buf2) {
     throw new TypeError('Argument must be a buffer');
   }
   if (buf1 === buf2) return 0;
-  const len = MathMin(buf1.length, buf2.length);
+  const len = Math.min(buf1.length, buf2.length);
   for (let i = 0; i < len; i++) {
     if (buf1[i] !== buf2[i]) {
       return buf1[i] < buf2[i] ? -1 : 1;
@@ -5947,7 +6101,7 @@ Buffer.concat = function(list, length) {
   for (let i = 0; i < list.length && offset < length; i++) {
     const item = list[i];
     if (ArrayBuffer.isView(item)) {
-      const len = MathMin(item.length, length - offset);
+      const len = Math.min(item.length, length - offset);
       for (let j = 0; j < len; j++) {
         buf[offset++] = item[j];
       }
@@ -5966,6 +6120,22 @@ Buffer.byteLength = function(string, encoding) {
     }
     throw new TypeError('Argument must be a string or Buffer');
   }
+  if (encoding === 'utf8' || encoding === 'utf-8' || encoding === undefined) {
+    // UTF-8 byte length: count multi-byte characters
+    let len = 0;
+    for (let i = 0; i < string.length; i++) {
+      const code = string.charCodeAt(i);
+      if (code < 0x80) len += 1;
+      else if (code < 0x800) len += 2;
+      else if (code < 0x10000) len += 3;
+      else len += 4;
+    }
+    return len;
+  }
+  if (encoding === 'hex') return string.length / 2;
+  if (encoding === 'base64') return Math.ceil(string.length * 3 / 4);
+  if (encoding === 'latin1' || encoding === 'binary') return string.length;
+  if (encoding === 'utf16le' || encoding === 'ucs2') return string.length * 2;
   return string.length;
 };
 
@@ -6022,7 +6192,6 @@ function btoa(input) {
 function atob(input) {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
   let output = '';
-  input = input.replace(/=+$/, '');
   for (let i = 0; i < input.length; i += 4) {
     const a = chars.indexOf(input[i]);
     const b = i + 1 < input.length ? chars.indexOf(input[i + 1]) : 0;
@@ -132676,14 +132845,7 @@ module.exports = {
 "#),
         "os.js" => Some(r#"'use strict';
 
-const {
-  ArrayPrototypePush,
-  Float64Array,
-  ObjectDefineProperties,
-  ObjectFreeze,
-} = globalThis;
-
-const isWindows = typeof process !== 'undefined' && process.platform === 'win32';
+var isWindows = typeof process !== 'undefined' && process.platform === 'win32';
 
 function getCPUs() {
   return [
@@ -132795,7 +132957,7 @@ const constants = {
     SIGIO: 29,
     SIGSYS: 31,
   },
-  os: {
+  errno: {
     UV_UDP_REUSEADDR: 4,
     EAFNOSUPPORT: -4095,
     EADDRINUSE: -4094,
@@ -132900,7 +133062,7 @@ function cpus() {
   const result = [];
   let i = 0;
   while (i < data.length) {
-    ArrayPrototypePush(result, {
+    result.push({
       model: data[i++],
       speed: data[i++],
       times: {
@@ -132956,9 +133118,9 @@ module.exports = {
   machine: () => 'x64',
 };
 
-ObjectFreeze(constants.signals);
+Object.freeze(constants.signals);
 
-ObjectDefineProperties(module.exports, {
+Object.defineProperties(module.exports, {
   constants: {
     __proto__: null,
     configurable: false,
@@ -133009,7 +133171,8 @@ function extname(path) {
 }
 
 function join(...paths) {
-    return paths.filter(p => p).join('/').replace(/\/+/g, '/');
+    const result = paths.filter(p => p).join('/').replace(/\/+/g, '/');
+    return result || '.';
 }
 
 function normalize(path) {
@@ -133085,7 +133248,7 @@ var exports = {
     relative,
     parse,
     format,
-    sep,
+    sep: '/',
     delimiter: ':',
 };
 // Self-reference to avoid circular dependency issues.
@@ -137183,16 +137346,14 @@ ObjectDefineProperties(module.exports, {
 "#),
         "timers.js" => Some(r#"'use strict';
 
-const {
-  MathTrunc,
-  ObjectDefineProperties,
-  ObjectDefineProperty,
-  SymbolDispose,
-  SymbolToPrimitive,
-  Promise,
-  setTimeout: jsSetTimeout,
-  clearTimeout: jsClearTimeout,
-} = globalThis;
+var _MathTrunc = Math.trunc || Math.floor;
+var _ObjectDefineProperties = Object.defineProperties;
+var _ObjectDefineProperty = Object.defineProperty;
+var _SymbolDispose = Symbol.dispose;
+var _SymbolToPrimitive = Symbol.toPrimitive;
+var _Promise = typeof globalThis !== 'undefined' && globalThis.Promise;
+var _jsSetTimeout = typeof globalThis !== 'undefined' && globalThis.setTimeout;
+var _jsClearTimeout = typeof globalThis !== 'undefined' && globalThis.clearTimeout;
 
 const knownTimersById = {};
 let nextTimerId = 1;
@@ -137220,7 +137381,7 @@ function insert(item, timeout) {
   if (item._started) return;
   item._started = true;
   
-  const delay = MathTrunc(timeout);
+  const delay = _MathTrunc(timeout);
   const id = item[async_id_symbol];
   
   knownTimersById[id] = item;
@@ -137244,7 +137405,9 @@ function insert(item, timeout) {
     }
   };
   
-  item._timerId = jsSetTimeout(callback, delay);
+  if (typeof _jsSetTimeout === 'function') {
+    item._timerId = _jsSetTimeout(callback, delay);
+  }
 }
 
 function unenroll(item) {
@@ -137256,7 +137419,7 @@ function unenroll(item) {
   }
   
   if (item._timerId) {
-    jsClearTimeout(item._timerId);
+    _jsClearTimeout(item._timerId);
     item._timerId = null;
   }
   
@@ -137272,7 +137435,7 @@ function setTimeout(callback, after = 0, ...args) {
   return timeout;
 }
 
-ObjectDefineProperty(setTimeout, 'promises', {
+_ObjectDefineProperty(setTimeout, 'promises', {
   __proto__: null,
   enumerable: true,
   configurable: true,
@@ -137317,11 +137480,11 @@ Timeout.prototype.close = function() {
   return this;
 };
 
-Timeout.prototype[SymbolDispose] = function() {
+Timeout.prototype[_SymbolDispose] = function() {
   clearTimeout(this);
 };
 
-Timeout.prototype[SymbolToPrimitive] = function() {
+Timeout.prototype[_SymbolToPrimitive] = function() {
   const id = this[async_id_symbol];
   if (!this[kHasPrimitive]) {
     this[kHasPrimitive] = true;
@@ -137344,7 +137507,7 @@ class Immediate {
 const immediateQueue = [];
 let immediateId = 0;
 
-Immediate.prototype[SymbolDispose] = function() {
+Immediate.prototype[_SymbolDispose] = function() {
   clearImmediate(this);
 };
 
@@ -137356,24 +137519,26 @@ function setImmediate(callback, ...args) {
   const immediate = new Immediate(callback, args.length ? args : undefined);
   immediateQueue.push(immediate);
   
-  jsSetTimeout(() => {
-    if (!immediate._destroyed && immediate._onImmediate) {
-      try {
-        if (immediate._args) {
-          immediate._onImmediate(...immediate._args);
-        } else {
-          immediate._onImmediate();
+  if (typeof _jsSetTimeout === 'function') {
+    _jsSetTimeout(function() {
+      if (!immediate._destroyed && immediate._onImmediate) {
+        try {
+          if (immediate._args) {
+            immediate._onImmediate(...immediate._args);
+          } else {
+            immediate._onImmediate();
+          }
+        } catch (e) {
+          console.error('Immediate callback error:', e);
         }
-      } catch (e) {
-        console.error('Immediate callback error:', e);
       }
-    }
-  }, 0);
+    }, 0);
+  }
   
   return immediate;
 }
 
-ObjectDefineProperty(setImmediate, 'promises', {
+_ObjectDefineProperty(setImmediate, 'promises', {
   __proto__: null,
   enumerable: true,
   configurable: true,
@@ -137407,7 +137572,7 @@ const timers = {
   },
 };
 
-ObjectDefineProperties(timers, {
+_ObjectDefineProperties(timers, {
   promises: {
     __proto__: null,
     configurable: true,
@@ -137418,7 +137583,15 @@ ObjectDefineProperties(timers, {
   },
 });
 
-module.exports = timers;"#),
+module.exports = timers;
+
+// Register as globals (Node.js compatibility)
+globalThis.setTimeout = setTimeout;
+globalThis.clearTimeout = clearTimeout;
+globalThis.setInterval = setInterval;
+globalThis.clearInterval = clearInterval;
+globalThis.setImmediate = setImmediate;
+globalThis.clearImmediate = clearImmediate;"#),
         "timers/promises.js" => Some(r#"'use strict';
 
 const {
@@ -138317,34 +138490,187 @@ module.exports = { isatty, ReadStream, WriteStream };
 "#),
         "url.js" => Some(r#"'use strict';
 
-const { URL: URLPolyfill, URLSearchParams } = globalThis;
+// Simple URL implementation when globalThis.URL is not available
+function parseURLImpl(urlStr, baseStr) {
+    // Simple URL parser: protocol://host:port/path?query#hash
+    var result = {
+        href: urlStr,
+        protocol: '',
+        host: '',
+        hostname: '',
+        port: '',
+        pathname: '/',
+        search: '',
+        hash: '',
+    };
 
-let _URL = globalThis.URL;
-if (!_URL) _URL = URLPolyfill;
+    var remaining = urlStr;
 
-function URLConstructor(url, base) {
-    if (this instanceof URLConstructor) {
-        const u = base ? new _URL(url, base) : new _URL(url);
-        this.href = u.href;
-        this.origin = u.origin;
-        this.protocol = u.protocol;
-        this.username = u.username;
-        this.password = u.password;
-        this.host = u.host;
-        this.hostname = u.hostname;
-        this.port = u.port;
-        this.pathname = u.pathname;
-        this.search = u.search;
-        this.searchParams = u.searchParams;
-        this.hash = u.hash;
+    // Extract hash
+    var hashIdx = remaining.indexOf('#');
+    if (hashIdx >= 0) {
+        result.hash = remaining.substring(hashIdx);
+        remaining = remaining.substring(0, hashIdx);
+    }
+
+    // Extract search/query
+    var searchIdx = remaining.indexOf('?');
+    if (searchIdx >= 0) {
+        result.search = remaining.substring(searchIdx);
+        remaining = remaining.substring(0, searchIdx);
+    }
+
+    // Extract protocol
+    var protoIdx = remaining.indexOf('://');
+    if (protoIdx >= 0) {
+        result.protocol = remaining.substring(0, protoIdx + 1); // "https:"
+        remaining = remaining.substring(protoIdx + 3);
+    }
+
+    // Extract path
+    var pathIdx = remaining.indexOf('/');
+    var authority = remaining;
+    if (pathIdx >= 0) {
+        authority = remaining.substring(0, pathIdx);
+        result.pathname = remaining.substring(pathIdx);
+    }
+
+    // Extract host:port
+    var portIdx = authority.lastIndexOf(':');
+    if (portIdx >= 0) {
+        result.hostname = authority.substring(0, portIdx);
+        result.port = authority.substring(portIdx + 1);
     } else {
-        return new _URL(url, base);
+        result.hostname = authority;
+    }
+    result.host = authority;
+
+    // Rebuild href
+    var href = result.protocol + '//' + result.host + result.pathname;
+    if (result.search) href += result.search;
+    if (result.hash) href += result.hash;
+    result.href = href;
+
+    // resolve against base
+    if (baseStr && !result.protocol) {
+        var base = parseURLImpl(baseStr, null);
+        if (result.href.startsWith('/')) {
+            result.href = base.protocol + '//' + base.host + result.href;
+        } else {
+            result.href = base.href.replace(/\/[^/]*$/, '/') + result.href;
+        }
+        // Re-parse
+        return parseURLImpl(result.href, null);
+    }
+
+    return result;
+}
+
+// Simple URLSearchParams
+function URLSearchParamsImpl(init) {
+    var params = this;
+    params._entries = [];
+    params._onChange = arguments[1] || null;
+
+    if (typeof init === 'string') {
+        var pairs = init.replace(/^[?]/, '').split('&');
+        for (var i = 0; i < pairs.length; i++) {
+            if (pairs[i]) {
+                var eq = pairs[i].indexOf('=');
+                if (eq >= 0) {
+                    params._entries.push([decodeURIComponent(pairs[i].substring(0, eq)), decodeURIComponent(pairs[i].substring(eq + 1))]);
+                } else {
+                    params._entries.push([decodeURIComponent(pairs[i]), '']);
+                }
+            }
+        }
     }
 }
 
-URLConstructor.prototype.toString = function() {
-    return this.href;
+function notifyChange(sp) {
+    if (typeof sp._onChange === 'function') sp._onChange(sp.toString());
+}
+
+URLSearchParamsImpl.prototype.get = function(name) {
+    for (var i = 0; i < this._entries.length; i++) {
+        if (this._entries[i][0] === name) return this._entries[i][1];
+    }
+    return null;
 };
+
+URLSearchParamsImpl.prototype.getAll = function(name) {
+    var result = [];
+    for (var i = 0; i < this._entries.length; i++) {
+        if (this._entries[i][0] === name) result.push(this._entries[i][1]);
+    }
+    return result;
+};
+
+URLSearchParamsImpl.prototype.set = function(name, value) {
+    for (var i = this._entries.length - 1; i >= 0; i--) {
+        if (this._entries[i][0] === name) this._entries.splice(i, 1);
+    }
+    this._entries.push([name, String(value)]);
+    notifyChange(this);
+};
+
+URLSearchParamsImpl.prototype.append = function(name, value) {
+    this._entries.push([name, String(value)]);
+    notifyChange(this);
+};
+
+URLSearchParamsImpl.prototype.delete = function(name) {
+    for (var i = this._entries.length - 1; i >= 0; i--) {
+        if (this._entries[i][0] === name) this._entries.splice(i, 1);
+    }
+    notifyChange(this);
+};
+
+URLSearchParamsImpl.prototype.has = function(name) {
+    for (var i = 0; i < this._entries.length; i++) {
+        if (this._entries[i][0] === name) return true;
+    }
+    return false;
+};
+
+Object.defineProperty(URLSearchParamsImpl.prototype, 'toString', {
+    writable: true, configurable: true,
+    value: function() {
+        return this._entries.map(function(e) {
+            return encodeURIComponent(e[0]) + '=' + encodeURIComponent(e[1]);
+        }).join('&');
+    }
+});
+
+URLSearchParamsImpl.prototype.entries = function() {
+    return this._entries[Symbol.iterator]();
+};
+
+function URLConstructor(url, base) {
+    if (!(this instanceof URLConstructor)) {
+        return new URLConstructor(url, base);
+    }
+    var parsed = parseURLImpl(url, base);
+    this.href = parsed.href;
+    this.protocol = parsed.protocol;
+    this.host = parsed.host;
+    this.hostname = parsed.hostname;
+    this.port = parsed.port;
+    this.pathname = parsed.pathname;
+    this.hash = parsed.hash;
+    var self = this;
+    this.searchParams = new URLSearchParamsImpl(parsed.search, function(query) {
+        self.search = query ? '?' + query : '';
+    });
+    this.search = parsed.search;
+}
+
+Object.defineProperty(URLConstructor.prototype, 'toString', {
+    writable: true, configurable: true,
+    value: function() {
+        return this.href;
+    }
+});
 
 URLConstructor.prototype.toJSON = function() {
     return this.href;
@@ -138355,18 +138681,21 @@ function urlParse(urlStr) {
 }
 
 function urlResolve(from, to) {
-    try {
-        return new URLConstructor(to, from).href;
-    } catch (e) {
-        return to;
-    }
+    return new URLConstructor(to, from).href;
 }
 
 function urlFormat(urlObj) {
-    if (typeof urlObj === 'string') {
-        return urlObj;
+    if (typeof urlObj === 'string') return urlObj;
+    if (urlObj && urlObj.href) return urlObj.href;
+    if (urlObj && urlObj.protocol && urlObj.host) {
+        var s = urlObj.protocol + '//' + urlObj.host;
+        if (urlObj.pathname) s += urlObj.pathname;
+        else s += '/';
+        if (urlObj.search) s += urlObj.search;
+        if (urlObj.hash) s += urlObj.hash;
+        return s;
     }
-    return urlObj.href;
+    return '';
 }
 
 function domainToASCII(domain) {
@@ -138378,11 +138707,11 @@ function domainToUnicode(domain) {
 }
 
 function urlToHttpOptions(url) {
-    const options = {
+    var options = {
         protocol: url.protocol,
         hostname: url.hostname,
         port: url.port,
-        path: url.pathname + url.search,
+        path: (url.pathname || '') + (url.search || ''),
         method: 'GET',
     };
     if (url.username) {

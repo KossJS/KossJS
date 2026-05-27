@@ -23,7 +23,28 @@ class KossJS:
     RESULT_ERROR = 1
     RESULT_INVALID_ARG = 2
 
-    def __init__(self, lib_path: str | None = None, with_modules: bool = False, root_dir: str | None = None):
+    # Capability flags (must match KossCapability in include/kossjs.h)
+    KOSS_CAP_FS = 1 << 0
+    KOSS_CAP_NET = 1 << 1
+    KOSS_CAP_CRYPTO = 1 << 2
+    KOSS_CAP_WORKER = 1 << 3
+    KOSS_CAP_EXTERNAL_LOADER = 1 << 4
+    KOSS_CAP_SANDBOX = 0
+    KOSS_CAP_ALL = (
+        KOSS_CAP_FS
+        | KOSS_CAP_NET
+        | KOSS_CAP_CRYPTO
+        | KOSS_CAP_WORKER
+        | KOSS_CAP_EXTERNAL_LOADER
+    )
+
+    def __init__(
+        self,
+        lib_path: str | None = None,
+        with_modules: bool = False,
+        root_dir: str | None = None,
+        capabilities: int | None = None,  # None = KOSS_CAP_ALL (backward compatible)
+    ):
         self._ptr: ctypes.c_void_p | None = None
         if lib_path is None:
             lib_path = self._find_library()
@@ -31,12 +52,16 @@ class KossJS:
         self._lib = ctypes.CDLL(lib_path)
         self._setup_prototypes()
         
+        caps = capabilities if capabilities is not None else self.KOSS_CAP_ALL
+
         # Use with_modules to enable module loading from stdlib
         if with_modules and root_dir:
-            self._ptr = self._lib.koss_create_with_modules(root_dir.encode("utf-8"))
+            self._ptr = self._lib.koss_create_with_modules_and_caps(
+                root_dir.encode("utf-8"), caps
+            )
         else:
             # Still use with_modules but with current directory
-            self._ptr = self._lib.koss_create_with_modules(b".")
+            self._ptr = self._lib.koss_create_with_modules_and_caps(b".", caps)
         
         if not self._ptr:
             raise RuntimeError("Failed to create KossJS instance")
@@ -61,8 +86,17 @@ class KossJS:
         lib.koss_create.restype = ctypes.c_void_p
         lib.koss_create.argtypes = []
         
+        lib.koss_create_with_caps.restype = ctypes.c_void_p
+        lib.koss_create_with_caps.argtypes = [ctypes.c_uint32]
+
         lib.koss_create_with_modules.restype = ctypes.c_void_p
         lib.koss_create_with_modules.argtypes = [ctypes.c_char_p]
+        
+        lib.koss_create_with_modules_and_caps.restype = ctypes.c_void_p
+        lib.koss_create_with_modules_and_caps.argtypes = [ctypes.c_char_p, ctypes.c_uint32]
+
+        lib.koss_get_capabilities.restype = ctypes.c_uint32
+        lib.koss_get_capabilities.argtypes = [ctypes.c_void_p]
         
         lib.koss_destroy.argtypes = [ctypes.c_void_p]
         
@@ -82,25 +116,25 @@ class KossJS:
         lib.koss_run_module_string.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         
         lib.koss_set_global_string.restype = KossResult
-        lib.koss_set_global_string.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+        lib.koss_set_global_string.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
         
         lib.koss_set_global_number.restype = KossResult
-        lib.koss_set_global_number.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_double]
+        lib.koss_set_global_number.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_double]
         
         lib.koss_set_global_bool.restype = KossResult
-        lib.koss_set_global_bool.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_bool]
+        lib.koss_set_global_bool.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_bool]
         
         lib.koss_set_global_null.restype = KossResult
-        lib.koss_set_global_null.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        lib.koss_set_global_null.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         
         lib.koss_set_global_undefined.restype = KossResult
-        lib.koss_set_global_undefined.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        lib.koss_set_global_undefined.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         
         lib.koss_set_global_json.restype = KossResult
-        lib.koss_set_global_json.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+        lib.koss_set_global_json.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
         
         lib.koss_register_function.restype = KossResult
-        lib.koss_register_function.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+        lib.koss_register_function.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
         
         lib.koss_free_string.argtypes = [ctypes.c_void_p]
         lib.koss_free_result.argtypes = [KossResult]
@@ -109,7 +143,7 @@ class KossJS:
         lib.koss_version.argtypes = []
         
         lib.koss_get_binding.restype = KossResult
-        lib.koss_get_binding.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        lib.koss_get_binding.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         
         lib.koss_fetch.restype = KossResult
         lib.koss_fetch.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
@@ -142,7 +176,7 @@ class KossJS:
         lib.koss_register_module_loader.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 
         lib.koss_register_class.restype = KossResult
-        lib.koss_register_class.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+        lib.koss_register_class.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p]
     
     def _get_binding(self, name: str) -> dict[str, Any]:
         """Get internal binding info from Rust."""
@@ -151,12 +185,14 @@ class KossJS:
         return json.loads(value) if value else {}
     
     def _check_result(self, result: KossResult) -> str:
+        if self._ptr is None:
+            raise RuntimeError("KossJS instance has been destroyed")
         raw_value = result.value
         if raw_value:
             if isinstance(raw_value, bytes):
-                value = raw_value.decode("utf-8")
+                value = raw_value.decode("utf-8", errors="replace")
             else:
-                value = bytes(raw_value).decode("utf-8")
+                value = bytes(raw_value).decode("utf-8", errors="replace")
         else:
             value = ""
         self._lib.koss_free_result(result)
@@ -222,6 +258,8 @@ class KossJS:
                 return None
             return val
         except Exception:
+            import logging
+            logging.getLogger("KossJS").warning("worker_try_recv: failed to parse result", exc_info=True)
             return None
 
     def worker_terminate(self, worker_id: int) -> str:
@@ -264,6 +302,9 @@ class KossJS:
 
         if value is None:
             result = self._lib.koss_set_global_null(self._ptr, name_bytes)
+        elif isinstance(value, bool):
+            # bool must be checked before int because bool is subclass of int
+            result = self._lib.koss_set_global_bool(self._ptr, name_bytes, value)
         elif isinstance(value, str):
             if value == "__undefined__":
                 result = self._lib.koss_set_global_undefined(self._ptr, name_bytes)
@@ -271,8 +312,6 @@ class KossJS:
                 result = self._lib.koss_set_global_string(self._ptr, name_bytes, value.encode("utf-8"))
         elif isinstance(value, (int, float)):
             result = self._lib.koss_set_global_number(self._ptr, name_bytes, float(value))
-        elif isinstance(value, bool):
-            result = self._lib.koss_set_global_bool(self._ptr, name_bytes, value)
         elif isinstance(value, (list, dict)):
             json_str = json.dumps(value, ensure_ascii=False).encode("utf-8")
             result = self._lib.koss_set_global_json(self._ptr, name_bytes, json_str)
@@ -306,7 +345,10 @@ class KossJS:
                 args: list[str] = []
                 for i in range(argc):
                     str_ptr: int = ctypes.cast(argv + i * ctypes.sizeof(ctypes.c_char_p), ctypes.POINTER(ctypes.c_char_p))[0] # pyright: ignore[reportOperatorIssue, reportUnknownArgumentType]
-                    args.append(ctypes.string_at(str_ptr).decode("utf-8"))
+                    if not str_ptr:
+                        args.append("")
+                    else:
+                        args.append(ctypes.string_at(str_ptr).decode("utf-8", errors="replace"))
                 result = func(*args)
                 if result is None:
                     return None
@@ -574,7 +616,10 @@ class KossJS:
                 args: list[str] = []
                 for i in range(argc):
                     str_ptr: int = ctypes.cast(argv + i * ctypes.sizeof(ctypes.c_char_p), ctypes.POINTER(ctypes.c_char_p))[0] # pyright: ignore[reportOperatorIssue, reportUnknownArgumentType]
-                    args.append(ctypes.string_at(str_ptr).decode("utf-8"))
+                    if not str_ptr:
+                        args.append("")
+                    else:
+                        args.append(ctypes.string_at(str_ptr).decode("utf-8", errors="replace"))
                 if not args:
                     return None
                 method_name: str = args[0]
@@ -618,7 +663,17 @@ class KossJS:
     
     def destroy(self) -> None:
         """Destroy the JavaScript instance and free memory."""
-        if self._ptr:
+        if self._ptr and hasattr(self, '_lib') and self._lib:
+            if hasattr(self, "_callback_allocations"):
+                for buf in self._callback_allocations:
+                    try:
+                        if sys.platform == "win32":
+                            ctypes.CDLL('msvcrt.dll').free(buf)
+                        else:
+                            ctypes.CDLL(ctypes.util.find_library('c')).free(buf)
+                    except Exception:
+                        pass
+                self._callback_allocations.clear()
             self._lib.koss_destroy(self._ptr)
             self._ptr = None
     
@@ -668,14 +723,24 @@ def koss_module_loader(module_path: str) -> dict[str, Any] | None:
         parts = module_path.split("/", 1)
         base_module = parts[0]
         sub_path = parts[1]
+        sanitized_base = os.path.basename(base_module)
+        sanitized_sub = os.path.basename(sub_path)
+        if sanitized_base != base_module:
+            return None
         # Try: stdlib/path/posix.js
-        js_file = stdlib_dir / base_module / f"{sub_path}.js"
+        js_file = stdlib_dir / sanitized_base / f"{sanitized_sub}.js"
         if js_file.exists():
+            resolved = js_file.resolve()
+            if not str(resolved).startswith(str(stdlib_dir.resolve())):
+                return None
             with open(js_file, 'r', encoding='utf-8') as f:
                 return {"type": "module", "code": f.read()}
         # Try: stdlib/path/posix/index.js
-        js_file = stdlib_dir / base_module / sub_path / "index.js"
+        js_file = stdlib_dir / sanitized_base / sanitized_sub / "index.js"
         if js_file.exists():
+            resolved = js_file.resolve()
+            if not str(resolved).startswith(str(stdlib_dir.resolve())):
+                return None
             with open(js_file, 'r', encoding='utf-8') as f:
                 return {"type": "module", "code": f.read()}
         # Fall through to module not found
@@ -683,14 +748,23 @@ def koss_module_loader(module_path: str) -> dict[str, Any] | None:
     # Check if it's a built-in module (full name match)
     if module_path in builtin_modules:
         # Try to load from stdlib
-        js_file = stdlib_dir / f"{module_path}.js"
+        sanitized = os.path.basename(module_path)
+        if sanitized != module_path:
+            return None
+        js_file = stdlib_dir / f"{sanitized}.js"
         if js_file.exists():
+            resolved = js_file.resolve()
+            if not str(resolved).startswith(str(stdlib_dir.resolve())):
+                return None
             with open(js_file, 'r', encoding='utf-8') as f:
                 return {"type": "module", "code": f.read()}
         
         # Try as directory with index.js
-        js_file = stdlib_dir / module_path / "index.js"
+        js_file = stdlib_dir / sanitized / "index.js"
         if js_file.exists():
+            resolved = js_file.resolve()
+            if not str(resolved).startswith(str(stdlib_dir.resolve())):
+                return None
             with open(js_file, 'r', encoding='utf-8') as f:
                 return {"type": "module", "code": f.read()}
     

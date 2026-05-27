@@ -218,7 +218,16 @@ impl ModuleResolver {
 
         // Canonicalize as much as possible (resolve .., symlinks, etc.)
         // But don't fail if the path doesn't exist yet — we'll probe below.
-        let candidate = Self::normalize_path(&candidate);
+        let candidate = match Self::normalize_path(&candidate) {
+            Some(p) => p,
+            None => {
+                return Err(ResolveError {
+                    specifier: specifier.to_string(),
+                    parent: parent_dir.display().to_string(),
+                    searched: vec![candidate],
+                });
+            }
+        };
 
         let mut searched = Vec::new();
 
@@ -289,8 +298,7 @@ impl ModuleResolver {
                 if let Some(sub) = sub_path {
                     match self.resolve_path(
                         &format!("./{}", sub),
-                        // Use a fake "file" inside nm_dir so parent_dir = nm_dir
-                        &nm_dir.join("__dummy__"),
+                        &nm_dir,
                     ) {
                         Ok(resolved) => return Ok(resolved),
                         Err(mut e) => {
@@ -301,7 +309,7 @@ impl ModuleResolver {
                     // Try package.json main
                     if let Some(main_field) = self.read_package_main(&nm_dir) {
                         match self
-                            .resolve_path(&format!("./{}", main_field), &nm_dir.join("__dummy__"))
+                            .resolve_path(&format!("./{}", main_field), &nm_dir)
                         {
                             Ok(resolved) => return Ok(resolved),
                             Err(_) => {
@@ -393,7 +401,17 @@ impl ModuleResolver {
 
     fn file_exists(&self, path: &Path) -> bool {
         if let Some(&cached) = self.exists_cache.borrow().get(path) {
-            return cached;
+            if cached {
+                return true; // positive cache hit
+            }
+            // Negative cache entries can become stale (CWE-367 TOCTOU):
+            // a file may have been created since the last check.
+            // Re-check on disk and update if now present.
+            if path.is_file() {
+                self.exists_cache.borrow_mut().insert(path.to_path_buf(), true);
+                return true;
+            }
+            return false;
         }
 
         let exists = path.is_file();
@@ -412,12 +430,38 @@ impl ModuleResolver {
 
     /// Normalize a path: resolve `.` and `..` components without requiring the
     /// path to exist on disk (unlike std::fs::canonicalize).
-    fn normalize_path(path: &Path) -> PathBuf {
+    /// Returns `None` if the path escapes above the implied root (e.g. `/a/../../b`).
+    fn normalize_path(path: &Path) -> Option<PathBuf> {
+        Self::normalize_path_static(path)
+    }
+
+    /// Public static version of normalize_path for use by other modules.
+    pub fn normalize_path_static(path: &Path) -> Option<PathBuf> {
         let mut components = Vec::new();
         for component in path.components() {
             match component {
+                std::path::Component::Prefix(_) => {
+                    components.clear();
+                    components.push(component);
+                }
+                std::path::Component::RootDir => {
+                    if components.is_empty() || components.last() == Some(&std::path::Component::RootDir) {
+                        components.clear();
+                    }
+                    components.push(component);
+                }
                 std::path::Component::ParentDir => {
-                    components.pop();
+                    if components.is_empty() {
+                        return None; // traversal above root
+                    }
+                    match components.last() {
+                        Some(std::path::Component::RootDir) | Some(std::path::Component::Prefix(_)) => {
+                            return None; // traversal above absolute root
+                        }
+                        _ => {
+                            components.pop();
+                        }
+                    }
                 }
                 std::path::Component::CurDir => {}
                 other => {
@@ -425,7 +469,10 @@ impl ModuleResolver {
                 }
             }
         }
-        components.iter().collect()
+        if components.is_empty() {
+            return None;
+        }
+        Some(components.iter().collect())
     }
 }
 
@@ -439,6 +486,59 @@ impl Default for ModuleResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::io::Write;
+
+    // ── Helper: create temp dir with files ────────────────────────────────
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!("kossjs_test_{}", uuid_str()));
+            fs::create_dir_all(&dir).unwrap();
+            Self { path: dir }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+
+        fn mkdir(&self, name: &str) -> PathBuf {
+            let p = self.path.join(name);
+            fs::create_dir_all(&p).unwrap();
+            p
+        }
+
+        fn write(&self, name: &str, content: &str) -> PathBuf {
+            let p = self.path.join(name);
+            if let Some(parent) = p.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            let mut f = fs::File::create(&p).unwrap();
+            f.write_all(content.as_bytes()).unwrap();
+            p
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn uuid_str() -> String {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        format!("{:x}_{}", nanos, std::process::id())
+    }
+
+    // ── split_specifier ──────────────────────────────────────────────────
 
     #[test]
     fn test_split_specifier_regular() {
@@ -451,6 +551,10 @@ mod tests {
             ModuleResolver::split_specifier("lodash/fp/object"),
             ("lodash", Some("fp/object"))
         );
+        // Edge cases
+        assert_eq!(ModuleResolver::split_specifier(""), ("", None));
+        assert_eq!(ModuleResolver::split_specifier("a"), ("a", None));
+        assert_eq!(ModuleResolver::split_specifier("a/"), ("a", Some("")));
     }
 
     #[test]
@@ -463,19 +567,446 @@ mod tests {
             ModuleResolver::split_specifier("@babel/core/lib/parse"),
             ("@babel/core", Some("lib/parse"))
         );
+        // Scoped without slash
+        assert_eq!(
+            ModuleResolver::split_specifier("@scope"),
+            ("@scope", None)
+        );
+        // Scoped with trailing sub-path
+        assert_eq!(
+            ModuleResolver::split_specifier("@vue/compiler-sfc/dist/compiler-sfc.cjs"),
+            ("@vue/compiler-sfc", Some("dist/compiler-sfc.cjs"))
+        );
     }
+
+    // ── is_relative / is_absolute / is_node_internal ─────────────────────
 
     #[test]
     fn test_is_relative() {
         assert!(ModuleResolver::is_relative("./foo"));
         assert!(ModuleResolver::is_relative("../bar"));
+        assert!(ModuleResolver::is_relative("./"));
+        assert!(ModuleResolver::is_relative("../sub/dir"));
         assert!(!ModuleResolver::is_relative("lodash"));
         assert!(!ModuleResolver::is_relative("/abs/path"));
+        assert!(!ModuleResolver::is_relative("node:fs"));
     }
 
     #[test]
-    fn test_normalize_path() {
+    fn test_is_node_internal() {
+        assert!(ModuleResolver::is_node_internal("node:fs"));
+        assert!(ModuleResolver::is_node_internal("node:path"));
+        assert!(!ModuleResolver::is_node_internal("fs"));
+        assert!(!ModuleResolver::is_node_internal("nodefs"));
+    }
+
+    // ── normalize_path ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_normalize_path_basic() {
         let p = ModuleResolver::normalize_path(Path::new("/a/b/../c/./d"));
-        assert_eq!(p, PathBuf::from("/a/c/d"));
+        assert_eq!(p, Some(PathBuf::from("/a/c/d")));
+    }
+
+    #[test]
+    fn test_normalize_path_many_parent_dirs() {
+        let p = ModuleResolver::normalize_path(Path::new("/a/b/c/../../.."));
+        let expected: PathBuf = Path::new("/").components().collect();
+        assert_eq!(p, Some(expected));
+    }
+
+    #[test]
+    fn test_normalize_path_no_change() {
+        let p = ModuleResolver::normalize_path(Path::new("/a/b/c"));
+        assert_eq!(p, Some(PathBuf::from("/a/b/c")));
+    }
+
+    #[test]
+    fn test_normalize_path_trailing_slash() {
+        let p = ModuleResolver::normalize_path(Path::new("/a/b/"));
+        assert_eq!(p, Some(PathBuf::from("/a/b")));
+    }
+
+    #[test]
+    fn test_normalize_path_relative_with_dot_slash() {
+        let p = ModuleResolver::normalize_path(Path::new("./a/../b"));
+        assert!(p.is_some());
+        assert!(p.unwrap().ends_with("b"));
+    }
+
+    // ── Resolver construction and cache management ───────────────────────
+
+    #[test]
+    fn test_resolver_new() {
+        let r = ModuleResolver::new();
+        assert!(r.stdlib_path().to_string_lossy().contains("stdlib"));
+    }
+
+    #[test]
+    fn test_resolver_with_capacity() {
+        let r = ModuleResolver::with_capacity(10);
+        assert!(r.stdlib_path().to_string_lossy().contains("stdlib"));
+    }
+
+    #[test]
+    fn test_clear_cache() {
+        let r = ModuleResolver::with_capacity(10);
+        // Borrow and insert something
+        r.exists_cache
+            .borrow_mut()
+            .insert(PathBuf::from("/test"), true);
+        assert_eq!(r.exists_cache.borrow().len(), 1);
+        r.clear_cache();
+        assert_eq!(r.exists_cache.borrow().len(), 0);
+        assert_eq!(r.resolve_cache.borrow().len(), 0);
+        assert_eq!(r.pkg_cache.borrow().len(), 0);
+    }
+
+    // ── file_exists / dir_exists ─────────────────────────────────────────
+
+    #[test]
+    fn test_file_exists() {
+        let tmp = TempDir::new();
+        let f = tmp.write("real.js", "// test");
+        let r = ModuleResolver::with_capacity(10);
+
+        assert!(r.file_exists(&f));
+        assert!(!r.file_exists(&tmp.path().join("nonexistent.js")));
+    }
+
+    #[test]
+    fn test_file_exists_cache() {
+        let tmp = TempDir::new();
+        let f = tmp.write("cached.js", "// cached");
+        let r = ModuleResolver::with_capacity(10);
+
+        // First call populates cache
+        assert!(r.file_exists(&f));
+        // Second call uses cache; delete file on disk to verify
+        fs::remove_file(&f).unwrap();
+        assert!(r.file_exists(&f)); // still cached as true
+    }
+
+    #[test]
+    fn test_dir_exists() {
+        let tmp = TempDir::new();
+        let d = tmp.mkdir("real_dir");
+        let r = ModuleResolver::with_capacity(10);
+
+        assert!(r.dir_exists(&d));
+        assert!(!r.dir_exists(&tmp.path().join("nonexistent_dir")));
+    }
+
+    // ── resolve_path ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_path_direct_file() {
+        let tmp = TempDir::new();
+        let f = tmp.write("mod.js", "module.exports = 42;");
+        let r = ModuleResolver::with_capacity(10);
+
+        let resolved = r.resolve_path("./mod", tmp.path()).unwrap();
+        assert_eq!(resolved, f);
+    }
+
+    #[test]
+    fn test_resolve_path_extension_completion() {
+        let tmp = TempDir::new();
+        let f = tmp.write("lib.json", r#"{"key": "val"}"#);
+        let r = ModuleResolver::with_capacity(10);
+
+        let resolved = r.resolve_path("./lib", tmp.path()).unwrap();
+        assert_eq!(resolved, f);
+    }
+
+    #[test]
+    fn test_resolve_path_extension_completion_js() {
+        let tmp = TempDir::new();
+        let f = tmp.write("app.mjs", "export default 1;");
+        let r = ModuleResolver::with_capacity(10);
+
+        let resolved = r.resolve_path("./app", tmp.path()).unwrap();
+        assert_eq!(resolved, f);
+    }
+
+    #[test]
+    fn test_resolve_path_index_file() {
+        let tmp = TempDir::new();
+        let _d = tmp.mkdir("mylib");
+        let idx = tmp.write("mylib/index.js", "module.exports = {};");
+        let r = ModuleResolver::with_capacity(10);
+
+        let resolved = r.resolve_path("./mylib", tmp.path()).unwrap();
+        assert_eq!(resolved, idx);
+    }
+
+    #[test]
+    fn test_resolve_path_index_preferred_over_extension() {
+        // If both mylib.js and mylib/index.js exist, prefers the direct file
+        let tmp = TempDir::new();
+        let direct = tmp.write("mylib.js", "// direct");
+        tmp.mkdir("mylib");
+        // Note: mylib.js was written first; mylib dir was created after.
+        // resolve_path tries candidate as file first, so mylib.js should win
+        let r = ModuleResolver::with_capacity(10);
+
+        let resolved = r.resolve_path("./mylib", tmp.path()).unwrap();
+        assert_eq!(resolved, direct);
+    }
+
+    #[test]
+    fn test_resolve_path_not_found() {
+        let tmp = TempDir::new();
+        let r = ModuleResolver::with_capacity(10);
+
+        let err = r
+            .resolve_path("./nonexistent", tmp.path())
+            .unwrap_err();
+        assert!(err.to_string().contains("Cannot find module"));
+        assert!(!err.searched.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_path_parent_dir() {
+        let tmp = TempDir::new();
+        tmp.write("shared.js", "// shared");
+        let sub = tmp.mkdir("sub");
+        let r = ModuleResolver::with_capacity(10);
+
+        let resolved = r.resolve_path("../shared", &sub).unwrap();
+        assert_eq!(resolved, tmp.path().join("shared.js"));
+    }
+
+    // ── resolve_node_modules ─────────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_node_modules_basic() {
+        let tmp = TempDir::new();
+        let _nm = tmp.mkdir("node_modules");
+        let _pkg = tmp.mkdir("node_modules/mypkg");
+        let main = tmp.write("node_modules/mypkg/index.js", "module.exports = 'mypkg';");
+        let src = tmp.mkdir("src");
+        let r = ModuleResolver::with_capacity(10);
+
+        let resolved = r.resolve_node_modules("mypkg", &src).unwrap();
+        assert_eq!(resolved, main);
+    }
+
+    #[test]
+    fn test_resolve_node_modules_package_json_main() {
+        let tmp = TempDir::new();
+        tmp.mkdir("node_modules");
+        tmp.mkdir("node_modules/hasmain");
+        tmp.write(
+            "node_modules/hasmain/package.json",
+            r#"{"main": "dist/main.js"}"#,
+        );
+        let main = tmp.write("node_modules/hasmain/dist/main.js", "// main entry");
+        let src = tmp.mkdir("src");
+        let r = ModuleResolver::with_capacity(10);
+
+        let resolved = r.resolve_node_modules("hasmain", &src).unwrap();
+        assert_eq!(resolved, main);
+    }
+
+    #[test]
+    fn test_resolve_node_modules_subpath() {
+        let tmp = TempDir::new();
+        tmp.mkdir("node_modules");
+        tmp.mkdir("node_modules/lodash");
+        let fp = tmp.write("node_modules/lodash/fp.js", "// fp module");
+        let src = tmp.mkdir("src");
+        let r = ModuleResolver::with_capacity(10);
+
+        let resolved = r.resolve_node_modules("lodash/fp", &src).unwrap();
+        assert_eq!(resolved, fp);
+    }
+
+    #[test]
+    fn test_resolve_node_modules_scoped() {
+        let tmp = TempDir::new();
+        tmp.mkdir("node_modules");
+        tmp.mkdir("node_modules/@types");
+        let _pkg = tmp.mkdir("node_modules/@types/node");
+        let idx = tmp.write("node_modules/@types/node/index.js", "// types");
+        let src = tmp.mkdir("src");
+        let r = ModuleResolver::with_capacity(10);
+
+        let resolved = r.resolve_node_modules("@types/node", &src).unwrap();
+        assert_eq!(resolved, idx);
+    }
+
+    #[test]
+    fn test_resolve_node_modules_walk_up() {
+        let tmp = TempDir::new();
+        // node_modules at root of tmp
+        tmp.mkdir("node_modules");
+        tmp.mkdir("node_modules/rootpkg");
+        let idx = tmp.write("node_modules/rootpkg/index.js", "// root pkg");
+        // current file deep inside
+        let deep = tmp.mkdir("a/b/c/d/e");
+        let r = ModuleResolver::with_capacity(10);
+
+        let resolved = r.resolve_node_modules("rootpkg", &deep).unwrap();
+        assert_eq!(resolved, idx);
+    }
+
+    #[test]
+    fn test_resolve_node_modules_not_found() {
+        let tmp = TempDir::new();
+        let r = ModuleResolver::with_capacity(10);
+
+        let err = r
+            .resolve_node_modules("no_such_pkg_12345", tmp.path())
+            .unwrap_err();
+        assert!(err.to_string().contains("Cannot find module"));
+        assert!(err.specifier.contains("no_such_pkg_12345"));
+    }
+
+    // ── read_package_main ────────────────────────────────────────────────
+
+    #[test]
+    fn test_read_package_main_valid() {
+        let tmp = TempDir::new();
+        let d = tmp.mkdir("pkg");
+        tmp.write("pkg/package.json", r#"{"name": "pkg", "main": "lib/index.js"}"#);
+        let r = ModuleResolver::with_capacity(10);
+
+        let main = r.read_package_main(&d);
+        assert_eq!(main, Some("lib/index.js".to_string()));
+    }
+
+    #[test]
+    fn test_read_package_main_no_main_field() {
+        let tmp = TempDir::new();
+        let d = tmp.mkdir("pkg2");
+        tmp.write("pkg2/package.json", r#"{"name": "pkg2"}"#);
+        let r = ModuleResolver::with_capacity(10);
+
+        let main = r.read_package_main(&d);
+        assert_eq!(main, None);
+    }
+
+    #[test]
+    fn test_read_package_main_no_package_json() {
+        let tmp = TempDir::new();
+        let d = tmp.mkdir("pkg3");
+        let r = ModuleResolver::with_capacity(10);
+
+        let main = r.read_package_main(&d);
+        assert_eq!(main, None);
+    }
+
+    #[test]
+    fn test_read_package_main_cache() {
+        let tmp = TempDir::new();
+        let d = tmp.mkdir("pkg_cached");
+        tmp.write(
+            "pkg_cached/package.json",
+            r#"{"name": "pkg", "main": "src/main.js"}"#,
+        );
+        let r = ModuleResolver::with_capacity(10);
+
+        // First call caches
+        assert_eq!(r.read_package_main(&d), Some("src/main.js".to_string()));
+        // Delete package.json; cache should still return old value
+        fs::remove_file(d.join("package.json")).unwrap();
+        assert_eq!(r.read_package_main(&d), Some("src/main.js".to_string()));
+    }
+
+    // ── resolve (top-level API) ──────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_relative() {
+        let tmp = TempDir::new();
+        let f = tmp.write("dep.js", "module.exports = 1;");
+        let parent = tmp.write("main.js", "require('./dep');");
+        let r = ModuleResolver::with_capacity(10);
+
+        let resolved = r.resolve("./dep", &parent).unwrap();
+        assert_eq!(resolved, f);
+    }
+
+    #[test]
+    fn test_resolve_relative_cached() {
+        let tmp = TempDir::new();
+        let f = tmp.write("dep2.js", "module.exports = 2;");
+        let parent = tmp.write("main2.js", "// main");
+        let r = ModuleResolver::with_capacity(10);
+
+        let a = r.resolve("./dep2", &parent).unwrap();
+        let b = r.resolve("./dep2", &parent).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a, f);
+    }
+
+    #[test]
+    fn test_resolve_node_builtin_embedded() {
+        let r = ModuleResolver::with_capacity(10);
+        // path.js should exist in embedded stdlib
+        let result = r.resolve("node:path", Path::new("/dummy.js"));
+        assert!(result.is_ok());
+        let p = result.unwrap();
+        assert!(p.to_string_lossy().contains("path"));
+    }
+
+    #[test]
+    fn test_resolve_bare_specifier_fallback_stdlib() {
+        let r = ModuleResolver::with_capacity(10);
+        // "path" as bare specifier should be resolved from stdlib
+        let result = r.resolve("path", Path::new("/dummy.js"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_resolve_not_found() {
+        let tmp = TempDir::new();
+        let parent = tmp.write("main.js", "// main");
+        let r = ModuleResolver::with_capacity(10);
+
+        let err = r
+            .resolve("./does_not_exist_xyz", &parent)
+            .unwrap_err();
+        assert!(err.to_string().contains("Cannot find module"));
+        assert!(err.searched.len() > 1);
+    }
+
+    // ── ResolveError format ──────────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_error_display() {
+        let err = ResolveError {
+            specifier: "lodash".to_string(),
+            parent: "/project/src/main.js".to_string(),
+            searched: vec![
+                PathBuf::from("/project/src/node_modules/lodash"),
+                PathBuf::from("/project/node_modules/lodash"),
+            ],
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("Cannot find module 'lodash'"));
+        assert!(msg.contains("/project/src/main.js"));
+        assert!(msg.contains("Searched in:"));
+        assert!(msg.contains("node_modules/lodash"));
+    }
+
+    #[test]
+    fn test_resolve_error_without_searched() {
+        let err = ResolveError {
+            specifier: "x".to_string(),
+            parent: ".".to_string(),
+            searched: vec![],
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("Cannot find module 'x'"));
+        assert!(!msg.contains("Searched in"));
+    }
+
+    // ── Default impl ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_default_resolver() {
+        let r = ModuleResolver::default();
+        assert!(r.stdlib_path().to_string_lossy().contains("stdlib"));
     }
 }

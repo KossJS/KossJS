@@ -85,8 +85,10 @@ function addBufferPrototypeMethods(proto) {
     return new FastBuffer(this.buffer, this.byteOffset + start, (end || this.length) - start);
   };
 
-  proto.toString = function(encoding, start, end) {
-    if (encoding === undefined || encoding === 'utf8') {
+  Object.defineProperty(proto, 'toString', {
+    writable: true, configurable: true,
+    value: function(encoding, start, end) {
+    if (encoding === undefined || encoding === 'utf8' || encoding === 'utf-8') {
       let str = '';
       const startIdx = start || 0;
       const endIdx = end || this.length;
@@ -95,8 +97,44 @@ function addBufferPrototypeMethods(proto) {
       }
       return decodeURIComponent(encodeURIComponent(str));
     }
+    if (encoding === 'hex') {
+      const startIdx = start || 0;
+      const endIdx = end || this.length;
+      let hex = '';
+      for (let i = startIdx; i < endIdx; i++) {
+        hex += (this[i] < 16 ? '0' : '') + this[i].toString(16);
+      }
+      return hex;
+    }
+    if (encoding === 'base64') {
+      const startIdx = start || 0;
+      const endIdx = end || this.length;
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+      let output = '';
+      for (let i = startIdx; i < endIdx; i += 3) {
+        const a = this[i];
+        const b = i + 1 < endIdx ? this[i + 1] : 0;
+        const c = i + 2 < endIdx ? this[i + 2] : 0;
+        const triplet = (a << 16) | (b << 8) | c;
+        output += chars[(triplet >> 18) & 0x3F];
+        output += chars[(triplet >> 12) & 0x3F];
+        output += i + 1 < endIdx ? chars[(triplet >> 6) & 0x3F] : '=';
+        output += i + 2 < endIdx ? chars[triplet & 0x3F] : '=';
+      }
+      return output;
+    }
+    if (encoding === 'latin1' || encoding === 'binary') {
+      const startIdx = start || 0;
+      const endIdx = end || this.length;
+      let str = '';
+      for (let i = startIdx; i < endIdx; i++) {
+        str += String.fromCharCode(this[i]);
+      }
+      return str;
+    }
     return '';
-  };
+  }
+  });
 
   proto.equals = function(otherBuffer) {
     if (!ArrayBuffer.isView(otherBuffer)) return false;
@@ -113,7 +151,7 @@ function addBufferPrototypeMethods(proto) {
     if (sourceStart === undefined) sourceStart = 0;
     if (sourceEnd === undefined) sourceEnd = this.length;
 
-    const minLen = MathMin(targetEnd - targetStart, sourceEnd - sourceStart);
+    const minLen = Math.min(targetEnd - targetStart, sourceEnd - sourceStart);
     for (let i = 0; i < minLen; i++) {
       const cmp = this[sourceStart + i] - target[targetStart + i];
       if (cmp !== 0) return cmp;
@@ -186,6 +224,97 @@ function addBufferPrototypeMethods(proto) {
       data.push(this[i]);
     }
     return { type: 'Buffer', data };
+  };
+
+  proto.writeUInt8 = function(value, offset) {
+    this[offset || 0] = value & 0xFF;
+    return offset + 1;
+  };
+
+  proto.writeUInt16LE = function(value, offset) {
+    const o = offset || 0;
+    this[o] = value & 0xFF;
+    this[o + 1] = (value >> 8) & 0xFF;
+    return o + 2;
+  };
+
+  proto.writeUInt16BE = function(value, offset) {
+    const o = offset || 0;
+    this[o] = (value >> 8) & 0xFF;
+    this[o + 1] = value & 0xFF;
+    return o + 2;
+  };
+
+  proto.writeUInt32LE = function(value, offset) {
+    const o = offset || 0;
+    this[o] = value & 0xFF;
+    this[o + 1] = (value >> 8) & 0xFF;
+    this[o + 2] = (value >> 16) & 0xFF;
+    this[o + 3] = (value >> 24) & 0xFF;
+    return o + 4;
+  };
+
+  proto.writeUInt32BE = function(value, offset) {
+    const o = offset || 0;
+    this[o] = (value >> 24) & 0xFF;
+    this[o + 1] = (value >> 16) & 0xFF;
+    this[o + 2] = (value >> 8) & 0xFF;
+    this[o + 3] = value & 0xFF;
+    return o + 4;
+  };
+
+  proto.writeInt8 = function(value, offset) {
+    this[offset || 0] = value & 0xFF;
+    return offset + 1;
+  };
+
+  proto.readUInt8 = function(offset) {
+    return this[offset || 0];
+  };
+
+  proto.readUInt16LE = function(offset) {
+    const o = offset || 0;
+    return this[o] | (this[o + 1] << 8);
+  };
+
+  proto.readUInt16BE = function(offset) {
+    const o = offset || 0;
+    return (this[o] << 8) | this[o + 1];
+  };
+
+  proto.readUInt32LE = function(offset) {
+    const o = offset || 0;
+    return this[o] + (this[o + 1] << 8) + (this[o + 2] << 16) + (this[o + 3] << 24);
+  };
+
+  proto.readUInt32BE = function(offset) {
+    const o = offset || 0;
+    return (this[o] << 24) + (this[o + 1] << 16) + (this[o + 2] << 8) + this[o + 3];
+  };
+
+  proto.readInt8 = function(offset) {
+    const val = this[offset || 0];
+    return val > 127 ? val - 256 : val;
+  };
+
+  proto.readInt16LE = function(offset) {
+    const val = this.readUInt16LE(offset);
+    return val > 32767 ? val - 65536 : val;
+  };
+
+  proto.readInt16BE = function(offset) {
+    const val = this.readUInt16BE(offset);
+    return val > 32767 ? val - 65536 : val;
+  };
+
+  proto.readInt32LE = function(offset) {
+    const val = this.readUInt32LE(offset);
+    return val > 2147483647 ? val - 4294967296 : val;
+  };
+
+  proto.readInt32BE = function(offset) {
+    const val = this.readUInt32BE(offset);
+    return val > 2147483647 ? val - 4294967296 : val;
   };
 }
 
@@ -266,7 +395,7 @@ Buffer.compare = function(buf1, buf2) {
     throw new TypeError('Argument must be a buffer');
   }
   if (buf1 === buf2) return 0;
-  const len = MathMin(buf1.length, buf2.length);
+  const len = Math.min(buf1.length, buf2.length);
   for (let i = 0; i < len; i++) {
     if (buf1[i] !== buf2[i]) {
       return buf1[i] < buf2[i] ? -1 : 1;
@@ -303,7 +432,7 @@ Buffer.concat = function(list, length) {
   for (let i = 0; i < list.length && offset < length; i++) {
     const item = list[i];
     if (ArrayBuffer.isView(item)) {
-      const len = MathMin(item.length, length - offset);
+      const len = Math.min(item.length, length - offset);
       for (let j = 0; j < len; j++) {
         buf[offset++] = item[j];
       }
@@ -322,6 +451,22 @@ Buffer.byteLength = function(string, encoding) {
     }
     throw new TypeError('Argument must be a string or Buffer');
   }
+  if (encoding === 'utf8' || encoding === 'utf-8' || encoding === undefined) {
+    // UTF-8 byte length: count multi-byte characters
+    let len = 0;
+    for (let i = 0; i < string.length; i++) {
+      const code = string.charCodeAt(i);
+      if (code < 0x80) len += 1;
+      else if (code < 0x800) len += 2;
+      else if (code < 0x10000) len += 3;
+      else len += 4;
+    }
+    return len;
+  }
+  if (encoding === 'hex') return string.length / 2;
+  if (encoding === 'base64') return Math.ceil(string.length * 3 / 4);
+  if (encoding === 'latin1' || encoding === 'binary') return string.length;
+  if (encoding === 'utf16le' || encoding === 'ucs2') return string.length * 2;
   return string.length;
 };
 
@@ -378,7 +523,6 @@ function btoa(input) {
 function atob(input) {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
   let output = '';
-  input = input.replace(/=+$/, '');
   for (let i = 0; i < input.length; i += 4) {
     const a = chars.indexOf(input[i]);
     const b = i + 1 < input.length ? chars.indexOf(input[i + 1]) : 0;

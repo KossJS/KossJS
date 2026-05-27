@@ -1,15 +1,13 @@
 'use strict';
 
-const {
-  MathTrunc,
-  ObjectDefineProperties,
-  ObjectDefineProperty,
-  SymbolDispose,
-  SymbolToPrimitive,
-  Promise,
-  setTimeout: jsSetTimeout,
-  clearTimeout: jsClearTimeout,
-} = globalThis;
+var _MathTrunc = Math.trunc || Math.floor;
+var _ObjectDefineProperties = Object.defineProperties;
+var _ObjectDefineProperty = Object.defineProperty;
+var _SymbolDispose = Symbol.dispose;
+var _SymbolToPrimitive = Symbol.toPrimitive;
+var _Promise = typeof globalThis !== 'undefined' && globalThis.Promise;
+var _jsSetTimeout = typeof globalThis !== 'undefined' && globalThis.setTimeout;
+var _jsClearTimeout = typeof globalThis !== 'undefined' && globalThis.clearTimeout;
 
 const knownTimersById = {};
 let nextTimerId = 1;
@@ -37,7 +35,7 @@ function insert(item, timeout) {
   if (item._started) return;
   item._started = true;
   
-  const delay = MathTrunc(timeout);
+  const delay = _MathTrunc(timeout);
   const id = item[async_id_symbol];
   
   knownTimersById[id] = item;
@@ -61,7 +59,9 @@ function insert(item, timeout) {
     }
   };
   
-  item._timerId = jsSetTimeout(callback, delay);
+  if (typeof _jsSetTimeout === 'function') {
+    item._timerId = _jsSetTimeout(callback, delay);
+  }
 }
 
 function unenroll(item) {
@@ -73,7 +73,7 @@ function unenroll(item) {
   }
   
   if (item._timerId) {
-    jsClearTimeout(item._timerId);
+    _jsClearTimeout(item._timerId);
     item._timerId = null;
   }
   
@@ -89,7 +89,7 @@ function setTimeout(callback, after = 0, ...args) {
   return timeout;
 }
 
-ObjectDefineProperty(setTimeout, 'promises', {
+_ObjectDefineProperty(setTimeout, 'promises', {
   __proto__: null,
   enumerable: true,
   configurable: true,
@@ -134,11 +134,11 @@ Timeout.prototype.close = function() {
   return this;
 };
 
-Timeout.prototype[SymbolDispose] = function() {
+Timeout.prototype[_SymbolDispose] = function() {
   clearTimeout(this);
 };
 
-Timeout.prototype[SymbolToPrimitive] = function() {
+Timeout.prototype[_SymbolToPrimitive] = function() {
   const id = this[async_id_symbol];
   if (!this[kHasPrimitive]) {
     this[kHasPrimitive] = true;
@@ -161,7 +161,7 @@ class Immediate {
 const immediateQueue = [];
 let immediateId = 0;
 
-Immediate.prototype[SymbolDispose] = function() {
+Immediate.prototype[_SymbolDispose] = function() {
   clearImmediate(this);
 };
 
@@ -173,24 +173,26 @@ function setImmediate(callback, ...args) {
   const immediate = new Immediate(callback, args.length ? args : undefined);
   immediateQueue.push(immediate);
   
-  jsSetTimeout(() => {
-    if (!immediate._destroyed && immediate._onImmediate) {
-      try {
-        if (immediate._args) {
-          immediate._onImmediate(...immediate._args);
-        } else {
-          immediate._onImmediate();
+  if (typeof _jsSetTimeout === 'function') {
+    _jsSetTimeout(function() {
+      if (!immediate._destroyed && immediate._onImmediate) {
+        try {
+          if (immediate._args) {
+            immediate._onImmediate(...immediate._args);
+          } else {
+            immediate._onImmediate();
+          }
+        } catch (e) {
+          console.error('Immediate callback error:', e);
         }
-      } catch (e) {
-        console.error('Immediate callback error:', e);
       }
-    }
-  }, 0);
+    }, 0);
+  }
   
   return immediate;
 }
 
-ObjectDefineProperty(setImmediate, 'promises', {
+_ObjectDefineProperty(setImmediate, 'promises', {
   __proto__: null,
   enumerable: true,
   configurable: true,
@@ -224,7 +226,7 @@ const timers = {
   },
 };
 
-ObjectDefineProperties(timers, {
+_ObjectDefineProperties(timers, {
   promises: {
     __proto__: null,
     configurable: true,
@@ -236,3 +238,11 @@ ObjectDefineProperties(timers, {
 });
 
 module.exports = timers;
+
+// Register as globals (Node.js compatibility)
+globalThis.setTimeout = setTimeout;
+globalThis.clearTimeout = clearTimeout;
+globalThis.setInterval = setInterval;
+globalThis.clearInterval = clearInterval;
+globalThis.setImmediate = setImmediate;
+globalThis.clearImmediate = clearImmediate;
