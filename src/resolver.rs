@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 // ── Extensions to try when auto-completing ──────────────────────────────────
-const FILE_EXTENSIONS: &[&str] = &[".js", ".mjs", ".cjs", ".json"];
-const INDEX_FILES: &[&str] = &["index.js", "index.mjs", "index.cjs", "index.json"];
+const FILE_EXTENSIONS: &[&str] = &[".js", ".mjs", ".cjs", ".json", ".node"];
+const INDEX_FILES: &[&str] = &["index.js", "index.mjs", "index.cjs", "index.json", "index.node"];
 
 // ── Error type ──────────────────────────────────────────────────────────────
 #[derive(Debug, Clone)]

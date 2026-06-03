@@ -1,6 +1,6 @@
 [package]
 name = "kossjs"
-version = "0.1.0-dev.5.fix"
+version = "0.1.0-dev.6"
 edition = "2024"
 description = "Embeddable JavaScript runtime as a dynamic library"
 license = "GNU Affero General Public License v3.0"
@@ -34,14 +34,26 @@ md-5 = "0.11"
 hmac = "0.13"
 pbkdf2 = "0.13"
 
+# 动态加载动态库（跨平台，iOS 不支持动态调用动态库所以跳过，Android 和 HarmonyOS 有限制也跳过）
+[target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
+libloading = "0.9.0"
+libffi = "5.1.0"
+libffi-sys = "4.1.0"
+
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "processthreadsapi"] }
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(all(unix, not(any(target_os = "android", target_os = "ios", target_os = "ohos"))))'.dependencies]
 libc = "0.2.186"
+
+[target.'cfg(target_os = "android")'.dependencies]
+# Android 无额外依赖，预留扩展
 
 [target.'cfg(target_os = "ios")'.dependencies]
 # iOS 无额外依赖，预留扩展
 
 [target.'cfg(target_os = "ohos")'.dependencies]
 # HarmonyOS 无额外依赖，预留扩展
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("ohos"))'] }

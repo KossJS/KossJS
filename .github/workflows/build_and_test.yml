@@ -6,6 +6,7 @@ on:
     tags: ['v*', 'test_v*']
   pull_request:
     branches: [main, develop]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -85,6 +86,19 @@ jobs:
           choco install cmake llvm -y
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
+      - name: 🔧 安装 autotools (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y autoconf automake libtool make
+
+      - name: 🔧 安装 autotools (MacOS)
+        if: runner.os == 'macOS'
+        run: brew install autoconf automake libtool make
+
+      - name: 安装 ARM64 MSVC 工具链
+        if: runner.os == 'Windows' && matrix.target == 'aarch64-pc-windows-msvc'
+        run: |
+          choco install visualstudio2022-workload-vctools --package-parameters "--add Microsoft.VisualStudio.Component.VC.Tools.ARM64"
+
       - name: 📦 缓存 Cargo
         uses: actions/cache@v4
         with:
@@ -116,7 +130,6 @@ jobs:
           cp "$SRC" "$DST"
           echo "产物: $DST ($(du -h "$DST" | cut -f1))"
 
-      # 安装 UPX 并压缩 Windows x64 / x86
       - name: 🔧 安装 UPX (Windows x64/x86)
         if: runner.os == 'Windows' && (matrix.target == 'x86_64-pc-windows-msvc' || matrix.target == 'i686-pc-windows-msvc')
         run: choco install upx
@@ -125,7 +138,6 @@ jobs:
         if: runner.os == 'Windows' && (matrix.target == 'x86_64-pc-windows-msvc' || matrix.target == 'i686-pc-windows-msvc')
         run: upx --best --lzma ${{ matrix.artifact_name }}
 
-      # 安装 LLVM 并使用 llvm-strip 处理 Windows ARM64
       - name: 🔧 安装 LLVM (Windows ARM64)
         if: runner.os == 'Windows' && matrix.target == 'aarch64-pc-windows-msvc'
         run: choco install llvm

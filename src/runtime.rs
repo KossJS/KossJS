@@ -4,14 +4,19 @@ use std::os::raw::c_char;
 use std::os::raw::c_void;
 use std::rc::Rc;
 use std::sync::mpsc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use boa_engine::object::builtins::{JsFunction, JsPromise};
 use boa_engine::{Context, JsError, JsNativeError, JsValue, Module, Source, NativeFunction};
+use boa_engine::js_string;
 use boa_runtime::Console;
 use tokio::runtime::Runtime;
 
 use crate::bindings;
+use crate::buffer;
+use crate::license_output::output_license_once;
 use crate::module_loader::KossModuleLoader;
 use crate::worker::{WorkerEvent, WorkerPool};
 
@@ -192,14 +197,33 @@ globalThis.fetchSync = fetchSync;
 
 /// Result from an async I/O operation (sent across threads)
 pub(crate) struct AsyncIoResult {
-    promise_id: u64,
-    result: Result<String, String>,
+    pub(crate) promise_id: u64,
+    pub(crate) result: Result<String, String>,
 }
 
 /// Resolver functions for a pending Promise (main thread only)
 pub struct PendingResolver {
     pub resolve: JsFunction,
     pub reject: JsFunction,
+}
+
+/// Callback request from async FFI (blocking thread → main thread)
+pub(crate) struct CallbackRequest {
+    pub task_id: u64,
+    pub cb_index: usize,
+    pub args: Vec<Vec<u8>>,
+    pub arg_types: Vec<crate::_senri_ffi::types::OwnedFfiType>,
+    pub ret_type: crate::_senri_ffi::types::OwnedFfiType,
+    pub resp_tx: tokio::sync::oneshot::Sender<Result<Vec<u8>, String>>,
+}
+
+/// Active async FFI task metadata (main thread)
+pub(crate) struct AsyncFfiTask {
+    pub canceled: Arc<AtomicBool>,
+    pub allow_force_kill: bool,
+    #[allow(dead_code)]
+    pub callback_timeout_ms: u64,
+    pub thread_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 /// Per-instance event loop driving async I/O and microtasks
@@ -209,11 +233,18 @@ pub struct KossEventLoop {
     pub(crate) io_rx: mpsc::Receiver<AsyncIoResult>,
     pub next_promise_id: u64,
     pub pending: HashMap<u64, PendingResolver>,
+    pub(crate) callback_tx: mpsc::Sender<CallbackRequest>,
+    pub(crate) callback_rx: mpsc::Receiver<CallbackRequest>,
+    pub(crate) async_tasks: HashMap<u64, AsyncFfiTask>,
+    pub(crate) ffi_callback_fns: HashMap<(u64, usize), JsFunction>,
+    pub(crate) ffi_next_task_id: u64,
+    pub(crate) ffi_max_concurrency: Arc<AtomicUsize>,
 }
 
 impl KossEventLoop {
     pub fn new() -> Option<Self> {
         let (io_tx, io_rx) = mpsc::channel();
+        let (callback_tx, callback_rx) = mpsc::channel();
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -228,8 +259,14 @@ impl KossEventLoop {
             runtime,
             io_tx,
             io_rx,
+            callback_tx,
+            callback_rx,
             next_promise_id: 1,
             pending: HashMap::new(),
+            async_tasks: HashMap::new(),
+            ffi_callback_fns: HashMap::new(),
+            ffi_next_task_id: 1,
+            ffi_max_concurrency: Arc::new(AtomicUsize::new(64)),
         })
     }
 
@@ -245,6 +282,36 @@ impl KossEventLoop {
             self.runtime.block_on(tokio::task::yield_now());
         }
 
+        // Process callback requests from async FFI tasks (C → JS callbacks)
+        while let Ok(req) = self.callback_rx.try_recv() {
+            let canceled = self.async_tasks
+                .get(&req.task_id)
+                .map(|t| t.canceled.load(Ordering::Acquire))
+                .unwrap_or(true);
+
+            let response = if canceled {
+                Err("task canceled".to_string())
+            } else if let Some(js_fn) = self.ffi_callback_fns.get_mut(&(req.task_id, req.cb_index)) {
+                let mut js_args: Vec<JsValue> = Vec::with_capacity(req.args.len());
+                for (i, raw_bytes) in req.args.iter().enumerate() {
+                    let type_info = &req.arg_types[i];
+                    let val = ffi_bytes_to_js_value(raw_bytes, type_info);
+                    js_args.push(val);
+                }
+                match js_fn.call(&JsValue::undefined(), &js_args, ctx) {
+                    Ok(js_val) => {
+                        let ret_bytes = ffi_js_value_to_bytes(&js_val, &req.ret_type);
+                        Ok(ret_bytes)
+                    }
+                    Err(_) => Ok(vec![0u8; req.ret_type.sizeof()]),
+                }
+            } else {
+                Ok(vec![0u8; req.ret_type.sizeof()])
+            };
+            let _ = req.resp_tx.send(response);
+        }
+
+        // Process async I/O results (fetch, etc.)
         while let Ok(AsyncIoResult { promise_id, result }) = self.io_rx.try_recv() {
             if let Some(resolver) = self.pending.remove(&promise_id) {
                 match result {
@@ -284,6 +351,184 @@ impl KossEventLoop {
         F: std::future::Future<Output = ()> + Send + 'static,
     {
         self.runtime.spawn(future);
+    }
+
+    /// Register a new async FFI task and return its task_id.
+    pub fn register_ffi_task(
+        &mut self,
+        canceled: Arc<AtomicBool>,
+        allow_force_kill: bool,
+        callback_timeout_ms: u64,
+    ) -> u64 {
+        let id = self.ffi_next_task_id;
+        self.ffi_next_task_id = self.ffi_next_task_id.wrapping_add(1);
+        self.async_tasks.insert(id, AsyncFfiTask {
+            canceled,
+            allow_force_kill,
+            callback_timeout_ms,
+            thread_handle: None,
+        });
+        id
+    }
+
+    /// Store the thread handle for an async FFI task.
+    pub fn set_ffi_task_thread(&mut self, task_id: u64, handle: std::thread::JoinHandle<()>) {
+        if let Some(task) = self.async_tasks.get_mut(&task_id) {
+            task.thread_handle = Some(handle);
+        }
+    }
+
+    /// Register a JS callback function for a task/cb_index slot.
+    pub fn register_ffi_callback_fn(&mut self, task_id: u64, cb_index: usize, func: JsFunction) {
+        self.ffi_callback_fns.insert((task_id, cb_index), func);
+    }
+
+    /// Get a clone of the callback channel sender.
+    pub(crate) fn callback_tx_clone(&self) -> mpsc::Sender<CallbackRequest> {
+        self.callback_tx.clone()
+    }
+
+    /// Get the max concurrency AtomicUsize for FFI tasks.
+    pub fn ffi_max_concurrency(&self) -> Arc<AtomicUsize> {
+        self.ffi_max_concurrency.clone()
+    }
+
+    /// Force kill an async FFI task (kill OS thread).
+    #[cfg(not(any(target_os = "ios", target_os = "android", target_os = "ohos")))]
+    pub fn force_kill_ffi_task(&mut self, task_id: u64) {
+        if let Some(task) = self.async_tasks.get_mut(&task_id) {
+            task.canceled.store(true, Ordering::Release);
+            if task.allow_force_kill {
+                if let Some(handle) = task.thread_handle.take() {
+                    // On platforms where std::thread::JoinHandle supports killing...
+                    // Actually, Rust doesn't have a kill_thread API for safety.
+                    // We detach the thread and let it run until it finishes in the background.
+                    // The canceled flag will prevent callback processing.
+                    drop(handle);
+                }
+            }
+        }
+    }
+
+    /// Remove a completed FFI task (cleanup after async call finishes).
+    pub fn remove_ffi_task(&mut self, task_id: u64) {
+        self.async_tasks.remove(&task_id);
+        // Clean up callback fn references
+        let keys: Vec<(u64, usize)> = self.ffi_callback_fns.keys()
+            .filter(|(tid, _)| *tid == task_id)
+            .cloned()
+            .collect();
+        for k in keys {
+            self.ffi_callback_fns.remove(&k);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FFI callback value conversion helpers
+// ---------------------------------------------------------------------------
+
+fn ffi_bytes_to_js_value(bytes: &[u8], type_info: &crate::_senri_ffi::types::OwnedFfiType) -> JsValue {
+    use crate::_senri_ffi::types::OwnedFfiType;
+    match type_info {
+        OwnedFfiType::Void => JsValue::undefined(),
+        OwnedFfiType::Int8 => JsValue::from(i8::from_le_bytes(bytes.try_into().unwrap()) as f64),
+        OwnedFfiType::Uint8 => JsValue::from(u8::from_le_bytes(bytes.try_into().unwrap()) as f64),
+        OwnedFfiType::Int16 => JsValue::from(i16::from_le_bytes(bytes.try_into().unwrap()) as f64),
+        OwnedFfiType::Uint16 => JsValue::from(u16::from_le_bytes(bytes.try_into().unwrap()) as f64),
+        OwnedFfiType::Int32 => JsValue::from(i32::from_le_bytes(bytes.try_into().unwrap()) as f64),
+        OwnedFfiType::Uint32 => JsValue::from(u32::from_le_bytes(bytes.try_into().unwrap()) as f64),
+        OwnedFfiType::Int64 => JsValue::from(i64::from_le_bytes(bytes.try_into().unwrap()) as f64),
+        OwnedFfiType::Uint64 => JsValue::from(u64::from_le_bytes(bytes.try_into().unwrap()) as f64),
+        OwnedFfiType::Float32 => JsValue::from(f32::from_le_bytes(bytes.try_into().unwrap()) as f64),
+        OwnedFfiType::Float64 => JsValue::from(f64::from_le_bytes(bytes.try_into().unwrap())),
+        OwnedFfiType::Pointer | OwnedFfiType::Callback { .. } => {
+            let addr = usize::from_le_bytes(bytes.try_into().unwrap());
+            JsValue::from(addr as f64)
+        }
+        OwnedFfiType::CString => {
+            let addr = usize::from_le_bytes(bytes.try_into().unwrap());
+            if addr == 0 {
+                JsValue::null()
+            } else {
+                let cstr = unsafe { std::ffi::CStr::from_ptr(addr as *const i8) };
+                let s = cstr.to_string_lossy().to_string();
+                JsValue::from(js_string!(s))
+            }
+        }
+        OwnedFfiType::Struct { .. } | OwnedFfiType::Array { .. } => {
+            JsValue::from(js_string!("[binary data]"))
+        }
+        OwnedFfiType::VarArg => {
+            let addr = usize::from_le_bytes(bytes.try_into().unwrap());
+            JsValue::from(addr as f64)
+        }
+    }
+}
+
+fn ffi_js_value_to_bytes(val: &JsValue, type_info: &crate::_senri_ffi::types::OwnedFfiType) -> Vec<u8> {
+    use crate::_senri_ffi::types::OwnedFfiType;
+    match type_info {
+        OwnedFfiType::Void => Vec::new(),
+        OwnedFfiType::Int8 => {
+            let v = val.as_number().map(|n| n as i8).unwrap_or(0);
+            v.to_le_bytes().to_vec()
+        }
+        OwnedFfiType::Uint8 => {
+            let v = val.as_number().map(|n| n as u8).unwrap_or(0);
+            v.to_le_bytes().to_vec()
+        }
+        OwnedFfiType::Int16 => {
+            let v = val.as_number().map(|n| n as i16).unwrap_or(0);
+            v.to_le_bytes().to_vec()
+        }
+        OwnedFfiType::Uint16 => {
+            let v = val.as_number().map(|n| n as u16).unwrap_or(0);
+            v.to_le_bytes().to_vec()
+        }
+        OwnedFfiType::Int32 => {
+            let v = val.as_number().map(|n| n as i32).unwrap_or(0);
+            v.to_le_bytes().to_vec()
+        }
+        OwnedFfiType::Uint32 => {
+            let v = val.as_number().map(|n| n as u32).unwrap_or(0);
+            v.to_le_bytes().to_vec()
+        }
+        OwnedFfiType::Int64 => {
+            let v = val.as_number().map(|n| n as i64).unwrap_or(0);
+            v.to_le_bytes().to_vec()
+        }
+        OwnedFfiType::Uint64 => {
+            let v = val.as_number().map(|n| n as u64).unwrap_or(0);
+            v.to_le_bytes().to_vec()
+        }
+        OwnedFfiType::Float32 => {
+            let v = val.as_number().map(|n| n as f32).unwrap_or(0.0);
+            v.to_le_bytes().to_vec()
+        }
+        OwnedFfiType::Float64 => {
+            let v = val.as_number().unwrap_or(0.0);
+            v.to_le_bytes().to_vec()
+        }
+        OwnedFfiType::Pointer | OwnedFfiType::Callback { .. } => {
+            let addr = val.as_number().map(|n| n as usize).unwrap_or(0);
+            addr.to_le_bytes().to_vec()
+        }
+        OwnedFfiType::CString => {
+            let ptr_val: usize = if val.is_null() || val.is_undefined() {
+                0
+            } else if let Some(s) = val.as_string() {
+                let cstr = std::ffi::CString::new(s.to_std_string_escaped().as_bytes())
+                    .unwrap_or_default();
+                cstr.into_raw() as usize
+            } else {
+                0
+            };
+            ptr_val.to_le_bytes().to_vec()
+        }
+        _ => {
+            vec![0u8; type_info.sizeof()]
+        }
     }
 }
 
@@ -1234,6 +1479,7 @@ const process = {
 /// The caller owns this pointer and must free it with `koss_destroy`.
 #[unsafe(no_mangle)]
 pub extern "C" fn koss_create() -> *mut KossInstance {
+    output_license_once();
     koss_create_with_caps(KOSS_CAP_ALL)
 }
 
@@ -1241,6 +1487,7 @@ pub extern "C" fn koss_create() -> *mut KossInstance {
 /// Use KOSS_CAP_ALL for full access, KOSS_CAP_SANDBOX for pure computation.
 #[unsafe(no_mangle)]
 pub extern "C" fn koss_create_with_caps(caps: u32) -> *mut KossInstance {
+    output_license_once();
     let context = match boa_engine::context::ContextBuilder::default().build() {
         Ok(ctx) => ctx,
         Err(e) => {
@@ -1250,6 +1497,9 @@ pub extern "C" fn koss_create_with_caps(caps: u32) -> *mut KossInstance {
     };
     let mut instance = Box::new(KossInstance::new(context, caps));
     register_console(&mut instance.context);
+    register_senri_ffi_impl(&mut instance);
+    buffer::register_buffer_globals(&mut instance.context);
+    register_dlopen_binding(&mut instance.context);
     register_native_bindings(&mut instance);
     register_internal_module_loader(&mut instance);
     register_nodejs_globals(&mut instance.context);
@@ -1271,6 +1521,7 @@ pub extern "C" fn koss_create_with_caps(caps: u32) -> *mut KossInstance {
 /// - `root_dir` must be a valid null-terminated UTF-8 string
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koss_create_with_modules(root_dir: *const c_char) -> *mut KossInstance {
+    output_license_once();
     unsafe { koss_create_with_modules_and_caps(root_dir, KOSS_CAP_ALL) }
 }
 
@@ -1285,6 +1536,7 @@ pub unsafe extern "C" fn koss_create_with_modules_and_caps(
     root_dir: *const c_char,
     caps: u32,
 ) -> *mut KossInstance {
+    output_license_once();
     unsafe {
         if root_dir.is_null() {
             return koss_create_with_caps(caps);
@@ -1308,6 +1560,7 @@ pub unsafe extern "C" fn koss_create_with_modules_and_caps(
         };
         let mut instance = Box::new(KossInstance::new(context, caps));
         register_console(&mut instance.context);
+        register_senri_ffi_impl(&mut instance);
         register_native_bindings(&mut instance);
         register_internal_module_loader(&mut instance);
         register_nodejs_globals(&mut instance.context);
@@ -1325,6 +1578,7 @@ pub unsafe extern "C" fn koss_create_with_modules_and_caps(
 /// Destroy a JS instance and free all associated memory.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koss_destroy(ptr: *mut KossInstance) {
+    output_license_once();
     unsafe {
         if !ptr.is_null() {
             drop(Box::from_raw(ptr));
@@ -1343,6 +1597,7 @@ pub unsafe extern "C" fn koss_destroy(ptr: *mut KossInstance) {
 /// - `code` must be a valid null-terminated UTF-8 string
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koss_eval(ptr: *mut KossInstance, code: *const c_char) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() || code.is_null() {
             return KossResult::err(2, "null pointer");
@@ -1437,6 +1692,7 @@ fn safe_js_value_to_json(val: &JsValue, ctx: &mut Context) -> Option<String> {
 /// - `path` must be a valid null-terminated UTF-8 file path
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koss_run_file(ptr: *mut KossInstance, path: *const c_char) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() || path.is_null() {
             return KossResult::err(2, "null pointer");
@@ -1489,6 +1745,7 @@ pub unsafe extern "C" fn koss_run_module(
     ptr: *mut KossInstance,
     path: *const c_char,
 ) -> KossResult {
+    output_license_once();
     if ptr.is_null() || path.is_null() {
         return KossResult::err(2, "null pointer");
     }
@@ -1548,6 +1805,7 @@ pub unsafe extern "C" fn koss_run_module_string(
     ptr: *mut KossInstance,
     code: *const c_char,
 ) -> KossResult {
+    output_license_once();
     if ptr.is_null() || code.is_null() {
         return KossResult::err(2, "null pointer");
     }
@@ -1598,6 +1856,7 @@ pub unsafe extern "C" fn koss_run_string(
     ptr: *mut KossInstance,
     code: *const c_char,
 ) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() || code.is_null() {
             return KossResult::err(2, "null pointer");
@@ -1637,6 +1896,7 @@ pub unsafe extern "C" fn koss_run_async(
     code: *const c_char,
     timeout_ms: u64,
 ) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() || code.is_null() {
             return KossResult::err(2, "null pointer");
@@ -1737,6 +1997,7 @@ pub unsafe extern "C" fn koss_run_async(
 /// - `ptr` must be a valid pointer from `koss_create`
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koss_tick(ptr: *mut KossInstance) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() {
             return KossResult::err(2, "null pointer");
@@ -1757,6 +2018,7 @@ pub unsafe extern "C" fn koss_tick(ptr: *mut KossInstance) -> KossResult {
 /// Free a C string that was allocated by the Rust side (e.g., from KossResult).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koss_free_string(ptr: *mut c_char) {
+    output_license_once();
     if !ptr.is_null() {
         unsafe {
             drop(CString::from_raw(ptr));
@@ -1767,6 +2029,7 @@ pub unsafe extern "C" fn koss_free_string(ptr: *mut c_char) {
 /// Free a KossResult struct and its associated value string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koss_free_result(result: KossResult) {
+    output_license_once();
     if !result.value.is_null() {
         unsafe {
             drop(CString::from_raw(result.value));
@@ -1786,6 +2049,7 @@ pub unsafe extern "C" fn koss_set_global_string(
     name: *const c_char,
     value: *const c_char,
 ) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() || name.is_null() || value.is_null() {
             return KossResult::err(2, "null pointer");
@@ -1817,6 +2081,7 @@ pub unsafe extern "C" fn koss_set_global_string(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koss_register_fetch(ptr: *mut KossInstance) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() {
             return KossResult::err(2, "null pointer");
@@ -1878,7 +2143,8 @@ pub unsafe extern "C" fn koss_register_fetch(ptr: *mut KossInstance) -> KossResu
 /// Returns the KossJS version string.
 #[unsafe(no_mangle)]
 pub extern "C" fn koss_version() -> *const c_char {
-    static VERSION: &[u8] = b"0.1.0-dev.5.fix\0";
+    output_license_once();
+    static VERSION: &[u8] = b"0.1.0-dev.6\0";
     VERSION.as_ptr() as *const c_char
 }
 
@@ -1886,6 +2152,7 @@ pub extern "C" fn koss_version() -> *const c_char {
 /// Returns the bitmask set at creation time (read-only).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koss_get_capabilities(ptr: *mut KossInstance) -> u32 {
+    output_license_once();
     unsafe {
         if ptr.is_null() {
             return 0;
@@ -1906,6 +2173,7 @@ pub unsafe extern "C" fn koss_create_worker_pool(
     ptr: *mut KossInstance,
     size: i32,
 ) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() {
             return KossResult::err(2, "null pointer");
@@ -1931,6 +2199,7 @@ pub unsafe extern "C" fn koss_worker_post_message(
     worker_id: i32,
     data: *const c_char,
 ) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() || data.is_null() {
             return KossResult::err(2, "null pointer");
@@ -1964,6 +2233,7 @@ pub unsafe extern "C" fn koss_worker_execute(
     worker_id: i32,
     code: *const c_char,
 ) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() || code.is_null() {
             return KossResult::err(2, "null pointer");
@@ -1996,6 +2266,7 @@ pub unsafe extern "C" fn koss_worker_execute(
 pub unsafe extern "C" fn koss_worker_try_recv(
     ptr: *mut KossInstance,
 ) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() {
             return KossResult::err(2, "null pointer");
@@ -2050,6 +2321,7 @@ pub unsafe extern "C" fn koss_worker_terminate(
     ptr: *mut KossInstance,
     worker_id: i32,
 ) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() {
             return KossResult::err(2, "null pointer");
@@ -2076,6 +2348,7 @@ pub unsafe extern "C" fn koss_worker_terminate(
 pub unsafe extern "C" fn koss_worker_shutdown(
     ptr: *mut KossInstance,
 ) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() {
             return KossResult::err(2, "null pointer");
@@ -2103,6 +2376,7 @@ pub unsafe extern "C" fn koss_get_binding(
     ptr: *mut KossInstance,
     binding_name: *const c_char,
 ) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() || binding_name.is_null() {
             return KossResult::err(2, "null pointer");
@@ -2352,6 +2626,7 @@ fn handle_binding(name: &str) -> Result<String, String> {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koss_fetch(ptr: *mut KossInstance, url_json: *const c_char) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() || url_json.is_null() {
             return KossResult::err(2, "null pointer");
@@ -2404,6 +2679,7 @@ pub unsafe extern "C" fn koss_set_global_number(
     name: *const c_char,
     value: f64,
 ) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() || name.is_null() {
             return KossResult::err(2, "null pointer");
@@ -2432,6 +2708,7 @@ pub unsafe extern "C" fn koss_set_global_bool(
     name: *const c_char,
     value: bool,
 ) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() || name.is_null() {
             return KossResult::err(2, "null pointer");
@@ -2459,6 +2736,7 @@ pub unsafe extern "C" fn koss_set_global_null(
     ptr: *mut KossInstance,
     name: *const c_char,
 ) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() || name.is_null() {
             return KossResult::err(2, "null pointer");
@@ -2485,6 +2763,7 @@ pub unsafe extern "C" fn koss_set_global_undefined(
     ptr: *mut KossInstance,
     name: *const c_char,
 ) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() || name.is_null() {
             return KossResult::err(2, "null pointer");
@@ -2513,6 +2792,7 @@ pub unsafe extern "C" fn koss_set_global_json(
     name: *const c_char,
     json_str: *const c_char,
 ) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() || name.is_null() || json_str.is_null() {
             return KossResult::err(2, "null pointer");
@@ -2652,6 +2932,7 @@ pub unsafe extern "C" fn koss_register_function(
     name: *const c_char,
     callback: NativeCallback,
 ) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() || name.is_null() || callback as usize == 0 {
             return KossResult::err(2, "null pointer");
@@ -2692,6 +2973,7 @@ pub unsafe extern "C" fn koss_register_module_loader(
     ptr: *mut KossInstance,
     callback: NativeCallback,
 ) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() {
             return KossResult::err(2, "null pointer");
@@ -2734,6 +3016,7 @@ pub unsafe extern "C" fn koss_register_class(
     methods_json: *const c_char,
     callback: NativeCallback,
 ) -> KossResult {
+    output_license_once();
     unsafe {
         if ptr.is_null() || class_name.is_null() || methods_json.is_null() || callback as usize == 0 {
             return KossResult::err(2, "null pointer");
@@ -2839,4 +3122,150 @@ pub unsafe extern "C" fn koss_register_class(
             Err(e) => KossResult::err(1, &format!("class registration error: {e}")),
         }
     }
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn register_senri_ffi_impl(instance: &mut KossInstance) {
+    let ptr = instance as *mut KossInstance as *mut c_void;
+    crate::_senri_ffi::register_senri_ffi(
+        &mut instance.context,
+        ptr,
+    );
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+fn register_senri_ffi_impl(ctx: &mut Context) {
+    use boa_engine::object::ObjectInitializer;
+    use boa_engine::property::Attribute;
+
+    let types_obj = {
+        let mut tb = ObjectInitializer::new(ctx);
+        let type_names: [&str; 14] = [
+            "void", "int8", "uint8", "int16", "uint16", "int32", "uint32",
+            "int64", "uint64", "float32", "float64", "pointer", "cstring", "...",
+        ];
+        for name in &type_names {
+            tb.property(
+                js_string!(*name),
+                js_string!(*name),
+                Attribute::READONLY | Attribute::NON_ENUMERABLE,
+            );
+        }
+        tb.build()
+    };
+
+    let mut builder = ObjectInitializer::new(ctx);
+    builder.property(
+        js_string!("types"),
+        types_obj,
+        Attribute::READONLY | Attribute::NON_ENUMERABLE,
+    );
+
+    let api_names: [(&str, usize); 12] = [
+        ("open", 1),
+        ("struct", 2),
+        ("pointer", 1),
+        ("array", 2),
+        ("callback", 2),
+        ("createCallback", 3),
+        ("alloc", 1),
+        ("allocType", 2),
+        ("free", 1),
+        ("addressOf", 1),
+        ("errno", 0),
+        ("strerror", 1),
+    ];
+
+    for (name, len) in &api_names {
+        let err_clone = unsafe {
+            NativeFunction::from_closure(
+                move |_t: &JsValue, _a: &[JsValue], _c: &mut Context| -> Result<JsValue, JsError> {
+                    Err(JsNativeError::error()
+                        .with_message(format!(
+                            "_senri_ffi is not supported on {}. Dynamic library loading is restricted on mobile platforms (Android/iOS/HarmonyOS). Use Windows/Linux/macOS instead.",
+                            std::env::consts::OS
+                        ))
+                        .into())
+                },
+            )
+        };
+        builder.function(err_clone, js_string!(*name), *len as usize);
+    }
+
+    let senri_obj = builder.build();
+    let _ = ctx.register_global_property(
+        js_string!("_senri_ffi"),
+        senri_obj,
+        Attribute::all(),
+    );
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn register_dlopen_binding(ctx: &mut Context) {
+    let dlopen_fn = unsafe {
+        NativeFunction::from_closure(
+            move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+                let module = args.first()
+                    .and_then(|v| v.as_object())
+                    .ok_or_else(|| JsNativeError::error().with_message("process.dlopen: module required"))?;
+                let filename = args.get(1)
+                    .and_then(|v| v.as_string())
+                    .map(|s| s.to_std_string_escaped())
+                    .ok_or_else(|| JsNativeError::error().with_message("process.dlopen: filename required"))?;
+
+                crate::bindings::process_dlopen::dlopen_impl(&module, &filename, _ctx)?;
+                Ok(JsValue::undefined())
+            },
+        )
+    };
+    let js_func = dlopen_fn.to_js_function(ctx.realm());
+    let _ = ctx.register_global_property(
+        js_string!("__koss_dlopen"),
+        js_func,
+        boa_engine::property::Attribute::all(),
+    );
+
+    let bootstrap = r#"
+    (function() {
+        if (typeof process === 'undefined') { globalThis.process = {}; }
+        process.dlopen = function(mod, filename) {
+            return __koss_dlopen(mod, filename);
+        };
+    })();
+    "#;
+    let source = Source::from_bytes(bootstrap.as_bytes());
+    let _ = ctx.eval(source);
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+fn register_dlopen_binding(ctx: &mut Context) {
+    let dlopen_fn = unsafe {
+        NativeFunction::from_closure(
+            move |_this: &JsValue, _args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+                Err(JsNativeError::error()
+                    .with_message(format!(
+                        "process.dlopen is not supported on {}. Native .node addons require _senri_ffi which is restricted on mobile platforms (Android/iOS/HarmonyOS). Use Windows/Linux/macOS instead.",
+                        std::env::consts::OS
+                    ))
+                    .into())
+            },
+        )
+    };
+    let js_func = dlopen_fn.to_js_function(ctx.realm());
+    let _ = ctx.register_global_property(
+        js_string!("__koss_dlopen"),
+        js_func,
+        boa_engine::property::Attribute::all(),
+    );
+
+    let bootstrap = r#"
+    (function() {
+        if (typeof process === 'undefined') { globalThis.process = {}; }
+        process.dlopen = function(mod, filename) {
+            return __koss_dlopen(mod, filename);
+        };
+    })();
+    "#;
+    let source = Source::from_bytes(bootstrap.as_bytes());
+    let _ = ctx.eval(source);
 }

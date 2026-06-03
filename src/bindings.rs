@@ -1005,19 +1005,11 @@ pub mod net {
     }
 
     pub fn dns_lookup(hostname: &str) -> Result<Vec<String>, String> {
-        // Simple DNS lookup using system resolver
-        #[cfg(windows)]
-        {
-            use std::net::ToSocketAddrs;
-            let addr = format!("{}:80", hostname);
-            match addr.to_socket_addrs() {
-                Ok(addrs) => Ok(addrs.map(|a| a.ip().to_string()).collect()),
-                Err(_) => Err(format!("DNS lookup failed for {}", hostname)),
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            Err("DNS lookup not implemented for this platform".to_string())
+        use std::net::ToSocketAddrs;
+        let addr = format!("{}:80", hostname);
+        match addr.to_socket_addrs() {
+            Ok(addrs) => Ok(addrs.map(|a| a.ip().to_string()).collect()),
+            Err(_) => Err(format!("DNS lookup failed for {}", hostname)),
         }
     }
 
@@ -2041,5 +2033,62 @@ mod tests {
     #[test]
     fn test_get_available_parallelism() {
         assert!(os::get_available_parallelism() > 0);
+    }
+}
+
+pub mod process_dlopen {
+    use boa_engine::{Context, JsError, JsNativeError, JsObject};
+
+    pub fn dlopen_impl(module: &JsObject, filename: &str, ctx: &mut Context) -> Result<(), JsError> {
+        let lib = unsafe { libloading::Library::new(filename) }.map_err(|e| {
+            JsNativeError::error().with_message(format!("Cannot open native addon '{}': {}", filename, e))
+        })?;
+
+        let register: libloading::Symbol<
+            unsafe extern "C" fn(
+                env: *mut crate::napi::env::NapiEnv,
+                exports: *mut std::ffi::c_void,
+            ) -> *mut std::ffi::c_void,
+        > = unsafe {
+            lib.get(b"napi_register_module_v1").or_else(|_| {
+                lib.get(b"node_register_module")
+            })
+        }.map_err(|e| {
+            JsNativeError::error().with_message(format!(
+                "Not a valid .node addon '{}': N-API entry not found ({})",
+                filename, e
+            ))
+        })?;
+
+        let napi_env = unsafe { crate::napi::create_napi_env(ctx) };
+        let env_ptr = Box::into_raw(napi_env);
+
+        let exports = JsObject::with_object_proto(ctx.intrinsics());
+        let exports_ptr = &exports as *const JsObject as *mut std::ffi::c_void;
+
+        unsafe {
+            register(env_ptr, exports_ptr);
+        }
+
+        let exports_props = exports.borrow();
+        let index_count = exports_props.properties().index_properties().count();
+        for i in 0..index_count {
+            let key: boa_engine::property::PropertyKey = i.into();
+            if let Some(desc) = exports_props.properties().get(&key) {
+                if let Some(val) = desc.value() {
+                    module.insert_property(
+                        key,
+                        boa_engine::property::PropertyDescriptor::builder()
+                            .value(val.clone())
+                            .writable(true)
+                            .enumerable(true)
+                            .configurable(true),
+                    );
+                }
+            }
+        }
+
+        std::mem::forget(lib);
+        Ok(())
     }
 }
