@@ -104,6 +104,17 @@ uint32_t koss_get_capabilities(KossInstance *inst);
 KossResult koss_set_audit_mask(KossInstance *inst, uint32_t mask);
 uint32_t koss_get_audit_mask(KossInstance *inst);
 
+/* ── Synchronous audit callback ─────────────────────────────────────── */
+/* Audit callback type: called when an operation matching the audit mask
+   is about to be performed. Return true to allow, false to block.
+   Args: target (e.g. "fs.readFileSync"), args array, arg count,
+         current working directory, userdata pointer. */
+typedef bool (*AuditCallback)(const char* target, const char** args, int argc, const char* pwd, void* userdata);
+
+/* Register or clear the synchronous audit callback.
+   Pass NULL for callback to clear the audit callback. */
+KossResult koss_check_sandbox(KossInstance *inst, AuditCallback callback, void* userdata);
+
 /* ── Code execution ─────────────────────────────────────────────────── */
 KossResult koss_eval(KossInstance *inst, const char *code);
 KossResult koss_run_file(KossInstance *inst, const char *path);

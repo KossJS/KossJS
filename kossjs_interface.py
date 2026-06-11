@@ -715,6 +715,48 @@ class KossJS:
         """获取当前审核掩码"""
         return self._lib.koss_get_audit_mask(self._ptr)
 
+    def check_sandbox(self, func: Callable[[str, list[str], str | None], bool] | None = None) -> None:
+        """Register or clear the synchronous audit callback.
+
+        The callback receives (target, args_list, pwd) and returns True to allow
+        the operation or False to block it (which throws KossSecurityError).
+
+        Pass None to clear the audit callback.
+        """
+        if not hasattr(self, '_AUDIT_CALLBACK'):
+            self._AUDIT_CALLBACK = ctypes.CFUNCTYPE(
+                ctypes.c_bool,
+                ctypes.c_char_p,
+                ctypes.POINTER(ctypes.c_char_p),
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_void_p,
+            )
+            self._lib.koss_check_sandbox.restype = KossResult
+            self._lib.koss_check_sandbox.argtypes = [ctypes.c_void_p, self._AUDIT_CALLBACK, ctypes.c_void_p]
+
+        if func is None:
+            null_cb = self._AUDIT_CALLBACK(0)
+            self._check_result(self._lib.koss_check_sandbox(self._ptr, null_cb, None))
+            self._audit_callback = None
+            return
+
+        def wrapper(target: bytes | None, args: ctypes.POINTER(ctypes.c_char_p), argc: int, pwd: bytes | None, userdata: ctypes.c_void_p) -> bool:  # pyright: ignore[reportUnknownParameterType]
+            target_s = target.decode("utf-8", errors="replace") if target else ""
+            values: list[str] = []
+            for i in range(argc):
+                raw = args[i]
+                values.append(raw.decode("utf-8", errors="replace") if raw else "")
+            pwd_s = pwd.decode("utf-8", errors="replace") if pwd else None
+            try:
+                return bool(func(target_s, values, pwd_s))
+            except Exception:
+                return False
+
+        cb = self._AUDIT_CALLBACK(wrapper)
+        self._audit_callback = cb
+        self._check_result(self._lib.koss_check_sandbox(self._ptr, cb, None))
+
     def destroy(self) -> None:
         """Destroy the JavaScript instance and free memory."""
         if self._ptr and hasattr(self, '_lib') and self._lib:

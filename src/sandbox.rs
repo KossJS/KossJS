@@ -51,10 +51,27 @@ pub const KOSS_CAP_CRYPTO: u32 = KOSS_CAP_ALL_CRYPTO;
 pub const KOSS_CAP_WORKER: u32 = 1 << 3;
 pub const KOSS_CAP_EXTERNAL_LOADER: u32 = MODULE_LOAD;
 
+use std::ffi::c_void;
+use std::os::raw::{c_char, c_int};
+
+/// Synchronous audit callback type for C ABI.
+/// Returns true to allow, false to block.
+pub type AuditCallback = unsafe extern "C" fn(
+    target: *const c_char,
+    args: *const *const c_char,
+    argc: c_int,
+    pwd: *const c_char,
+    userdata: *mut c_void,
+) -> bool;
+
 /// 沙箱状态：集中管理能力、审核掩码和未来扩展字段
 #[derive(Default)]
 pub struct SandboxState {
     pub audit_mask: u32,
+    /// Synchronous audit callback (called when audit_mask bit is set for an operation).
+    pub sync_audit: Option<AuditCallback>,
+    /// Userdata pointer passed to the audit callback.
+    pub sync_userdata: *mut c_void,
 }
 
 /// 检查能力位是否设置

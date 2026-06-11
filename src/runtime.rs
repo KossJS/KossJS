@@ -2248,6 +2248,46 @@ pub unsafe extern "C" fn koss_get_audit_mask(ptr: *mut KossInstance) -> u32 {
     }
 }
 
+/// Register a synchronous audit callback for a KossJS instance.
+///
+/// The callback is invoked when a capability operation is about to be performed
+/// and the corresponding bit in the audit mask is set. The callback receives
+/// the target (e.g. "fs.readFileSync"), an array of string arguments, the
+/// current working directory, and the userdata pointer. Return true to allow
+/// the operation, false to block it (which throws a KossSecurityError).
+///
+/// Pass a NULL callback pointer (or callback with address 0) to clear the
+/// audit callback.
+///
+/// # Safety
+/// - `ptr` must be a valid pointer from `koss_create`
+/// - `callback`, if non-null, must be a valid function pointer for the
+///   lifetime of the KossInstance
+/// - The caller must ensure the userdata pointer remains valid for the
+///   lifetime of the callback registration
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_check_sandbox(
+    ptr: *mut KossInstance,
+    callback: crate::sandbox::AuditCallback,
+    userdata: *mut c_void,
+) -> KossResult {
+    output_license_once();
+    unsafe {
+        if ptr.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
+        let instance = &mut *ptr;
+        if callback as usize == 0 {
+            instance.sandbox.sync_audit = None;
+            instance.sandbox.sync_userdata = std::ptr::null_mut();
+            return KossResult::ok("audit callback cleared");
+        }
+        instance.sandbox.sync_audit = Some(callback);
+        instance.sandbox.sync_userdata = userdata;
+        KossResult::ok("ok")
+    }
+}
+
 // ===========================================================================
 // C ABI — Worker pool management
 // ===========================================================================
