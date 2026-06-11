@@ -833,6 +833,12 @@ fn register_internal_module_loader(instance: &mut KossInstance) {
     let caps = instance.capabilities;
 
     let native = NativeFunction::from_copy_closure(move |_this, args, context| {
+        // Check MODULE_LOAD capability
+        if !crate::sandbox::has_cap(caps, crate::sandbox::MODULE_LOAD) {
+            return Err(JsError::from(JsNativeError::typ()
+                .with_message("KossCapabilityError: capability denied for require")));
+        }
+
         if args.is_empty() {
             return Ok(JsValue::null());
         }
@@ -904,11 +910,17 @@ fn register_native_fetch(instance: &mut KossInstance) {
     let instance_ptr = instance as *mut KossInstance;
 
     let native = NativeFunction::from_copy_closure(move |_this, args, ctx| {
+        // Check NET_FETCH capability
+        let inst = unsafe { &mut *instance_ptr };
+        if !crate::sandbox::has_cap(inst.capabilities, crate::sandbox::NET_FETCH) {
+            return Err(JsError::from(JsNativeError::typ()
+                .with_message("KossCapabilityError: capability denied for fetch")));
+        }
+
         if args.len() < 2 {
             return Ok(JsValue::undefined());
         }
 
-        let inst = unsafe { &mut *instance_ptr };
         let event_loop = match inst.event_loop.as_mut() {
             Some(el) => el,
             None => {
@@ -1583,8 +1595,11 @@ pub extern "C" fn koss_create_with_caps(caps: u32) -> *mut KossInstance {
     buffer::register_buffer_globals(&mut instance.context);
     register_dlopen_binding(&mut instance.context);
     register_native_bindings(&mut instance);
-    register_internal_module_loader(&mut instance);
-    register_nodejs_globals(&mut instance.context);
+    // Only register module loader if MODULE_LOAD capability is set
+    if caps & crate::sandbox::MODULE_LOAD != 0 {
+        register_internal_module_loader(&mut instance);
+        register_nodejs_globals(&mut instance.context);
+    }
     if caps & KOSS_CAP_ALL_NET != 0 {
         register_fetch_polyfill(&mut instance.context);
         register_native_fetch(&mut instance);
@@ -1645,8 +1660,11 @@ pub unsafe extern "C" fn koss_create_with_modules_and_caps(
         register_koss_global(&mut instance.context);
         register_senri_ffi_impl(&mut instance);
         register_native_bindings(&mut instance);
-        register_internal_module_loader(&mut instance);
-        register_nodejs_globals(&mut instance.context);
+        // Only register module loader if MODULE_LOAD capability is set
+        if caps & crate::sandbox::MODULE_LOAD != 0 {
+            register_internal_module_loader(&mut instance);
+            register_nodejs_globals(&mut instance.context);
+        }
         if caps & KOSS_CAP_ALL_NET != 0 {
             register_fetch_polyfill(&mut instance.context);
             register_native_fetch(&mut instance);
@@ -2584,10 +2602,38 @@ pub unsafe extern "C" fn koss_get_binding(
 /// Returns an AuditDecision indicating whether to allow, deny, or audit.
 fn is_capability_enabled(caps: u32, audit_mask: u32, name: &str) -> AuditDecision {
     let required = match name {
-        "fs" | "fs/promises" => KOSS_CAP_ALL_FS,
-        "net" | "fetch" | "url" | "http_parser" | "dns" | "dgram" => KOSS_CAP_ALL_NET,
-        "crypto" => KOSS_CAP_ALL_CRYPTO,
-        "worker" | "worker_threads" => KOSS_CAP_WORKER,
+        // 文件系统模块 - 只要有任何文件系统能力就启用模块
+        "fs" | "fs/promises" => {
+            // 如果有任何文件系统能力，就启用模块
+            // 具体方法的检查在 JS 层面进行
+            if caps & KOSS_CAP_ALL_FS != 0 {
+                return AuditDecision::Allow;
+            } else {
+                return AuditDecision::DenyCapability;
+            }
+        },
+        
+        // 网络模块 - 只要有任何网络能力就启用模块
+        "net" | "url" | "http_parser" | "dns" | "dgram" => {
+            if caps & KOSS_CAP_ALL_NET != 0 {
+                return AuditDecision::Allow;
+            } else {
+                return AuditDecision::DenyCapability;
+            }
+        },
+        
+        // 加密模块 - 只要有任何加密能力就启用模块
+        "crypto" => {
+            if caps & KOSS_CAP_ALL_CRYPTO != 0 {
+                return AuditDecision::Allow;
+            } else {
+                return AuditDecision::DenyCapability;
+            }
+        },
+        
+        // 其他模块
+        "worker" | "worker_threads" => crate::sandbox::DYNAMIC_CODE,
+        
         _ => return AuditDecision::Allow, // always-available modules
     };
     check_audit_decision(caps, audit_mask, required)
