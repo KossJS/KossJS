@@ -79,6 +79,30 @@ pub fn has_cap(caps: u32, required: u32) -> bool {
     caps & required == required
 }
 
+/// 审核决策结果
+pub enum AuditDecision {
+    /// 直接放行（能力位已设置且审核掩码未设置）
+    Allow,
+    /// 直接拒绝（能力位未设置）
+    DenyCapability,
+    /// 需要审核（审核掩码已设置）
+    NeedAudit,
+}
+
+/// 检查是否需要审核
+pub fn check_audit_decision(caps: u32, audit_mask: u32, required: u32) -> AuditDecision {
+    // 第一道闸门：能力位检查
+    if !has_cap(caps, required) {
+        return AuditDecision::DenyCapability;
+    }
+    // 第二道闸门：审核掩码检查
+    if !has_cap(audit_mask, required) {
+        return AuditDecision::Allow;
+    }
+    // 需要审核
+    AuditDecision::NeedAudit
+}
+
 /// 检查审核掩码是否设置（且能力位已授予）
 pub fn needs_audit(caps: u32, audit_mask: u32, required: u32) -> bool {
     // 审核掩码只能审核已授予的能力
@@ -161,5 +185,64 @@ mod tests {
         assert!(needs_audit(caps, audit, KOSS_CAP_ALL_FS));
         // NET is in caps but not in audit
         assert!(!needs_audit(caps, audit, NET_TCP_CLIENT));
+    }
+
+    #[test]
+    fn test_check_audit_decision_deny_capability() {
+        let caps = FS_READ;
+        let audit_mask = FS_READ | FS_WRITE;
+        // FS_WRITE not in caps → DenyCapability
+        match check_audit_decision(caps, audit_mask, FS_WRITE) {
+            AuditDecision::DenyCapability => {}
+            _ => panic!("expected DenyCapability"),
+        }
+    }
+
+    #[test]
+    fn test_check_audit_decision_allow_no_audit() {
+        let caps = FS_READ | FS_WRITE;
+        let audit_mask = FS_WRITE;
+        // FS_READ in caps, not in audit_mask → Allow
+        match check_audit_decision(caps, audit_mask, FS_READ) {
+            AuditDecision::Allow => {}
+            _ => panic!("expected Allow"),
+        }
+    }
+
+    #[test]
+    fn test_check_audit_decision_need_audit() {
+        let caps = FS_READ | FS_WRITE;
+        let audit_mask = FS_READ;
+        // FS_READ in both caps and audit_mask → NeedAudit
+        match check_audit_decision(caps, audit_mask, FS_READ) {
+            AuditDecision::NeedAudit => {}
+            _ => panic!("expected NeedAudit"),
+        }
+    }
+
+    #[test]
+    fn test_check_audit_decision_empty_caps() {
+        let caps = KOSS_CAP_SANDBOX;
+        let audit_mask = KOSS_CAP_ALL;
+        // No caps at all → DenyCapability regardless of audit_mask
+        match check_audit_decision(caps, audit_mask, FS_READ) {
+            AuditDecision::DenyCapability => {}
+            _ => panic!("expected DenyCapability"),
+        }
+    }
+
+    #[test]
+    fn test_check_audit_decision_zero_audit_mask() {
+        let caps = KOSS_CAP_ALL;
+        let audit_mask = 0;
+        // All caps, no audit → Allow for everything
+        match check_audit_decision(caps, audit_mask, FS_READ) {
+            AuditDecision::Allow => {}
+            _ => panic!("expected Allow"),
+        }
+        match check_audit_decision(caps, audit_mask, NET_TCP_CLIENT) {
+            AuditDecision::Allow => {}
+            _ => panic!("expected Allow"),
+        }
     }
 }

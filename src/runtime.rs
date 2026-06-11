@@ -542,8 +542,8 @@ const MAX_WORKER_POOL_SIZE: usize = 64;
 const MAX_EXTERNAL_MODULE_CODE_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
 
 use crate::sandbox::{
-    KOSS_CAP_ALL, KOSS_CAP_ALL_CRYPTO, KOSS_CAP_ALL_FS, KOSS_CAP_ALL_NET,
-    KOSS_CAP_EXTERNAL_LOADER, KOSS_CAP_WORKER, SandboxState,
+    AuditDecision, KOSS_CAP_ALL, KOSS_CAP_ALL_CRYPTO, KOSS_CAP_ALL_FS, KOSS_CAP_ALL_NET,
+    KOSS_CAP_EXTERNAL_LOADER, KOSS_CAP_WORKER, SandboxState, check_audit_decision,
 };
 
 // ---------------------------------------------------------------------------
@@ -767,15 +767,41 @@ fn register_fetch_polyfill(ctx: &mut Context) {
 }
 
 fn register_native_bindings(instance: &mut KossInstance) {
-    let caps = instance.capabilities;
+    let instance_ptr = instance as *mut KossInstance;
+
     let native = NativeFunction::from_copy_closure(move |_this, args, ctx| {
         if args.is_empty() {
             return Ok(JsValue::undefined());
         }
         let name = args[0].to_string(ctx).unwrap_or_default();
         let name_str = name.to_std_string_escaped();
-        if !is_capability_enabled(caps, &name_str) {
-            return Ok(JsValue::from(boa_engine::js_string!("{}")));
+        let inst = unsafe { &*instance_ptr };
+        let decision = is_capability_enabled(inst.capabilities, inst.sandbox.audit_mask, &name_str);
+        match decision {
+            AuditDecision::DenyCapability => {
+                return Ok(JsValue::from(boa_engine::js_string!("{}")));
+            }
+            AuditDecision::Allow => {}
+            AuditDecision::NeedAudit => {
+                if let Some(audit_fn) = inst.sandbox.sync_audit {
+                    let target = match CString::new(name_str.clone()) {
+                        Ok(c) => c,
+                        Err(_) => return Ok(JsValue::from(boa_engine::js_string!("{}"))),
+                    };
+                    let allowed = unsafe {
+                        audit_fn(
+                            target.as_ptr(),
+                            std::ptr::null(),
+                            0,
+                            std::ptr::null(),
+                            inst.sandbox.sync_userdata,
+                        )
+                    };
+                    if !allowed {
+                        return Ok(JsValue::from(boa_engine::js_string!("{}")));
+                    }
+                }
+            }
         }
         match handle_binding(&name_str) {
             Ok(json) => Ok(JsValue::from(boa_engine::js_string!(json))),
@@ -2514,8 +2540,30 @@ pub unsafe extern "C" fn koss_get_binding(
             Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
         };
 
-        if !is_capability_enabled(instance.capabilities, name_str) {
-            return KossResult::ok("{}");
+        let decision = is_capability_enabled(instance.capabilities, instance.sandbox.audit_mask, name_str);
+        match decision {
+            AuditDecision::DenyCapability => {
+                return KossResult::ok("{}");
+            }
+            AuditDecision::Allow => {}
+            AuditDecision::NeedAudit => {
+                if let Some(audit_fn) = instance.sandbox.sync_audit {
+                    let target = match CString::new(name_str) {
+                        Ok(c) => c,
+                        Err(_) => return KossResult::ok("{}"),
+                    };
+                    let allowed = audit_fn(
+                        target.as_ptr(),
+                        std::ptr::null(),
+                        0,
+                        std::ptr::null(),
+                        instance.sandbox.sync_userdata,
+                    );
+                    if !allowed {
+                        return KossResult::ok("{}");
+                    }
+                }
+            }
         }
 
         let result = handle_binding(name_str);
@@ -2527,14 +2575,16 @@ pub unsafe extern "C" fn koss_get_binding(
 }
 
 /// Check if a binding is enabled under the given capabilities mask.
-fn is_capability_enabled(caps: u32, name: &str) -> bool {
-    match name {
-        "fs" | "fs/promises" => caps & KOSS_CAP_ALL_FS != 0,
-        "net" | "fetch" | "url" | "http_parser" | "dns" | "dgram" => caps & KOSS_CAP_ALL_NET != 0,
-        "crypto" => caps & KOSS_CAP_ALL_CRYPTO != 0,
-        "worker" | "worker_threads" => caps & KOSS_CAP_WORKER != 0,
-        _ => true, // always-available modules: os, timers, buffer, constants, util, trace_events
-    }
+/// Returns an AuditDecision indicating whether to allow, deny, or audit.
+fn is_capability_enabled(caps: u32, audit_mask: u32, name: &str) -> AuditDecision {
+    let required = match name {
+        "fs" | "fs/promises" => KOSS_CAP_ALL_FS,
+        "net" | "fetch" | "url" | "http_parser" | "dns" | "dgram" => KOSS_CAP_ALL_NET,
+        "crypto" => KOSS_CAP_ALL_CRYPTO,
+        "worker" | "worker_threads" => KOSS_CAP_WORKER,
+        _ => return AuditDecision::Allow, // always-available modules
+    };
+    check_audit_decision(caps, audit_mask, required)
 }
 
 fn handle_binding(name: &str) -> Result<String, String> {
