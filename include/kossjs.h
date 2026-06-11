@@ -37,16 +37,58 @@ typedef char* (*KossNativeFn)(int argc, const char **argv);
 
 /* ── Capability flags ─────────────────────────────────────────────── */
 typedef enum {
-    KOSS_CAP_FS              = 1 << 0,  /* file system: read/write/delete/mkdir/readdir/link */
-    KOSS_CAP_NET             = 1 << 1,  /* network: fetch() + raw sockets + DNS resolution  */
-    KOSS_CAP_CRYPTO          = 1 << 2,  /* crypto: hash/hmac/pbkdf2/generatePrime/random     */
-    KOSS_CAP_WORKER          = 1 << 3,  /* worker thread pool + Worker JS API                */
-    KOSS_CAP_EXTERNAL_LOADER = 1 << 4,  /* external module loader (koss_register_module_loader) */
+    /* 文件系统（6 个细粒度操作） */
+    FS_READ         = 1u << 0,
+    FS_WRITE        = 1u << 1,
+    FS_DELETE       = 1u << 2,
+    FS_MKDIR        = 1u << 3,
+    FS_RENAME       = 1u << 4,
+    FS_CHMOD        = 1u << 5,
+
+    /* 网络（5 个细粒度操作） */
+    NET_TCP_CLIENT  = 1u << 6,
+    NET_TCP_SERVER  = 1u << 7,
+    NET_UDP         = 1u << 8,
+    NET_DNS         = 1u << 9,
+    NET_FETCH       = 1u << 10,
+
+    /* 加密（4 个细粒度操作） */
+    CRYPTO_HASH     = 1u << 11,
+    CRYPTO_HMAC     = 1u << 12,
+    CRYPTO_RANDOM   = 1u << 13,
+    CRYPTO_PBKDF2   = 1u << 14,
+
+    /* 内置 FFI（5 个细粒度操作） */
+    FFI_OPEN        = 1u << 15,
+    FFI_CALL        = 1u << 16,
+    FFI_ALLOC       = 1u << 17,
+    FFI_CALLBACK    = 1u << 18,
+    FFI_STRUCT      = 1u << 19,
+
+    /* 其他模块（8 个操作） */
+    NATIVE_ADDON    = 1u << 20,
+    WASM            = 1u << 21,
+    SHARED_MEMORY   = 1u << 22,
+    HIGHRES_TIME    = 1u << 23,
+    SYSINFO         = 1u << 24,
+    MODULE_LOAD     = 1u << 25,
+    DYNAMIC_CODE    = 1u << 26,
+    DEBUG_CAP       = 1u << 27
 } KossCapability;
 
-#define KOSS_CAP_SANDBOX 0
-#define KOSS_CAP_ALL     (KOSS_CAP_FS | KOSS_CAP_NET | KOSS_CAP_CRYPTO \
-                          | KOSS_CAP_WORKER | KOSS_CAP_EXTERNAL_LOADER)
+#define KOSS_CAP_SANDBOX    0
+#define KOSS_CAP_ALL_FS     (FS_READ | FS_WRITE | FS_DELETE | FS_MKDIR | FS_RENAME | FS_CHMOD)
+#define KOSS_CAP_ALL_NET    (NET_TCP_CLIENT | NET_TCP_SERVER | NET_UDP | NET_DNS | NET_FETCH)
+#define KOSS_CAP_ALL_CRYPTO (CRYPTO_HASH | CRYPTO_HMAC | CRYPTO_RANDOM | CRYPTO_PBKDF2)
+#define KOSS_CAP_ALL_FFI    (FFI_OPEN | FFI_CALL | FFI_ALLOC | FFI_CALLBACK | FFI_STRUCT)
+#define KOSS_CAP_ALL        0xFFFFFFFF
+
+/* 兼容别名（用于旧宿主代码过渡） */
+#define KOSS_CAP_FS              KOSS_CAP_ALL_FS
+#define KOSS_CAP_NET             KOSS_CAP_ALL_NET
+#define KOSS_CAP_CRYPTO          KOSS_CAP_ALL_CRYPTO
+#define KOSS_CAP_WORKER          (1u << 3)
+#define KOSS_CAP_EXTERNAL_LOADER MODULE_LOAD
 
 /* ── Instance lifecycle ─────────────────────────────────────────────── */
 KossInstance *koss_create(void);

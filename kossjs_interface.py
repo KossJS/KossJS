@@ -24,19 +24,58 @@ class KossJS:
     RESULT_INVALID_ARG = 2
 
     # Capability flags (must match KossCapability in include/kossjs.h)
-    KOSS_CAP_FS = 1 << 0
-    KOSS_CAP_NET = 1 << 1
-    KOSS_CAP_CRYPTO = 1 << 2
-    KOSS_CAP_WORKER = 1 << 3
-    KOSS_CAP_EXTERNAL_LOADER = 1 << 4
+    # 文件系统（6 个细粒度操作）
+    FS_READ = 1 << 0
+    FS_WRITE = 1 << 1
+    FS_DELETE = 1 << 2
+    FS_MKDIR = 1 << 3
+    FS_RENAME = 1 << 4
+    FS_CHMOD = 1 << 5
+
+    # 网络（5 个细粒度操作）
+    NET_TCP_CLIENT = 1 << 6
+    NET_TCP_SERVER = 1 << 7
+    NET_UDP = 1 << 8
+    NET_DNS = 1 << 9
+    NET_FETCH = 1 << 10
+
+    # 加密（4 个细粒度操作）
+    CRYPTO_HASH = 1 << 11
+    CRYPTO_HMAC = 1 << 12
+    CRYPTO_RANDOM = 1 << 13
+    CRYPTO_PBKDF2 = 1 << 14
+
+    # 内置 FFI（5 个细粒度操作）
+    FFI_OPEN = 1 << 15
+    FFI_CALL = 1 << 16
+    FFI_ALLOC = 1 << 17
+    FFI_CALLBACK = 1 << 18
+    FFI_STRUCT = 1 << 19
+
+    # 其他模块（8 个操作）
+    NATIVE_ADDON = 1 << 20
+    WASM = 1 << 21
+    SHARED_MEMORY = 1 << 22
+    HIGHRES_TIME = 1 << 23
+    SYSINFO = 1 << 24
+    MODULE_LOAD = 1 << 25
+    DYNAMIC_CODE = 1 << 26
+    DEBUG_CAP = 1 << 27
+
+    # 组合常量
     KOSS_CAP_SANDBOX = 0
-    KOSS_CAP_ALL = (
-        KOSS_CAP_FS
-        | KOSS_CAP_NET
-        | KOSS_CAP_CRYPTO
-        | KOSS_CAP_WORKER
-        | KOSS_CAP_EXTERNAL_LOADER
-    )
+    KOSS_CAP_ALL_FS = FS_READ | FS_WRITE | FS_DELETE | FS_MKDIR | FS_RENAME | FS_CHMOD
+    KOSS_CAP_ALL_NET = NET_TCP_CLIENT | NET_TCP_SERVER | NET_UDP | NET_DNS | NET_FETCH
+    KOSS_CAP_ALL_CRYPTO = CRYPTO_HASH | CRYPTO_HMAC | CRYPTO_RANDOM | CRYPTO_PBKDF2
+    KOSS_CAP_ALL_FFI = FFI_OPEN | FFI_CALL | FFI_ALLOC | FFI_CALLBACK | FFI_STRUCT
+    KOSS_CAP_ALL = 0xFFFFFFFF
+
+    # 兼容别名（用于旧宿主代码过渡）
+    KOSS_CAP_FS = KOSS_CAP_ALL_FS
+    KOSS_CAP_NET = KOSS_CAP_ALL_NET
+    KOSS_CAP_CRYPTO = KOSS_CAP_ALL_CRYPTO
+    KOSS_CAP_WORKER = 1 << 3
+    KOSS_CAP_EXTERNAL_LOADER = MODULE_LOAD
 
     def __init__(
         self,
