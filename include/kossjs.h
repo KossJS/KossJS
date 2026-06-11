@@ -104,6 +104,12 @@ uint32_t koss_get_capabilities(KossInstance *inst);
 KossResult koss_set_audit_mask(KossInstance *inst, uint32_t mask);
 uint32_t koss_get_audit_mask(KossInstance *inst);
 
+/* ── Audit debug mode ──────────────────────────────────────────────── */
+/* Enable or disable audit debug mode. When enabled, error messages include
+   detailed information about denials, timeouts, and callback failures.
+   Production environments should disable debug mode to avoid information leakage. */
+void koss_enable_audit_debug(KossInstance *inst, bool enable);
+
 /* ── Synchronous audit callback ─────────────────────────────────────── */
 /* Audit callback type: called when an operation matching the audit mask
    is about to be performed. Return true to allow, false to block.

@@ -2837,6 +2837,67 @@ pub unsafe extern "C" fn koss_fetch(ptr: *mut KossInstance, url_json: *const c_c
 }
 
 // ===========================================================================
+// Error message generation helpers
+// ===========================================================================
+
+pub fn capability_error_message(target: &str, debug: bool) -> String {
+    if debug {
+        format!("KossCapabilityError: capability denied for {target}")
+    } else {
+        "KossCapabilityError: Access denied".to_string()
+    }
+}
+
+pub fn security_error_message(target: &str, debug: bool) -> String {
+    if debug {
+        format!("KossSecurityError: sandbox audit denied for {target}")
+    } else {
+        "KossSecurityError: Access denied".to_string()
+    }
+}
+
+pub fn timeout_error_message(target: &str, debug: bool) -> String {
+    if debug {
+        format!("KossTimeoutError: sandbox audit timed out for {target}")
+    } else {
+        "KossTimeoutError: Access denied".to_string()
+    }
+}
+
+pub fn cancel_error_message(target: &str, debug: bool) -> String {
+    if debug {
+        format!("KossCancelError: sandbox audit cancelled for {target}")
+    } else {
+        "KossCancelError: Access denied".to_string()
+    }
+}
+
+// ===========================================================================
+// C ABI — Audit debug mode
+// ===========================================================================
+
+/// Enable or disable audit debug mode for a KossJS instance.
+/// When debug mode is enabled:
+/// - Sync/async callback exceptions are output to stderr
+/// - Audit denial reasons include additional error information
+/// - Async audit timeouts or hangs log warnings
+/// - Rejection reentry logs current depth and configured max depth
+/// Production environments should disable debug mode to avoid information leakage.
+///
+/// # Safety
+/// - `ptr` must be a valid pointer from `koss_create` (or NULL, which is a no-op)
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_enable_audit_debug(ptr: *mut KossInstance, enable: bool) {
+    output_license_once();
+    unsafe {
+        if ptr.is_null() {
+            return;
+        }
+        (*ptr).sandbox.audit_debug = enable;
+    }
+}
+
+// ===========================================================================
 // Type aliases for native callbacks
 // ===========================================================================
 

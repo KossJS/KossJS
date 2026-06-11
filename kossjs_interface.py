@@ -222,6 +222,9 @@ class KossJS:
 
         lib.koss_register_class.restype = KossResult
         lib.koss_register_class.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p]
+
+        lib.koss_enable_audit_debug.restype = None
+        lib.koss_enable_audit_debug.argtypes = [ctypes.c_void_p, ctypes.c_bool]
     
     def _get_binding(self, name: str) -> dict[str, Any]:
         """Get internal binding info from Rust."""
@@ -756,6 +759,19 @@ class KossJS:
         cb = self._AUDIT_CALLBACK(wrapper)
         self._audit_callback = cb
         self._check_result(self._lib.koss_check_sandbox(self._ptr, cb, None))
+
+    def enable_audit_debug(self, enable: bool) -> None:
+        """Enable or disable audit debug mode.
+
+        When debug mode is enabled:
+        - Sync/async callback exceptions are output to stderr
+        - Audit denial reasons include additional error information
+        - Async audit timeouts or hangs log warnings
+        - Rejection reentry logs current depth and configured max depth
+
+        Production environments should disable debug mode to avoid information leakage.
+        """
+        self._lib.koss_enable_audit_debug(self._ptr, bool(enable))
 
     def destroy(self) -> None:
         """Destroy the JavaScript instance and free memory."""

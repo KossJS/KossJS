@@ -72,6 +72,8 @@ pub struct SandboxState {
     pub sync_audit: Option<AuditCallback>,
     /// Userdata pointer passed to the audit callback.
     pub sync_userdata: *mut c_void,
+    /// Debug mode: when true, error messages include detailed information.
+    pub audit_debug: bool,
 }
 
 /// 检查能力位是否设置
