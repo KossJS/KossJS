@@ -776,10 +776,12 @@ fn register_native_bindings(instance: &mut KossInstance) {
         let name = args[0].to_string(ctx).unwrap_or_default();
         let name_str = name.to_std_string_escaped();
         let inst = unsafe { &*instance_ptr };
+        let debug = inst.sandbox.audit_debug;
         let decision = is_capability_enabled(inst.capabilities, inst.sandbox.audit_mask, &name_str);
         match decision {
             AuditDecision::DenyCapability => {
-                return Ok(JsValue::from(boa_engine::js_string!("{}")));
+                let msg = capability_error_message(&name_str, debug);
+                return Err(JsError::from(JsNativeError::error().with_message(msg)));
             }
             AuditDecision::Allow => {}
             AuditDecision::NeedAudit => {
@@ -798,7 +800,8 @@ fn register_native_bindings(instance: &mut KossInstance) {
                         )
                     };
                     if !allowed {
-                        return Ok(JsValue::from(boa_engine::js_string!("{}")));
+                        let msg = security_error_message(&name_str, debug);
+                        return Err(JsError::from(JsNativeError::error().with_message(msg)));
                     }
                 }
             }
@@ -2540,10 +2543,12 @@ pub unsafe extern "C" fn koss_get_binding(
             Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
         };
 
+        let debug = instance.sandbox.audit_debug;
         let decision = is_capability_enabled(instance.capabilities, instance.sandbox.audit_mask, name_str);
         match decision {
             AuditDecision::DenyCapability => {
-                return KossResult::ok("{}");
+                let msg = capability_error_message(name_str, debug);
+                return KossResult::err(3, &msg);
             }
             AuditDecision::Allow => {}
             AuditDecision::NeedAudit => {
@@ -2560,7 +2565,8 @@ pub unsafe extern "C" fn koss_get_binding(
                         instance.sandbox.sync_userdata,
                     );
                     if !allowed {
-                        return KossResult::ok("{}");
+                        let msg = security_error_message(name_str, debug);
+                        return KossResult::err(4, &msg);
                     }
                 }
             }
@@ -3505,4 +3511,73 @@ fn register_dlopen_binding(ctx: &mut Context) {
     "#;
     let source = Source::from_bytes(bootstrap.as_bytes());
     let _ = ctx.eval(source);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_capability_error_message_debug_enabled() {
+        let msg = capability_error_message("fs", true);
+        assert!(msg.contains("KossCapabilityError"));
+        assert!(msg.contains("fs"));
+        assert!(msg.contains("capability denied"));
+    }
+
+    #[test]
+    fn test_capability_error_message_debug_disabled() {
+        let msg = capability_error_message("fs", false);
+        assert!(msg.contains("KossCapabilityError"));
+        assert!(msg.contains("Access denied"));
+        assert!(!msg.contains("fs"));
+    }
+
+    #[test]
+    fn test_security_error_message_debug_enabled() {
+        let msg = security_error_message("net", true);
+        assert!(msg.contains("KossSecurityError"));
+        assert!(msg.contains("net"));
+        assert!(msg.contains("sandbox audit denied"));
+    }
+
+    #[test]
+    fn test_security_error_message_debug_disabled() {
+        let msg = security_error_message("net", false);
+        assert!(msg.contains("KossSecurityError"));
+        assert!(msg.contains("Access denied"));
+        assert!(!msg.contains("net"));
+    }
+
+    #[test]
+    fn test_timeout_error_message_debug_enabled() {
+        let msg = timeout_error_message("crypto", true);
+        assert!(msg.contains("KossTimeoutError"));
+        assert!(msg.contains("crypto"));
+        assert!(msg.contains("sandbox audit timed out"));
+    }
+
+    #[test]
+    fn test_timeout_error_message_debug_disabled() {
+        let msg = timeout_error_message("crypto", false);
+        assert!(msg.contains("KossTimeoutError"));
+        assert!(msg.contains("Access denied"));
+        assert!(!msg.contains("crypto"));
+    }
+
+    #[test]
+    fn test_cancel_error_message_debug_enabled() {
+        let msg = cancel_error_message("worker", true);
+        assert!(msg.contains("KossCancelError"));
+        assert!(msg.contains("worker"));
+        assert!(msg.contains("sandbox audit cancelled"));
+    }
+
+    #[test]
+    fn test_cancel_error_message_debug_disabled() {
+        let msg = cancel_error_message("worker", false);
+        assert!(msg.contains("KossCancelError"));
+        assert!(msg.contains("Access denied"));
+        assert!(!msg.contains("worker"));
+    }
 }
