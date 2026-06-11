@@ -1,5 +1,4 @@
 import pytest
-import ctypes
 from kossjs_interface import KossJS, JsError, KossResult
 
 
@@ -17,13 +16,16 @@ def test_check_sandbox_register_and_clear():
         js.destroy()
 
 
-def test_check_sandbox_register_callback_survives_eval():
-    """Test that registered callback persists across eval calls."""
+def test_check_sandbox_callback_liveness_after_eval():
+    """Test that registered callback object persists across eval calls.
+
+    Note: Actual invocation testing requires Task 4 (audit decision function)
+    wired into API calls. This test only verifies the callback object is
+    retained (not garbage collected) after eval.
+    """
     js = KossJS(capabilities=KossJS.MODULE_LOAD | KossJS.FS_READ)
     try:
-        called = []
         def audit(target, args, pwd):
-            called.append(True)
             return True
         js.check_sandbox(audit)
         # Eval some code - callback should still be registered
@@ -31,6 +33,7 @@ def test_check_sandbox_register_callback_survives_eval():
         js.eval("2 + 2")
         # The callback object should be kept alive (not garbage collected)
         assert hasattr(js, '_audit_callback')
+        assert js._audit_callback is not None
     finally:
         js.destroy()
 
@@ -66,20 +69,16 @@ def test_audit_mask_and_callback_independent():
         js.destroy()
 
 
-def test_check_sandbox_callback_type_conversion():
-    """Test that the Python wrapper properly converts callback arguments."""
+def test_check_sandbox_callback_wrapper_exists():
+    """Test that check_sandbox wraps the callback correctly.
+
+    Note: Actual type conversion verification requires Task 4 integration
+    to trigger the callback from the native side with real arguments.
+    This test only verifies the wrapper is stored.
+    """
     js = KossJS(capabilities=KossJS.MODULE_LOAD | KossJS.FS_READ)
     try:
-        received_args = []
         def audit(target, args, pwd):
-            received_args.append({
-                'target': target,
-                'target_type': type(target).__name__,
-                'args': args,
-                'args_type': type(args).__name__,
-                'pwd': pwd,
-                'pwd_type': type(pwd).__name__,
-            })
             return True
         js.check_sandbox(audit)
         # Verify the callback wrapper was set up
@@ -101,3 +100,24 @@ def test_check_sandbox_with_audit_mask():
         assert js._audit_callback is not None
     finally:
         js.destroy()
+
+
+# --- Tests requiring Task 4 (audit decision integration) ---
+
+
+@pytest.mark.skip(reason="Requires Task 4: audit decision function wired into API calls")
+def test_sync_audit_allows_safe_read_path():
+    """Test that sync audit allows a safe read path."""
+    pass
+
+
+@pytest.mark.skip(reason="Requires Task 4: audit decision function wired into API calls")
+def test_sync_audit_rejects_path():
+    """Test that sync audit rejects a disallowed path."""
+    pass
+
+
+@pytest.mark.skip(reason="Requires Task 4: audit decision function wired into API calls")
+def test_no_audit_when_mask_not_set():
+    """Test that no audit occurs when mask is not set."""
+    pass
