@@ -543,7 +543,7 @@ const MAX_EXTERNAL_MODULE_CODE_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
 
 use crate::sandbox::{
     AuditDecision, KOSS_CAP_ALL, KOSS_CAP_ALL_CRYPTO, KOSS_CAP_ALL_FS, KOSS_CAP_ALL_NET,
-    KOSS_CAP_EXTERNAL_LOADER, KOSS_CAP_WORKER, SandboxState, check_audit_decision,
+    KOSS_CAP_EXTERNAL_LOADER, KOSS_CAP_WORKER, SandboxState,
 };
 
 // ---------------------------------------------------------------------------
@@ -1595,10 +1595,11 @@ pub extern "C" fn koss_create_with_caps(caps: u32) -> *mut KossInstance {
     buffer::register_buffer_globals(&mut instance.context);
     register_dlopen_binding(&mut instance.context);
     register_native_bindings(&mut instance);
+    // Always register nodejs globals (internalBinding, primordials, process)
+    register_nodejs_globals(&mut instance.context);
     // Only register module loader if MODULE_LOAD capability is set
     if caps & crate::sandbox::MODULE_LOAD != 0 {
         register_internal_module_loader(&mut instance);
-        register_nodejs_globals(&mut instance.context);
     }
     if caps & KOSS_CAP_ALL_NET != 0 {
         register_fetch_polyfill(&mut instance.context);
@@ -1660,10 +1661,11 @@ pub unsafe extern "C" fn koss_create_with_modules_and_caps(
         register_koss_global(&mut instance.context);
         register_senri_ffi_impl(&mut instance);
         register_native_bindings(&mut instance);
+        // Always register nodejs globals (internalBinding, primordials, process)
+        register_nodejs_globals(&mut instance.context);
         // Only register module loader if MODULE_LOAD capability is set
         if caps & crate::sandbox::MODULE_LOAD != 0 {
             register_internal_module_loader(&mut instance);
-            register_nodejs_globals(&mut instance.context);
         }
         if caps & KOSS_CAP_ALL_NET != 0 {
             register_fetch_polyfill(&mut instance.context);
@@ -2602,41 +2604,28 @@ pub unsafe extern "C" fn koss_get_binding(
 /// Returns an AuditDecision indicating whether to allow, deny, or audit.
 fn is_capability_enabled(caps: u32, audit_mask: u32, name: &str) -> AuditDecision {
     let required = match name {
-        // 文件系统模块 - 只要有任何文件系统能力就启用模块
-        "fs" | "fs/promises" => {
-            // 如果有任何文件系统能力，就启用模块
-            // 具体方法的检查在 JS 层面进行
-            if caps & KOSS_CAP_ALL_FS != 0 {
-                return AuditDecision::Allow;
-            } else {
-                return AuditDecision::DenyCapability;
-            }
-        },
-        
-        // 网络模块 - 只要有任何网络能力就启用模块
-        "net" | "url" | "http_parser" | "dns" | "dgram" => {
-            if caps & KOSS_CAP_ALL_NET != 0 {
-                return AuditDecision::Allow;
-            } else {
-                return AuditDecision::DenyCapability;
-            }
-        },
-        
-        // 加密模块 - 只要有任何加密能力就启用模块
-        "crypto" => {
-            if caps & KOSS_CAP_ALL_CRYPTO != 0 {
-                return AuditDecision::Allow;
-            } else {
-                return AuditDecision::DenyCapability;
-            }
-        },
-        
-        // 其他模块
+        // 文件系统模块
+        "fs" | "fs/promises" => KOSS_CAP_ALL_FS,
+        // 网络模块
+        "net" | "url" | "http_parser" | "dns" | "dgram" => KOSS_CAP_ALL_NET,
+        // 加密模块
+        "crypto" => KOSS_CAP_ALL_CRYPTO,
+        // Worker
         "worker" | "worker_threads" => crate::sandbox::DYNAMIC_CODE,
-        
         _ => return AuditDecision::Allow, // always-available modules
     };
-    check_audit_decision(caps, audit_mask, required)
+    
+    // 第一道闸门：能力位检查
+    if caps & required == 0 {
+        return AuditDecision::DenyCapability;
+    }
+    
+    // 第二道闸门：审核掩码检查
+    if audit_mask & required != 0 {
+        return AuditDecision::NeedAudit;
+    }
+    
+    AuditDecision::Allow
 }
 
 fn handle_binding(name: &str) -> Result<String, String> {
