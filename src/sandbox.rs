@@ -61,3 +61,82 @@ pub fn needs_audit(caps: u32, audit_mask: u32, required: u32) -> bool {
     // 审核掩码只能审核已授予的能力
     has_cap(caps, required) && has_cap(audit_mask, required)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_has_cap_single_bit() {
+        assert!(has_cap(FS_READ, FS_READ));
+        assert!(!has_cap(FS_WRITE, FS_READ));
+    }
+
+    #[test]
+    fn test_has_cap_combination() {
+        let caps = FS_READ | FS_WRITE | NET_TCP_CLIENT;
+        assert!(has_cap(caps, FS_READ));
+        assert!(has_cap(caps, FS_WRITE));
+        assert!(has_cap(caps, NET_TCP_CLIENT));
+        assert!(!has_cap(caps, FS_DELETE));
+        assert!(!has_cap(caps, NET_TCP_SERVER));
+    }
+
+    #[test]
+    fn test_has_cap_zero_required() {
+        assert!(has_cap(0, 0));
+        assert!(has_cap(KOSS_CAP_ALL, 0));
+    }
+
+    #[test]
+    fn test_has_cap_all() {
+        assert!(has_cap(KOSS_CAP_ALL, FS_READ));
+        assert!(has_cap(KOSS_CAP_ALL, KOSS_CAP_ALL_FS));
+        assert!(has_cap(KOSS_CAP_ALL, KOSS_CAP_ALL_NET));
+    }
+
+    #[test]
+    fn test_has_cap_sandbox_empty() {
+        assert!(!has_cap(KOSS_CAP_SANDBOX, FS_READ));
+        assert!(!has_cap(KOSS_CAP_SANDBOX, NET_TCP_CLIENT));
+    }
+
+    #[test]
+    fn test_needs_audit_both_set() {
+        let caps = FS_READ | FS_WRITE;
+        let audit = FS_READ;
+        assert!(needs_audit(caps, audit, FS_READ));
+    }
+
+    #[test]
+    fn test_needs_audit_cap_set_audit_not() {
+        let caps = FS_READ | FS_WRITE;
+        let audit = FS_WRITE;
+        assert!(!needs_audit(caps, audit, FS_READ));
+    }
+
+    #[test]
+    fn test_needs_audit_cap_not_set() {
+        let caps = FS_READ;
+        let audit = FS_READ | FS_WRITE;
+        // FS_WRITE not in caps, so audit is irrelevant
+        assert!(!needs_audit(caps, audit, FS_WRITE));
+    }
+
+    #[test]
+    fn test_needs_audit_neither_set() {
+        let caps = FS_READ;
+        let audit = FS_READ;
+        assert!(!needs_audit(caps, audit, NET_TCP_CLIENT));
+    }
+
+    #[test]
+    fn test_needs_audit_composite() {
+        let caps = KOSS_CAP_ALL_FS | KOSS_CAP_ALL_NET;
+        let audit = KOSS_CAP_ALL_FS;
+        assert!(needs_audit(caps, audit, FS_READ));
+        assert!(needs_audit(caps, audit, KOSS_CAP_ALL_FS));
+        // NET is in caps but not in audit
+        assert!(!needs_audit(caps, audit, NET_TCP_CLIENT));
+    }
+}

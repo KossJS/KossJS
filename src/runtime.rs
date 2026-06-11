@@ -541,15 +541,10 @@ const MAX_WORKER_POOL_SIZE: usize = 64;
 /// code injection via oversized external module payloads).
 const MAX_EXTERNAL_MODULE_CODE_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
 
-// ── Capability bitmask constants ───────────────────────────────────────────
-pub const KOSS_CAP_FS: u32 = 1 << 0;
-pub const KOSS_CAP_NET: u32 = 1 << 1;
-pub const KOSS_CAP_CRYPTO: u32 = 1 << 2;
-pub const KOSS_CAP_WORKER: u32 = 1 << 3;
-pub const KOSS_CAP_EXTERNAL_LOADER: u32 = 1 << 4;
-pub const KOSS_CAP_SANDBOX: u32 = 0;
-pub const KOSS_CAP_ALL: u32 =
-    KOSS_CAP_FS | KOSS_CAP_NET | KOSS_CAP_CRYPTO | KOSS_CAP_WORKER | KOSS_CAP_EXTERNAL_LOADER;
+use crate::sandbox::{
+    KOSS_CAP_ALL, KOSS_CAP_ALL_CRYPTO, KOSS_CAP_ALL_FS, KOSS_CAP_ALL_NET,
+    KOSS_CAP_EXTERNAL_LOADER, KOSS_CAP_WORKER,
+};
 
 // ---------------------------------------------------------------------------
 // Opaque handle — each KossInstance is an isolated JS VM
@@ -1558,7 +1553,7 @@ pub extern "C" fn koss_create_with_caps(caps: u32) -> *mut KossInstance {
     register_native_bindings(&mut instance);
     register_internal_module_loader(&mut instance);
     register_nodejs_globals(&mut instance.context);
-    if caps & KOSS_CAP_NET != 0 {
+    if caps & KOSS_CAP_ALL_NET != 0 {
         register_fetch_polyfill(&mut instance.context);
         register_native_fetch(&mut instance);
     }
@@ -1620,7 +1615,7 @@ pub unsafe extern "C" fn koss_create_with_modules_and_caps(
         register_native_bindings(&mut instance);
         register_internal_module_loader(&mut instance);
         register_nodejs_globals(&mut instance.context);
-        if caps & KOSS_CAP_NET != 0 {
+        if caps & KOSS_CAP_ALL_NET != 0 {
             register_fetch_polyfill(&mut instance.context);
             register_native_fetch(&mut instance);
         }
@@ -2458,9 +2453,9 @@ pub unsafe extern "C" fn koss_get_binding(
 /// Check if a binding is enabled under the given capabilities mask.
 fn is_capability_enabled(caps: u32, name: &str) -> bool {
     match name {
-        "fs" | "fs/promises" => caps & KOSS_CAP_FS != 0,
-        "net" | "fetch" | "url" | "http_parser" | "dns" | "dgram" => caps & KOSS_CAP_NET != 0,
-        "crypto" => caps & KOSS_CAP_CRYPTO != 0,
+        "fs" | "fs/promises" => caps & KOSS_CAP_ALL_FS != 0,
+        "net" | "fetch" | "url" | "http_parser" | "dns" | "dgram" => caps & KOSS_CAP_ALL_NET != 0,
+        "crypto" => caps & KOSS_CAP_ALL_CRYPTO != 0,
         "worker" | "worker_threads" => caps & KOSS_CAP_WORKER != 0,
         _ => true, // always-available modules: os, timers, buffer, constants, util, trace_events
     }
