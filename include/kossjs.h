@@ -100,6 +100,10 @@ void          koss_destroy(KossInstance *inst);
 /* ── Capability query ───────────────────────────────────────────────── */
 uint32_t koss_get_capabilities(KossInstance *inst);
 
+/* ── Audit mask ─────────────────────────────────────────────────────── */
+KossResult koss_set_audit_mask(KossInstance *inst, uint32_t mask);
+uint32_t koss_get_audit_mask(KossInstance *inst);
+
 /* ── Code execution ─────────────────────────────────────────────────── */
 KossResult koss_eval(KossInstance *inst, const char *code);
 KossResult koss_run_file(KossInstance *inst, const char *path);

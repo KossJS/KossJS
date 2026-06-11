@@ -543,7 +543,7 @@ const MAX_EXTERNAL_MODULE_CODE_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
 
 use crate::sandbox::{
     KOSS_CAP_ALL, KOSS_CAP_ALL_CRYPTO, KOSS_CAP_ALL_FS, KOSS_CAP_ALL_NET,
-    KOSS_CAP_EXTERNAL_LOADER, KOSS_CAP_WORKER,
+    KOSS_CAP_EXTERNAL_LOADER, KOSS_CAP_WORKER, SandboxState,
 };
 
 // ---------------------------------------------------------------------------
@@ -573,6 +573,8 @@ pub struct KossInstance {
     pub external_module_loader: Option<NativeCallback>,
     /// Bitmask of enabled capabilities (see KOSS_CAP_* constants).
     pub capabilities: u32,
+    /// Sandbox state: audit mask and future extension fields.
+    pub sandbox: SandboxState,
 }
 
 impl KossInstance {
@@ -583,6 +585,7 @@ impl KossInstance {
             worker_pool: None,
             external_module_loader: None,
             capabilities: caps,
+            sandbox: SandboxState::default(),
         }
     }
 
@@ -2209,6 +2212,39 @@ pub unsafe extern "C" fn koss_get_capabilities(ptr: *mut KossInstance) -> u32 {
         }
         let instance = &*ptr;
         instance.capabilities
+    }
+}
+
+/// Set the audit mask for a KossJS instance.
+/// The audit mask controls which capability operations trigger audit callbacks.
+/// Only bits corresponding to already-granted capabilities are applied;
+/// bits for ungranted capabilities are silently ignored.
+///
+/// # Safety
+/// - `ptr` must be a valid pointer from `koss_create`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_set_audit_mask(ptr: *mut KossInstance, mask: u32) -> KossResult {
+    output_license_once();
+    unsafe {
+        if ptr.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
+        let instance = &mut *ptr;
+        instance.sandbox.audit_mask = mask & instance.capabilities;
+        KossResult::ok("ok")
+    }
+}
+
+/// Get the current audit mask for a KossJS instance.
+/// Returns 0 if the pointer is null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_get_audit_mask(ptr: *mut KossInstance) -> u32 {
+    output_license_once();
+    unsafe {
+        if ptr.is_null() {
+            return 0;
+        }
+        (*ptr).sandbox.audit_mask
     }
 }
 

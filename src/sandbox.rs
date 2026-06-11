@@ -51,6 +51,12 @@ pub const KOSS_CAP_CRYPTO: u32 = KOSS_CAP_ALL_CRYPTO;
 pub const KOSS_CAP_WORKER: u32 = 1 << 3;
 pub const KOSS_CAP_EXTERNAL_LOADER: u32 = MODULE_LOAD;
 
+/// 沙箱状态：集中管理能力、审核掩码和未来扩展字段
+#[derive(Default)]
+pub struct SandboxState {
+    pub audit_mask: u32,
+}
+
 /// 检查能力位是否设置
 pub fn has_cap(caps: u32, required: u32) -> bool {
     caps & required == required

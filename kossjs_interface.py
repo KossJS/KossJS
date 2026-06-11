@@ -136,6 +136,12 @@ class KossJS:
 
         lib.koss_get_capabilities.restype = ctypes.c_uint32
         lib.koss_get_capabilities.argtypes = [ctypes.c_void_p]
+
+        lib.koss_set_audit_mask.restype = KossResult
+        lib.koss_set_audit_mask.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+
+        lib.koss_get_audit_mask.restype = ctypes.c_uint32
+        lib.koss_get_audit_mask.argtypes = [ctypes.c_void_p]
         
         lib.koss_destroy.argtypes = [ctypes.c_void_p]
         
@@ -699,7 +705,16 @@ class KossJS:
     def version(self) -> str:
         """Get the KossJS version string."""
         return self._lib.koss_version().decode("utf-8")
-    
+
+    def set_audit_mask(self, mask: int) -> None:
+        """设置审核掩码（只能审核已授予的能力位）"""
+        result = self._lib.koss_set_audit_mask(self._ptr, mask)
+        self._check_result(result)
+
+    def get_audit_mask(self) -> int:
+        """获取当前审核掩码"""
+        return self._lib.koss_get_audit_mask(self._ptr)
+
     def destroy(self) -> None:
         """Destroy the JavaScript instance and free memory."""
         if self._ptr and hasattr(self, '_lib') and self._lib:
