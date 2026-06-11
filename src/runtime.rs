@@ -1591,7 +1591,6 @@ pub extern "C" fn koss_create_with_caps(caps: u32) -> *mut KossInstance {
     let mut instance = Box::new(KossInstance::new(context, caps));
     register_console(&mut instance.context);
     register_koss_global(&mut instance.context);
-    register_senri_ffi_impl(&mut instance);
     buffer::register_buffer_globals(&mut instance.context);
     register_dlopen_binding(&mut instance.context);
     register_native_bindings(&mut instance);
@@ -1600,6 +1599,10 @@ pub extern "C" fn koss_create_with_caps(caps: u32) -> *mut KossInstance {
     // Only register module loader if MODULE_LOAD capability is set
     if caps & crate::sandbox::MODULE_LOAD != 0 {
         register_internal_module_loader(&mut instance);
+    }
+    // Only register FFI if any FFI capability is set
+    if caps & crate::sandbox::KOSS_CAP_ALL_FFI != 0 {
+        register_senri_ffi_impl(&mut instance);
     }
     if caps & KOSS_CAP_ALL_NET != 0 {
         register_fetch_polyfill(&mut instance.context);
@@ -1659,13 +1662,16 @@ pub unsafe extern "C" fn koss_create_with_modules_and_caps(
         let mut instance = Box::new(KossInstance::new(context, caps));
         register_console(&mut instance.context);
         register_koss_global(&mut instance.context);
-        register_senri_ffi_impl(&mut instance);
         register_native_bindings(&mut instance);
         // Always register nodejs globals (internalBinding, primordials, process)
         register_nodejs_globals(&mut instance.context);
         // Only register module loader if MODULE_LOAD capability is set
         if caps & crate::sandbox::MODULE_LOAD != 0 {
             register_internal_module_loader(&mut instance);
+        }
+        // Only register FFI if any FFI capability is set
+        if caps & crate::sandbox::KOSS_CAP_ALL_FFI != 0 {
+            register_senri_ffi_impl(&mut instance);
         }
         if caps & KOSS_CAP_ALL_NET != 0 {
             register_fetch_polyfill(&mut instance.context);
