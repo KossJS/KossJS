@@ -17,6 +17,7 @@ use tokio::runtime::Runtime;
 use crate::bindings;
 use crate::buffer;
 use crate::license_output::output_license_once;
+use crate::version::get_version;
 use crate::module_loader::KossModuleLoader;
 use crate::worker::{WorkerEvent, WorkerPool};
 
@@ -705,6 +706,59 @@ fn register_console(ctx: &mut Context) {
         console,
         boa_engine::property::Attribute::all(),
     );
+}
+
+fn register_koss_global(ctx: &mut Context) {
+    let version = match std::str::from_utf8(get_version()) {
+        Ok(s) => s.trim_end_matches('\0').to_string(),
+        Err(_) => "unknown".to_string(),
+    };
+
+    // Rust 层创建对象
+    let mut obj = boa_engine::object::ObjectInitializer::new(ctx);
+    obj.property(
+        boa_engine::js_string!("version"),
+        boa_engine::JsValue::from(boa_engine::js_string!(version)),
+        boa_engine::property::Attribute::READONLY
+            | boa_engine::property::Attribute::ENUMERABLE
+            | boa_engine::property::Attribute::PERMANENT,
+    );
+    obj.property(
+        boa_engine::js_string!("runtime"),
+        boa_engine::JsValue::from(boa_engine::js_string!("KossJS")),
+        boa_engine::property::Attribute::READONLY
+            | boa_engine::property::Attribute::ENUMERABLE
+            | boa_engine::property::Attribute::PERMANENT,
+    );
+    let koss_obj = obj.build();
+
+    // Rust 层注册到 globalThis（不设 PERMANENT，让 JS 层能替换并做最终保护）
+    let _ = ctx.register_global_property(
+        boa_engine::js_string!("KossJS"),
+        koss_obj,
+        boa_engine::property::Attribute::READONLY
+            | boa_engine::property::Attribute::CONFIGURABLE,
+    );
+
+    // JS 层加固：无原型 + 冻结
+    let harden_code = r#"
+    (function() {
+        var safe = Object.create(null);
+        safe.version = globalThis.KossJS.version;
+        safe.runtime = globalThis.KossJS.runtime;
+        Object.freeze(safe);
+        Object.defineProperty(globalThis, 'KossJS', {
+            value: safe,
+            writable: false,
+            enumerable: false,
+            configurable: false
+        });
+    })();
+    "#;
+    let source = boa_parser::Source::from_bytes(harden_code.as_bytes());
+    if let Err(e) = ctx.eval(source) {
+        eprintln!("Warning: Failed to harden KossJS global: {:?}", e);
+    }
 }
 
 fn register_fetch_polyfill(ctx: &mut Context) {
@@ -1497,6 +1551,7 @@ pub extern "C" fn koss_create_with_caps(caps: u32) -> *mut KossInstance {
     };
     let mut instance = Box::new(KossInstance::new(context, caps));
     register_console(&mut instance.context);
+    register_koss_global(&mut instance.context);
     register_senri_ffi_impl(&mut instance);
     buffer::register_buffer_globals(&mut instance.context);
     register_dlopen_binding(&mut instance.context);
@@ -1560,6 +1615,7 @@ pub unsafe extern "C" fn koss_create_with_modules_and_caps(
         };
         let mut instance = Box::new(KossInstance::new(context, caps));
         register_console(&mut instance.context);
+        register_koss_global(&mut instance.context);
         register_senri_ffi_impl(&mut instance);
         register_native_bindings(&mut instance);
         register_internal_module_loader(&mut instance);
@@ -2144,8 +2200,7 @@ pub unsafe extern "C" fn koss_register_fetch(ptr: *mut KossInstance) -> KossResu
 #[unsafe(no_mangle)]
 pub extern "C" fn koss_version() -> *const c_char {
     output_license_once();
-    static VERSION: &[u8] = b"0.1.0-dev.6\0";
-    VERSION.as_ptr() as *const c_char
+    get_version().as_ptr() as *const c_char
 }
 
 /// Query the capability mask for a KossJS instance.

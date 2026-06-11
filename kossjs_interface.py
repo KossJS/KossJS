@@ -76,9 +76,9 @@ class KossJS:
         if sys.platform == "win32":
             return str(base_dir / "kossjs.dll")
         elif sys.platform == "darwin":
-            return str(base_dir / "libkossjs.dylib")
+            return str(base_dir / "kossjs.dylib")
         else:
-            return str(base_dir / "libkossjs.so")
+            return str(base_dir / "kossjs.so")
     
     def _setup_prototypes(self):
         lib = self._lib

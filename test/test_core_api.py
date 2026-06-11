@@ -135,3 +135,45 @@ class TestCallback:
             return str(int(x) * 2)
         koss.register_function("double", double_)
         assert koss.eval("double(double(5))") == "20"
+
+
+class TestKossJSGlobal:
+    def test_kossjs_object_exists(self, koss: KossJS):
+        assert koss.eval("typeof KossJS") == "object"
+
+    def test_kossjs_version_is_string(self, koss: KossJS):
+        assert koss.eval("typeof KossJS.version") == "string"
+
+    def test_kossjs_version_format(self, koss: KossJS):
+        result = koss.eval("KossJS.version")
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_kossjs_runtime_value(self, koss: KossJS):
+        assert koss.eval("KossJS.runtime") == "KossJS"
+
+    def test_kossjs_is_frozen(self, koss: KossJS):
+        assert koss.eval("Object.isFrozen(KossJS)") == "true"
+
+    def test_kossjs_has_no_prototype(self, koss: KossJS):
+        assert koss.eval("Object.getPrototypeOf(KossJS)") == "null"
+
+    def test_kossjs_version_readonly(self, koss: KossJS):
+        koss.eval("KossJS.version = 'modified'")
+        assert koss.eval("KossJS.version") != "modified"
+
+    def test_kossjs_runtime_readonly(self, koss: KossJS):
+        koss.eval("KossJS.runtime = 'modified'")
+        assert koss.eval("KossJS.runtime") == "KossJS"
+
+    def test_kossjs_cannot_add_property(self, koss: KossJS):
+        koss.eval("KossJS.newProp = 123")
+        assert koss.eval("KossJS.newProp") == "undefined"
+
+    def test_kossjs_cannot_delete_property(self, koss: KossJS):
+        assert koss.eval("delete KossJS.version") == "false"
+
+    def test_kossjs_global_readonly(self, koss: KossJS):
+        koss.eval("KossJS = {}")
+        assert koss.eval("typeof KossJS") == "object"
+        assert koss.eval("KossJS.runtime") == "KossJS"
