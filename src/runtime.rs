@@ -282,7 +282,7 @@ impl KossEventLoop {
                 ffi_max_concurrency: Arc::new(AtomicUsize::new(64)),
             })
         }
-        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+        #[cfg(not(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos")))]
         {
             Some(KossEventLoop {
                 runtime,
@@ -3443,7 +3443,7 @@ fn register_senri_ffi_impl(instance: &mut KossInstance) {
     );
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos")))]
 fn register_senri_ffi_impl(instance: &mut KossInstance) {
     let ctx = &mut instance.context;
     use boa_engine::object::ObjectInitializer;
@@ -3548,7 +3548,7 @@ fn register_dlopen_binding(ctx: &mut Context) {
     let _ = ctx.eval(source);
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos")))]
 fn register_dlopen_binding(ctx: &mut Context) {
     let dlopen_fn = unsafe {
         NativeFunction::from_closure(
