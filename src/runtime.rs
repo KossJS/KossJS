@@ -4,9 +4,9 @@ use std::os::raw::c_char;
 use std::os::raw::c_void;
 use std::rc::Rc;
 use std::sync::mpsc;
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
 use std::sync::Arc;
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -211,7 +211,7 @@ pub struct PendingResolver {
 }
 
 /// Callback request from async FFI (blocking thread → main thread)
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
 pub(crate) struct CallbackRequest {
     pub task_id: u64,
     pub cb_index: usize,
@@ -222,7 +222,7 @@ pub(crate) struct CallbackRequest {
 }
 
 /// Active async FFI task metadata (main thread)
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
 pub(crate) struct AsyncFfiTask {
     pub canceled: Arc<AtomicBool>,
     pub allow_force_kill: bool,
@@ -238,17 +238,17 @@ pub struct KossEventLoop {
     pub(crate) io_rx: mpsc::Receiver<AsyncIoResult>,
     pub next_promise_id: u64,
     pub pending: HashMap<u64, PendingResolver>,
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
     pub(crate) callback_tx: mpsc::Sender<CallbackRequest>,
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
     pub(crate) callback_rx: mpsc::Receiver<CallbackRequest>,
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
     pub(crate) async_tasks: HashMap<u64, AsyncFfiTask>,
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
     pub(crate) ffi_callback_fns: HashMap<(u64, usize), JsFunction>,
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
     pub(crate) ffi_next_task_id: u64,
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
     pub(crate) ffi_max_concurrency: Arc<AtomicUsize>,
 }
 
@@ -265,7 +265,7 @@ impl KossEventLoop {
                 return None;
             }
         };
-        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
         {
             let (callback_tx, callback_rx) = mpsc::channel();
             Some(KossEventLoop {
@@ -307,7 +307,7 @@ impl KossEventLoop {
         }
 
         // Process callback requests from async FFI tasks (C → JS callbacks)
-        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
         while let Ok(req) = self.callback_rx.try_recv() {
             let canceled = self.async_tasks
                 .get(&req.task_id)
@@ -379,7 +379,7 @@ impl KossEventLoop {
     }
 
     /// Register a new async FFI task and return its task_id.
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
     pub fn register_ffi_task(
         &mut self,
         canceled: Arc<AtomicBool>,
@@ -398,7 +398,7 @@ impl KossEventLoop {
     }
 
     /// Store the thread handle for an async FFI task.
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
     pub fn set_ffi_task_thread(&mut self, task_id: u64, handle: std::thread::JoinHandle<()>) {
         if let Some(task) = self.async_tasks.get_mut(&task_id) {
             task.thread_handle = Some(handle);
@@ -406,25 +406,25 @@ impl KossEventLoop {
     }
 
     /// Register a JS callback function for a task/cb_index slot.
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
     pub fn register_ffi_callback_fn(&mut self, task_id: u64, cb_index: usize, func: JsFunction) {
         self.ffi_callback_fns.insert((task_id, cb_index), func);
     }
 
     /// Get a clone of the callback channel sender.
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
     pub(crate) fn callback_tx_clone(&self) -> mpsc::Sender<CallbackRequest> {
         self.callback_tx.clone()
     }
 
     /// Get the max concurrency AtomicUsize for FFI tasks.
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
     pub fn ffi_max_concurrency(&self) -> Arc<AtomicUsize> {
         self.ffi_max_concurrency.clone()
     }
 
     /// Force kill an async FFI task (kill OS thread).
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
     pub fn force_kill_ffi_task(&mut self, task_id: u64) {
         if let Some(task) = self.async_tasks.get_mut(&task_id) {
             task.canceled.store(true, Ordering::Release);
@@ -437,7 +437,7 @@ impl KossEventLoop {
     }
 
     /// Remove a completed FFI task (cleanup after async call finishes).
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
     pub fn remove_ffi_task(&mut self, task_id: u64) {
         self.async_tasks.remove(&task_id);
         let keys: Vec<(u64, usize)> = self.ffi_callback_fns.keys()
@@ -453,7 +453,7 @@ impl KossEventLoop {
 // ---------------------------------------------------------------------------
 // FFI callback value conversion helpers
 // ---------------------------------------------------------------------------
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
 fn ffi_bytes_to_js_value(bytes: &[u8], type_info: &crate::_senri_ffi::types::OwnedFfiType) -> JsValue {
     use crate::_senri_ffi::types::OwnedFfiType;
     match type_info {
@@ -492,7 +492,7 @@ fn ffi_bytes_to_js_value(bytes: &[u8], type_info: &crate::_senri_ffi::types::Own
     }
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
 fn ffi_js_value_to_bytes(val: &JsValue, type_info: &crate::_senri_ffi::types::OwnedFfiType) -> Vec<u8> {
     use crate::_senri_ffi::types::OwnedFfiType;
     match type_info {
@@ -3434,7 +3434,7 @@ pub unsafe extern "C" fn koss_register_class(
     }
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
 fn register_senri_ffi_impl(instance: &mut KossInstance) {
     let ptr = instance as *mut KossInstance as *mut c_void;
     crate::_senri_ffi::register_senri_ffi(
@@ -3511,7 +3511,7 @@ fn register_senri_ffi_impl(instance: &mut KossInstance) {
     );
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
 fn register_dlopen_binding(ctx: &mut Context) {
     let dlopen_fn = unsafe {
         NativeFunction::from_closure(

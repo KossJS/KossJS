@@ -35,7 +35,8 @@ hmac = "0.13"
 pbkdf2 = "0.13"
 
 # 动态加载动态库（跨平台，iOS 不支持动态调用动态库所以跳过，Android 和 HarmonyOS 有限制也跳过）
-[target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
+# 注意: ohos 的 target_os="linux"、target_env="ohos"，必须显式排除
+[target.'cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))'.dependencies]
 libloading = "0.9.0"
 libffi = "5.1.0"
 libffi-sys = "4.1.0"
