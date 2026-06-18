@@ -4,7 +4,9 @@ use std::os::raw::c_char;
 use std::os::raw::c_void;
 use std::rc::Rc;
 use std::sync::mpsc;
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 use std::sync::Arc;
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -452,7 +454,6 @@ impl KossEventLoop {
 // FFI callback value conversion helpers
 // ---------------------------------------------------------------------------
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-
 fn ffi_bytes_to_js_value(bytes: &[u8], type_info: &crate::_senri_ffi::types::OwnedFfiType) -> JsValue {
     use crate::_senri_ffi::types::OwnedFfiType;
     match type_info {
@@ -491,6 +492,7 @@ fn ffi_bytes_to_js_value(bytes: &[u8], type_info: &crate::_senri_ffi::types::Own
     }
 }
 
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn ffi_js_value_to_bytes(val: &JsValue, type_info: &crate::_senri_ffi::types::OwnedFfiType) -> Vec<u8> {
     use crate::_senri_ffi::types::OwnedFfiType;
     match type_info {

@@ -67,3 +67,6 @@ _internal/
 *.dll
 *.so
 *.dylib
+
+!Cargo.toml
+!Cargo.lock
