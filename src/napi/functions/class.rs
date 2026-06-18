@@ -28,7 +28,7 @@ pub unsafe fn napi_define_class(
     for i in 0..property_count {
         let prop = unsafe { &*properties.add(i) };
         let name = if !prop.utf8name.is_null() {
-            let cstr = unsafe { std::ffi::CStr::from_ptr(prop.utf8name as *const i8) };
+            let cstr = unsafe { std::ffi::CStr::from_ptr(prop.utf8name as *const std::ffi::c_char) };
             cstr.to_string_lossy().to_string()
         } else {
             continue;

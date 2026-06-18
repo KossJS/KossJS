@@ -209,6 +209,7 @@ pub struct PendingResolver {
 }
 
 /// Callback request from async FFI (blocking thread → main thread)
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 pub(crate) struct CallbackRequest {
     pub task_id: u64,
     pub cb_index: usize,
@@ -219,6 +220,7 @@ pub(crate) struct CallbackRequest {
 }
 
 /// Active async FFI task metadata (main thread)
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 pub(crate) struct AsyncFfiTask {
     pub canceled: Arc<AtomicBool>,
     pub allow_force_kill: bool,
@@ -234,18 +236,23 @@ pub struct KossEventLoop {
     pub(crate) io_rx: mpsc::Receiver<AsyncIoResult>,
     pub next_promise_id: u64,
     pub pending: HashMap<u64, PendingResolver>,
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     pub(crate) callback_tx: mpsc::Sender<CallbackRequest>,
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     pub(crate) callback_rx: mpsc::Receiver<CallbackRequest>,
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     pub(crate) async_tasks: HashMap<u64, AsyncFfiTask>,
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     pub(crate) ffi_callback_fns: HashMap<(u64, usize), JsFunction>,
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     pub(crate) ffi_next_task_id: u64,
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     pub(crate) ffi_max_concurrency: Arc<AtomicUsize>,
 }
 
 impl KossEventLoop {
     pub fn new() -> Option<Self> {
         let (io_tx, io_rx) = mpsc::channel();
-        let (callback_tx, callback_rx) = mpsc::channel();
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -256,19 +263,33 @@ impl KossEventLoop {
                 return None;
             }
         };
-        Some(KossEventLoop {
-            runtime,
-            io_tx,
-            io_rx,
-            callback_tx,
-            callback_rx,
-            next_promise_id: 1,
-            pending: HashMap::new(),
-            async_tasks: HashMap::new(),
-            ffi_callback_fns: HashMap::new(),
-            ffi_next_task_id: 1,
-            ffi_max_concurrency: Arc::new(AtomicUsize::new(64)),
-        })
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        {
+            let (callback_tx, callback_rx) = mpsc::channel();
+            Some(KossEventLoop {
+                runtime,
+                io_tx,
+                io_rx,
+                callback_tx,
+                callback_rx,
+                next_promise_id: 1,
+                pending: HashMap::new(),
+                async_tasks: HashMap::new(),
+                ffi_callback_fns: HashMap::new(),
+                ffi_next_task_id: 1,
+                ffi_max_concurrency: Arc::new(AtomicUsize::new(64)),
+            })
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+        {
+            Some(KossEventLoop {
+                runtime,
+                io_tx,
+                io_rx,
+                next_promise_id: 1,
+                pending: HashMap::new(),
+            })
+        }
     }
 
     /// Process all completed async I/O operations and resolve their promises.
@@ -284,6 +305,7 @@ impl KossEventLoop {
         }
 
         // Process callback requests from async FFI tasks (C → JS callbacks)
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         while let Ok(req) = self.callback_rx.try_recv() {
             let canceled = self.async_tasks
                 .get(&req.task_id)
@@ -355,6 +377,7 @@ impl KossEventLoop {
     }
 
     /// Register a new async FFI task and return its task_id.
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     pub fn register_ffi_task(
         &mut self,
         canceled: Arc<AtomicBool>,
@@ -373,6 +396,7 @@ impl KossEventLoop {
     }
 
     /// Store the thread handle for an async FFI task.
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     pub fn set_ffi_task_thread(&mut self, task_id: u64, handle: std::thread::JoinHandle<()>) {
         if let Some(task) = self.async_tasks.get_mut(&task_id) {
             task.thread_handle = Some(handle);
@@ -380,31 +404,30 @@ impl KossEventLoop {
     }
 
     /// Register a JS callback function for a task/cb_index slot.
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     pub fn register_ffi_callback_fn(&mut self, task_id: u64, cb_index: usize, func: JsFunction) {
         self.ffi_callback_fns.insert((task_id, cb_index), func);
     }
 
     /// Get a clone of the callback channel sender.
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     pub(crate) fn callback_tx_clone(&self) -> mpsc::Sender<CallbackRequest> {
         self.callback_tx.clone()
     }
 
     /// Get the max concurrency AtomicUsize for FFI tasks.
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     pub fn ffi_max_concurrency(&self) -> Arc<AtomicUsize> {
         self.ffi_max_concurrency.clone()
     }
 
     /// Force kill an async FFI task (kill OS thread).
-    #[cfg(not(any(target_os = "ios", target_os = "android", target_os = "ohos")))]
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     pub fn force_kill_ffi_task(&mut self, task_id: u64) {
         if let Some(task) = self.async_tasks.get_mut(&task_id) {
             task.canceled.store(true, Ordering::Release);
             if task.allow_force_kill {
                 if let Some(handle) = task.thread_handle.take() {
-                    // On platforms where std::thread::JoinHandle supports killing...
-                    // Actually, Rust doesn't have a kill_thread API for safety.
-                    // We detach the thread and let it run until it finishes in the background.
-                    // The canceled flag will prevent callback processing.
                     drop(handle);
                 }
             }
@@ -412,9 +435,9 @@ impl KossEventLoop {
     }
 
     /// Remove a completed FFI task (cleanup after async call finishes).
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     pub fn remove_ffi_task(&mut self, task_id: u64) {
         self.async_tasks.remove(&task_id);
-        // Clean up callback fn references
         let keys: Vec<(u64, usize)> = self.ffi_callback_fns.keys()
             .filter(|(tid, _)| *tid == task_id)
             .cloned()
@@ -428,6 +451,7 @@ impl KossEventLoop {
 // ---------------------------------------------------------------------------
 // FFI callback value conversion helpers
 // ---------------------------------------------------------------------------
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 
 fn ffi_bytes_to_js_value(bytes: &[u8], type_info: &crate::_senri_ffi::types::OwnedFfiType) -> JsValue {
     use crate::_senri_ffi::types::OwnedFfiType;

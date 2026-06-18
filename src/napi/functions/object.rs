@@ -122,7 +122,7 @@ pub unsafe fn napi_define_properties(
     for i in 0..property_count {
         let prop = unsafe { &*properties.add(i) };
         let name = if !prop.utf8name.is_null() {
-            let cstr = unsafe { std::ffi::CStr::from_ptr(prop.utf8name as *const i8) };
+            let cstr = unsafe { std::ffi::CStr::from_ptr(prop.utf8name as *const std::ffi::c_char) };
             cstr.to_string_lossy().to_string()
         } else {
             "".to_string()
@@ -152,7 +152,7 @@ fn key_value_to_string(key: NapiValue) -> String {
     }
     let addr = key as usize;
     if addr > 0x10000 {
-        if let Ok(cstr) = unsafe { std::ffi::CStr::from_ptr(key as *const i8) }.to_str() {
+        if let Ok(cstr) = unsafe { std::ffi::CStr::from_ptr(key as *const std::ffi::c_char) }.to_str() {
             return cstr.to_string();
         }
     }
@@ -164,7 +164,7 @@ fn key_value_to_string(key: NapiValue) -> String {
 }
 
 fn napi_value_from_cstr(ptr: *const u8) -> NapiValue {
-    let cstr = unsafe { std::ffi::CStr::from_ptr(ptr as *const i8) };
+    let cstr = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::ffi::c_char) };
     let s = cstr.to_string_lossy().to_string();
     let cstring = std::ffi::CString::new(s).unwrap_or_default();
     cstring.into_raw() as NapiValue
@@ -189,7 +189,7 @@ pub fn value_to_js(val: NapiValue, _ctx: &mut boa_engine::Context) -> JsValue {
         return JsValue::from(n);
     }
     if addr > 0x10000 {
-        if let Ok(cstr) = unsafe { std::ffi::CStr::from_ptr(val as *const i8) }.to_str() {
+        if let Ok(cstr) = unsafe { std::ffi::CStr::from_ptr(val as *const std::ffi::c_char) }.to_str() {
             return JsValue::from(js_string!(cstr));
         }
     }

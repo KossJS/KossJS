@@ -21,7 +21,7 @@ pub unsafe fn napi_throw_error(
     let msg_str = if msg.is_null() {
         "Unknown N-API error".to_string()
     } else {
-        let cstr = unsafe { std::ffi::CStr::from_ptr(msg as *const i8) };
+        let cstr = unsafe { std::ffi::CStr::from_ptr(msg as *const std::ffi::c_char) };
         cstr.to_string_lossy().to_string()
     };
     unsafe {

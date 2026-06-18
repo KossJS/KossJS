@@ -2036,6 +2036,7 @@ mod tests {
     }
 }
 
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 pub mod process_dlopen {
     use boa_engine::{Context, JsError, JsNativeError, JsObject};
 

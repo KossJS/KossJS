@@ -53,7 +53,7 @@ pub unsafe fn napi_get_value_string_utf8(
     if value.is_null() || (value as usize) < 4096 {
         return NapiStatus::StringExpected;
     }
-    let cstr = unsafe { std::ffi::CStr::from_ptr(value as *const i8) };
+    let cstr = unsafe { std::ffi::CStr::from_ptr(value as *const std::ffi::c_char) };
     let s = cstr.to_string_lossy();
     let bytes = s.as_bytes();
     let copy_len = bytes.len().min(bufsize - 1);
