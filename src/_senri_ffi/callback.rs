@@ -169,7 +169,7 @@ fn c_ptr_to_js(ptr: *const u8, type_info: &FfiType) -> JsValue {
             JsValue::from(addr as f64)
         }
         FfiType::CString => {
-            let addr = unsafe { *(ptr as *const *const i8) };
+            let addr = unsafe { *(ptr as *const *const std::ffi::c_char) };
             if addr.is_null() {
                 JsValue::null()
             } else {

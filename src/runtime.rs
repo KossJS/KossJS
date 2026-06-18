@@ -452,7 +452,7 @@ fn ffi_bytes_to_js_value(bytes: &[u8], type_info: &crate::_senri_ffi::types::Own
             if addr == 0 {
                 JsValue::null()
             } else {
-                let cstr = unsafe { std::ffi::CStr::from_ptr(addr as *const i8) };
+                let cstr = unsafe { std::ffi::CStr::from_ptr(addr as *const std::ffi::c_char) };
                 let s = cstr.to_string_lossy().to_string();
                 JsValue::from(js_string!(s))
             }
@@ -3418,7 +3418,8 @@ fn register_senri_ffi_impl(instance: &mut KossInstance) {
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-fn register_senri_ffi_impl(ctx: &mut Context) {
+fn register_senri_ffi_impl(instance: &mut KossInstance) {
+    let ctx = &mut instance.context;
     use boa_engine::object::ObjectInitializer;
     use boa_engine::property::Attribute;
 

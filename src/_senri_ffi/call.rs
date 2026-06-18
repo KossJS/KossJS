@@ -283,7 +283,7 @@ pub mod async_defs {
                     if addr == 0 {
                         "null".to_string()
                     } else {
-                        let cstr = std::ffi::CStr::from_ptr(addr as *const i8);
+                        let cstr = std::ffi::CStr::from_ptr(addr as *const std::ffi::c_char);
                         let s = cstr.to_string_lossy();
                         serde_json::to_string(&*s).unwrap_or_else(|_| "\"\"".to_string())
                     }
@@ -733,7 +733,7 @@ pub fn invoke_ffi_call(
                 if addr == 0 {
                     JsValue::null()
                 } else {
-                    let cstr = std::ffi::CStr::from_ptr(addr as *const i8);
+                    let cstr = std::ffi::CStr::from_ptr(addr as *const std::ffi::c_char);
                     let s = cstr.to_string_lossy().to_string();
                     JsValue::from(js_string!(s))
                 }

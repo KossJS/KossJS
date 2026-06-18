@@ -75,7 +75,7 @@ fn read_from_buffer(buf: &[u8], offset: usize, type_info: &FfiType) -> JsValue {
                 JsValue::null()
             } else {
                 unsafe {
-                    let cstr = std::ffi::CStr::from_ptr(addr as *const i8);
+                    let cstr = std::ffi::CStr::from_ptr(addr as *const std::ffi::c_char);
                     let s = cstr.to_string_lossy();
                     JsValue::from(js_string!(s))
                 }
