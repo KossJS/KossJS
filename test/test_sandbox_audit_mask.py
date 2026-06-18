@@ -1,5 +1,5 @@
-import pytest
-from kossjs_interface import KossJS, JsError
+import pytest # pyright: ignore[reportUnusedImport]
+from kossjs_interface import KossJS, JsError # pyright: ignore[reportUnusedImport]
 
 
 def test_default_audit_mask_is_zero():

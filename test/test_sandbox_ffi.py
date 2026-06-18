@@ -4,14 +4,14 @@
 """
 import os
 import pytest
-from kossjs_interface import KossJS, JsError
+from kossjs_interface import KossJS, JsError # pyright: ignore[reportUnusedImport]
 
 # 动态库路径
 TEST_LIB_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "test-lib", "target", "release")
 if os.name == "nt":
     TEST_LIB_PATH = os.path.join(TEST_LIB_DIR, "senri_test.dll").replace("\\", "/")
 else:
-    TEST_LIB_PATH = os.path.join(TEST_LIB_DIR, "libsenri_test.so").replace("\\", "/")
+    TEST_LIB_PATH = os.path.join(TEST_LIB_DIR, "senri_test.so").replace("\\", "/")
 
 # 跳过测试如果动态库不存在
 pytestmark = pytest.mark.skipif(
@@ -131,9 +131,9 @@ def test_ffi_no_audit_through_internalbinding():
     审核通过能力位门控实现：没有 FFI_OPEN 能力位则 _senri_ffi.open 不存在。
     """
     js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD)
-    calls = []
+    calls: list[str] = []
     try:
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             calls.append(target)
             return True
 

@@ -43,9 +43,9 @@ def test_decision_flow_capability_then_audit():
 def test_decision_flow_audit_mask_then_callback():
     """测试决策流程：先检查审核掩码，再调用审核回调"""
     js = KossJS(capabilities=(KossJS.KOSS_CAP_ALL_FS | KossJS.KOSS_CAP_ALL_NET | KossJS.MODULE_LOAD))
-    calls = []
+    calls: list[str] = []
     try:
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             calls.append(target)
             return True
 
@@ -66,9 +66,9 @@ def test_decision_flow_audit_mask_then_callback():
 def test_decision_flow_no_audit_when_mask_not_set():
     """测试决策流程：审核掩码未设置时，直接放行"""
     js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.MODULE_LOAD)
-    calls = []
+    calls: list[str] = []
     try:
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             calls.append(target)
             return True
 
@@ -94,9 +94,9 @@ def test_decision_flow_allow_when_no_callback():
 def test_decision_flow_capability_priority_over_audit():
     """测试决策流程：能力位检查优先于审核"""
     js = KossJS(capabilities=KossJS.MODULE_LOAD)  # 没有 FS 能力
-    audit_called = []
+    audit_called: list[str] = []
     try:
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             audit_called.append(target)
             return True
 
@@ -115,9 +115,9 @@ def test_decision_flow_capability_priority_over_audit():
 def test_decision_flow_audit_mask_priority_over_callback():
     """测试决策流程：审核掩码检查优先于审核回调"""
     js = KossJS(capabilities=(KossJS.KOSS_CAP_ALL_FS | KossJS.KOSS_CAP_ALL_NET | KossJS.MODULE_LOAD))
-    audit_called = []
+    audit_called: list[str] = []
     try:
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             audit_called.append(target)
             return True
 
@@ -138,9 +138,9 @@ def test_decision_flow_with_multiple_capabilities():
     """测试决策流程：多个能力位的组合"""
     caps = KossJS.KOSS_CAP_ALL_FS | KossJS.KOSS_CAP_ALL_NET | KossJS.MODULE_LOAD
     js = KossJS(capabilities=caps)
-    audit_called = []
+    audit_called: list[str] = []
     try:
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             audit_called.append(target)
             return True
 
@@ -160,7 +160,7 @@ def test_decision_flow_audit_callback_can_approve_and_deny():
     js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.MODULE_LOAD)
     try:
         call_count = 0
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             nonlocal call_count
             call_count += 1
             return call_count <= 1
@@ -182,9 +182,9 @@ def test_decision_flow_with_different_targets():
     """测试决策流程：不同 API 的审核"""
     caps = KossJS.KOSS_CAP_ALL_FS | KossJS.KOSS_CAP_ALL_NET | KossJS.MODULE_LOAD
     js = KossJS(capabilities=caps)
-    audit_called = []
+    audit_called: list[str] = []
     try:
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             audit_called.append(target)
             return target == "fs"
 
@@ -214,9 +214,9 @@ def test_decision_flow_capability_only_no_audit():
 def test_decision_flow_sandbox_mode_bypasses_audit():
     """测试决策流程：沙箱模式下，能力位检查优先于审核"""
     js = KossJS(capabilities=KossJS.KOSS_CAP_SANDBOX)
-    audit_called = []
+    audit_called: list[str] = []
     try:
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             audit_called.append(target)
             return True
 
@@ -235,9 +235,9 @@ def test_decision_flow_dynamic_audit_mask_change():
     """测试决策流程：动态更改审核掩码"""
     caps = KossJS.KOSS_CAP_ALL_FS | KossJS.KOSS_CAP_ALL_NET | KossJS.MODULE_LOAD
     js = KossJS(capabilities=caps)
-    audit_called = []
+    audit_called: list[str] = []
     try:
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             audit_called.append(target)
             return True
 

@@ -6,7 +6,7 @@
 或者通过 fetch 等直接注册的原生函数触发。
 """
 import pytest
-from kossjs_interface import KossJS, JsError, KossResult
+from kossjs_interface import KossJS, JsError, KossResult # pyright: ignore[reportUnusedImport]
 
 
 def test_check_sandbox_register_and_clear():
@@ -24,13 +24,13 @@ def test_check_sandbox_callback_liveness_after_eval():
     """Test that registered callback object persists across eval calls."""
     js = KossJS(capabilities=KossJS.MODULE_LOAD | KossJS.FS_READ)
     try:
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             return True
         js.check_sandbox(audit)
         js.eval("1 + 1")
         js.eval("2 + 2")
         assert hasattr(js, '_audit_callback')
-        assert js._audit_callback is not None
+        assert js._audit_callback is not None # pyright: ignore[reportPrivateUsage]
     finally:
         js.destroy()
 
@@ -42,7 +42,7 @@ def test_check_sandbox_clear_callback():
         js.check_sandbox(lambda target, args, pwd: True)
         assert hasattr(js, '_audit_callback')
         js.check_sandbox(None)
-        assert js._audit_callback is None
+        assert js._audit_callback is None # pyright: ignore[reportPrivateUsage]
     finally:
         js.destroy()
 
@@ -67,11 +67,11 @@ def test_check_sandbox_callback_wrapper_exists():
     """Test that check_sandbox wraps the callback correctly."""
     js = KossJS(capabilities=KossJS.MODULE_LOAD | KossJS.FS_READ)
     try:
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             return True
         js.check_sandbox(audit)
         assert hasattr(js, '_audit_callback')
-        assert js._audit_callback is not None
+        assert js._audit_callback is not None # pyright: ignore[reportPrivateUsage]
     finally:
         js.destroy()
 
@@ -83,7 +83,7 @@ def test_check_sandbox_with_audit_mask():
         js.set_audit_mask(KossJS.FS_READ)
         js.check_sandbox(lambda target, args, pwd: True)
         assert js.get_audit_mask() == KossJS.FS_READ
-        assert js._audit_callback is not None
+        assert js._audit_callback is not None # pyright: ignore[reportPrivateUsage]
     finally:
         js.destroy()
 
@@ -95,9 +95,9 @@ def test_check_sandbox_with_audit_mask():
 def test_audit_callback_triggered_by_binding():
     """测试审核回调通过 __koss_bindings (internalBinding) 路径触发"""
     js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.MODULE_LOAD)
-    calls = []
+    calls: list[str] = []
     try:
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             calls.append(target)
             return True
 
@@ -118,7 +118,7 @@ def test_audit_callback_rejects_binding():
     """测试审核回调拒绝通过 __koss_bindings 路径的调用"""
     js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.MODULE_LOAD)
     try:
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             return False
 
         js.check_sandbox(audit)
@@ -136,9 +136,9 @@ def test_audit_callback_rejects_binding():
 def test_audit_callback_not_triggered_when_mask_not_set():
     """测试不设置审核掩码时，审核回调不被触发"""
     js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.MODULE_LOAD)
-    calls = []
+    calls: list[str] = []
     try:
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             calls.append(target)
             return True
 
@@ -159,7 +159,7 @@ def test_audit_callback_with_selective_approval():
     """测试审核回调选择性批准"""
     js = KossJS(capabilities=(KossJS.KOSS_CAP_ALL_FS | KossJS.KOSS_CAP_ALL_NET | KossJS.MODULE_LOAD))
     try:
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             # 只允许 fs，拒绝 net
             if target == "fs":
                 return True
@@ -181,9 +181,9 @@ def test_audit_callback_with_selective_approval():
 def test_audit_callback_receives_correct_target():
     """测试审核回调接收到正确的 target 参数"""
     js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.MODULE_LOAD)
-    received_targets = []
+    received_targets: list[str] = []
     try:
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             received_targets.append(target)
             return True
 
@@ -199,7 +199,7 @@ def test_audit_callback_exception_treated_as_rejection():
     """测试审核回调抛出异常被视为拒绝"""
     js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.MODULE_LOAD)
     try:
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             raise Exception("audit error")
 
         js.check_sandbox(audit)
@@ -214,9 +214,9 @@ def test_audit_callback_exception_treated_as_rejection():
 def test_audit_mask_controls_which_bindings_are_audited():
     """测试审核掩码控制哪些 binding 需要审核"""
     js = KossJS(capabilities=(KossJS.KOSS_CAP_ALL_FS | KossJS.KOSS_CAP_ALL_NET | KossJS.MODULE_LOAD))
-    calls = []
+    calls: list[str] = []
     try:
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             calls.append(target)
             return True
 
@@ -240,7 +240,7 @@ def test_audit_callback_with_allow_and_deny():
     js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.MODULE_LOAD)
     try:
         call_count = 0
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             nonlocal call_count
             call_count += 1
             return call_count <= 1
@@ -273,9 +273,9 @@ def test_no_audit_when_callback_not_registered():
 def test_capability_denial_overrides_audit():
     """测试能力位检查优先于审核"""
     js = KossJS(capabilities=KossJS.MODULE_LOAD)  # 没有 FS 能力
-    audit_called = []
+    audit_called: list[str] = []
     try:
-        def audit(target, args, pwd):
+        def audit(target: str, args: list[str], pwd: str | None):
             audit_called.append(target)
             return True
 

@@ -744,19 +744,19 @@ class KossJS:
             self._audit_callback = None
             return
 
-        def wrapper(target: bytes | None, args: ctypes.POINTER(ctypes.c_char_p), argc: int, pwd: bytes | None, userdata: ctypes.c_void_p) -> bool:  # pyright: ignore[reportUnknownParameterType]
+        def wrapper(target: bytes, args: ctypes.POINTER(ctypes.c_char_p), argc: int, pwd: bytes, userdata: ctypes.c_void_p) -> ctypes.c_bool:  # type: ignore[reportUnknownParameterType]
             target_s = target.decode("utf-8", errors="replace") if target else ""
             values: list[str] = []
             for i in range(argc):
-                raw = args[i]
-                values.append(raw.decode("utf-8", errors="replace") if raw else "")
+                raw: bytes = args[i]  # type: ignore[reportUnknownVariableType]
+                values.append(raw.decode("utf-8", errors="replace") if raw else "")  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
             pwd_s = pwd.decode("utf-8", errors="replace") if pwd else None
             try:
-                return bool(func(target_s, values, pwd_s))
+                return ctypes.c_bool(bool(func(target_s, values, pwd_s)))
             except Exception:
-                return False
+                return ctypes.c_bool(False)
 
-        cb = self._AUDIT_CALLBACK(wrapper)
+        cb = self._AUDIT_CALLBACK(wrapper)  # type: ignore[reportUnknownArgumentType]
         self._audit_callback = cb
         self._check_result(self._lib.koss_check_sandbox(self._ptr, cb, None))
 
