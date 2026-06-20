@@ -591,7 +591,6 @@ use crate::sandbox::{
 // For multi-threaded hosts, serialise all KossInstance access through an
 // external mutex or ensure exclusive thread ownership.
 pub struct KossInstance {
-    pub context: Context,
     pub event_loop: Option<KossEventLoop>,
     pub worker_pool: Option<WorkerPool>,
     /// Optional external module loader callback (e.g. from Python).
@@ -601,17 +600,22 @@ pub struct KossInstance {
     pub capabilities: u32,
     /// Sandbox state: audit mask and future extension fields.
     pub sandbox: SandboxState,
+    /// Context MUST be the last field: Rust drops struct fields in declaration
+    /// order, and other fields (event_loop.ffi_callback_fns) hold JsFunction
+    /// handles that reference the Context. Dropping Context first causes
+    /// use-after-free segfaults.
+    pub context: Context,
 }
 
 impl KossInstance {
     pub fn new(context: Context, caps: u32) -> Self {
         KossInstance {
-            context,
             event_loop: KossEventLoop::new(),
             worker_pool: None,
             external_module_loader: None,
             capabilities: caps,
             sandbox: SandboxState::default(),
+            context,
         }
     }
 

@@ -497,8 +497,10 @@ mod tests {
 
     impl TempDir {
         fn new() -> Self {
-            let dir = std::env::temp_dir().join(format!("kossjs_test_{}", uuid_str()));
-            fs::create_dir_all(&dir).unwrap();
+            let dir = std::env::temp_dir().join(format!("kj_{}", uuid_str()));
+            fs::create_dir_all(&dir).unwrap_or_else(|e| {
+                panic!("Failed to create temp dir {:?}: {}", dir, e);
+            });
             Self { path: dir }
         }
 
@@ -508,16 +510,22 @@ mod tests {
 
         fn mkdir(&self, name: &str) -> PathBuf {
             let p = self.path.join(name);
-            fs::create_dir_all(&p).unwrap();
+            fs::create_dir_all(&p).unwrap_or_else(|e| {
+                panic!("Failed to create dir {:?}: {}", p, e);
+            });
             p
         }
 
         fn write(&self, name: &str, content: &str) -> PathBuf {
             let p = self.path.join(name);
             if let Some(parent) = p.parent() {
-                fs::create_dir_all(parent).unwrap();
+                fs::create_dir_all(parent).unwrap_or_else(|e| {
+                    panic!("Failed to create parent dir {:?}: {}", parent, e);
+                });
             }
-            let mut f = fs::File::create(&p).unwrap();
+            let mut f = fs::File::create(&p).unwrap_or_else(|e| {
+                panic!("Failed to create file {:?}: {}", p, e);
+            });
             f.write_all(content.as_bytes()).unwrap();
             p
         }

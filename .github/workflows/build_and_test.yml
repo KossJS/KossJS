@@ -616,6 +616,11 @@ jobs:
           name: ${{ matrix.artifact }}
           path: .
 
+      - name: 📋 重命名产物 (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: mv ${{ matrix.artifact }} kossjs.dylib
+
       - name: 🐍 安装 Python
         uses: actions/setup-python@v5
         with:
@@ -625,9 +630,14 @@ jobs:
         shell: bash
         run: |
           echo "验证动态库可被加载..."
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            lib_name="kossjs.dylib"
+          else
+            lib_name="${{ matrix.artifact }}"
+          fi
           python3 -c "
           import ctypes, sys, os
-          lib_name = '${{ matrix.artifact }}'
+          lib_name = '$lib_name'
           try:
               lib = ctypes.CDLL('./' + lib_name)
               print(f'[SUCCESS] Load {lib_name}')
