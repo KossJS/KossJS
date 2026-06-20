@@ -90,6 +90,13 @@ class KossJS:
         
         self._lib = ctypes.CDLL(lib_path)
         self._setup_prototypes()
+
+        if sys.platform == "win32":
+            self._libc = ctypes.CDLL('msvcrt.dll')
+        else:
+            self._libc = ctypes.CDLL(ctypes.util.find_library('c'))
+        self._libc.malloc.argtypes = [ctypes.c_size_t]
+        self._libc.malloc.restype = ctypes.c_void_p
         
         caps = capabilities if capabilities is not None else self.KOSS_CAP_ALL
 
@@ -376,13 +383,7 @@ class KossJS:
           register_function("Math.max", fn)  -> globalThis.Math.max = fn
           register_function("console.log", fn) -> globalThis.console.log = fn
         """
-        if sys.platform == "win32":
-            libc = ctypes.CDLL('msvcrt.dll')
-        else:
-            libc = ctypes.CDLL(ctypes.util.find_library('c'))
-
-        libc.malloc.argtypes = [ctypes.c_size_t]
-        libc.malloc.restype = ctypes.c_void_p
+        libc = self._libc
 
         def wrapper(argc: int, argv: ctypes.c_void_p) -> ctypes.c_void_p | None:
             try:
@@ -566,17 +567,9 @@ class KossJS:
     
     def register_module_loader(self) -> None:
         """Register the module loader that loads Node.js stdlib modules."""
-        import sys
         import json
-        import ctypes.util
         
-        if sys.platform == "win32":
-            libc = ctypes.CDLL('msvcrt.dll')
-        else:
-            libc = ctypes.CDLL(ctypes.util.find_library('c'))
-        
-        libc.malloc.argtypes = [ctypes.c_size_t]
-        libc.malloc.restype = ctypes.c_void_p
+        libc = self._libc
         
         def wrapper(argc: int, argv: ctypes.c_void_p) -> ctypes.c_void_p | None:
             try:
@@ -636,13 +629,7 @@ class KossJS:
         Each method call invokes the Python callable with string arguments.
         The method should return a string (or None for undefined).
         """
-        if sys.platform == "win32":
-            libc = ctypes.CDLL('msvcrt.dll')
-        else:
-            libc = ctypes.CDLL(ctypes.util.find_library('c'))
-
-        libc.malloc.argtypes = [ctypes.c_size_t]
-        libc.malloc.restype = ctypes.c_void_p
+        libc = self._libc
 
         # Build method dispatch list
         method_names = list(methods.keys())
@@ -650,8 +637,8 @@ class KossJS:
         # Create a C callback that dispatches by method name
         # The callback receives: (method_name: str, ...args)
         def class_callback(argc: int, argv: ctypes.c_void_p) -> ctypes.c_void_p | None:
+            args: list[str] = []
             try:
-                args: list[str] = []
                 for i in range(argc):
                     str_ptr: int = ctypes.cast(argv + i * ctypes.sizeof(ctypes.c_char_p), ctypes.POINTER(ctypes.c_char_p))[0] # pyright: ignore[reportOperatorIssue, reportUnknownArgumentType]
                     if not str_ptr:
@@ -676,9 +663,9 @@ class KossJS:
                     return buf
                 return None
             except Exception as e:
-                method_name: str = args[0] if isinstance(args, list) else "?" # pyright: ignore[reportPossiblyUnboundVariable]
+                method_name_str: str = args[0] if args else "?"
                 import traceback
-                print(f"Class callback error ({class_name}.{method_name if 'method_name' in dir() else '?'}): {e}")
+                print(f"Class callback error ({class_name}.{method_name_str}): {e}")
                 traceback.print_exc()
                 return None
 
