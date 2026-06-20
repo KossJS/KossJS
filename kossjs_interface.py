@@ -3,6 +3,7 @@ KossJS Python Interface - Embeddable JavaScript runtime for Python
 """
 
 import ctypes
+import ctypes.util
 import os # pyright: ignore[reportUnusedImport]
 import sys
 import json
