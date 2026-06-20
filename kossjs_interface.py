@@ -776,16 +776,6 @@ class KossJS:
     def destroy(self) -> None:
         """Destroy the JavaScript instance and free memory."""
         if self._ptr and hasattr(self, '_lib') and self._lib:
-            if hasattr(self, "_callback_allocations"):
-                for buf in self._callback_allocations:
-                    try:
-                        if sys.platform == "win32":
-                            ctypes.CDLL('msvcrt.dll').free(buf)
-                        else:
-                            ctypes.CDLL(ctypes.util.find_library('c')).free(buf)
-                    except Exception:
-                        pass
-                self._callback_allocations.clear()
             self._lib.koss_destroy(self._ptr)
             self._ptr = None
     
