@@ -383,10 +383,6 @@ class KossJS:
 
         libc.malloc.argtypes = [ctypes.c_size_t]
         libc.malloc.restype = ctypes.c_void_p
-        libc.free.argtypes = [ctypes.c_void_p]
-
-        if not hasattr(self, "_callback_allocations"):
-            self._callback_allocations: list[ctypes.c_void_p] = []
 
         def wrapper(argc: int, argv: ctypes.c_void_p) -> ctypes.c_void_p | None:
             try:
@@ -407,7 +403,6 @@ class KossJS:
                     return None
                 ctypes.memmove(buf, encoded, len(encoded))
                 ctypes.memset(ctypes.c_void_p(int(buf) + len(encoded)), 0, 1) # pyright: ignore[reportOperatorIssue, reportUnknownArgumentType]
-                self._callback_allocations.append(buf)
                 return buf
             except Exception as e:
                 import traceback
@@ -582,7 +577,6 @@ class KossJS:
         
         libc.malloc.argtypes = [ctypes.c_size_t]
         libc.malloc.restype = ctypes.c_void_p
-        libc.free.argtypes = [ctypes.c_void_p]
         
         def wrapper(argc: int, argv: ctypes.c_void_p) -> ctypes.c_void_p | None:
             try:
@@ -649,10 +643,6 @@ class KossJS:
 
         libc.malloc.argtypes = [ctypes.c_size_t]
         libc.malloc.restype = ctypes.c_void_p
-        libc.free.argtypes = [ctypes.c_void_p]
-
-        if not hasattr(self, "_callback_allocations"):
-            self._callback_allocations: list[ctypes.c_void_p] = []
 
         # Build method dispatch list
         method_names = list(methods.keys())
@@ -683,7 +673,6 @@ class KossJS:
                         return None
                     ctypes.memmove(buf, encoded, len(encoded))
                     ctypes.memset(ctypes.c_void_p(int(buf) + len(encoded)), 0, 1)
-                    self._callback_allocations.append(buf)
                     return buf
                 return None
             except Exception as e:
