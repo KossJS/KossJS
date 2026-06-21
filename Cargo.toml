@@ -1,6 +1,6 @@
 [package]
 name = "kossjs"
-version = "0.1.0-dev.7"
+version = "0.1.0-dev.8"
 edition = "2024"
 description = "Embeddable JavaScript runtime as a dynamic library"
 license = "GNU Affero General Public License v3.0"

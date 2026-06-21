@@ -44,7 +44,7 @@ def test_audit_mask_zero_disables_audit():
 
 def test_audit_mask_with_all_fs():
     """测试审核掩码设置所有文件系统操作"""
-    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL)
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL, stable=False)
     try:
         js.set_audit_mask(KossJS.KOSS_CAP_ALL_FS)
         assert js.get_audit_mask() == KossJS.KOSS_CAP_ALL_FS
@@ -71,7 +71,7 @@ def test_audit_mask_with_all_crypto():
 
 def test_audit_mask_with_all():
     """测试审核掩码设置所有操作"""
-    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL)
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL, stable=False)
     try:
         js.set_audit_mask(KossJS.KOSS_CAP_ALL)
         assert js.get_audit_mask() == KossJS.KOSS_CAP_ALL
@@ -102,7 +102,7 @@ def test_audit_mask_dynamic_change():
 
 def test_audit_mask_with_single_capability():
     """测试审核掩码设置单个能力位"""
-    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL)
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL, stable=False)
     try:
         # 测试每个单独的能力位
         capabilities = [
@@ -127,7 +127,7 @@ def test_audit_mask_with_single_capability():
 
 def test_audit_mask_with_combination():
     """测试审核掩码设置组合能力位"""
-    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL)
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL, stable=False)
     try:
         # 测试各种组合
         combinations = [

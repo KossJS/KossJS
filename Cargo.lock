@@ -1067,7 +1067,7 @@ dependencies = [
 
 [[package]]
 name = "kossjs"
-version = "0.1.0-dev.7"
+version = "0.1.0-dev.8"
 dependencies = [
  "base64",
  "boa_engine",

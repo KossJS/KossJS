@@ -26,7 +26,7 @@ pytestmark = pytest.mark.skipif(
 
 def test_ffi_exists_with_all_ffi_caps():
     """KOSS_CAP_ALL_FFI 启用时，_senri_ffi 应该存在"""
-    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD)
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD, stable=False)
     try:
         assert js.eval("typeof _senri_ffi") == "object"
         assert js.eval("typeof _senri_ffi.open") == "function"
@@ -39,7 +39,7 @@ def test_ffi_exists_with_all_ffi_caps():
 
 def test_ffi_open_exists_with_ffi_open():
     """FFI_OPEN 启用时，_senri_ffi.open 应该存在"""
-    js = KossJS(capabilities=KossJS.FFI_OPEN | KossJS.MODULE_LOAD)
+    js = KossJS(capabilities=KossJS.FFI_OPEN | KossJS.MODULE_LOAD, stable=False)
     try:
         assert js.eval("typeof _senri_ffi") == "object"
         assert js.eval("typeof _senri_ffi.open") == "function"
@@ -48,7 +48,7 @@ def test_ffi_open_exists_with_ffi_open():
 
 def test_ffi_struct_exists_with_ffi_struct():
     """FFI_STRUCT 启用时，_senri_ffi.struct 应该存在"""
-    js = KossJS(capabilities=KossJS.FFI_STRUCT | KossJS.MODULE_LOAD)
+    js = KossJS(capabilities=KossJS.FFI_STRUCT | KossJS.MODULE_LOAD, stable=False)
     try:
         assert js.eval("typeof _senri_ffi") == "object"
         assert js.eval("typeof _senri_ffi.struct") == "function"
@@ -57,7 +57,7 @@ def test_ffi_struct_exists_with_ffi_struct():
 
 def test_ffi_alloc_exists_with_ffi_alloc():
     """FFI_ALLOC 启用时，_senri_ffi.alloc 应该存在"""
-    js = KossJS(capabilities=KossJS.FFI_ALLOC | KossJS.MODULE_LOAD)
+    js = KossJS(capabilities=KossJS.FFI_ALLOC | KossJS.MODULE_LOAD, stable=False)
     try:
         assert js.eval("typeof _senri_ffi") == "object"
         assert js.eval("typeof _senri_ffi.alloc") == "function"
@@ -66,7 +66,7 @@ def test_ffi_alloc_exists_with_ffi_alloc():
 
 def test_ffi_callback_exists_with_ffi_callback():
     """FFI_CALLBACK 启用时，_senri_ffi.callback 应该存在"""
-    js = KossJS(capabilities=KossJS.FFI_CALLBACK | KossJS.MODULE_LOAD)
+    js = KossJS(capabilities=KossJS.FFI_CALLBACK | KossJS.MODULE_LOAD, stable=False)
     try:
         assert js.eval("typeof _senri_ffi") == "object"
         assert js.eval("typeof _senri_ffi.callback") == "function"
@@ -80,7 +80,7 @@ def test_ffi_callback_exists_with_ffi_callback():
 
 def test_ffi_open_loads_library():
     """FFI_OPEN 启用时，应该能加载动态库"""
-    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD)
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD, stable=False)
     try:
         js.eval(f'var lib = _senri_ffi.open("{TEST_LIB_PATH}");')
         assert js.eval("typeof lib") == "object"
@@ -90,7 +90,7 @@ def test_ffi_open_loads_library():
 
 def test_ffi_call_invokes_function():
     """FFI_CALL 启用时，应该能调用 C 函数"""
-    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD)
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD, stable=False)
     try:
         js.eval(f'var lib = _senri_ffi.open("{TEST_LIB_PATH}");')
         js.eval('var addFn = lib.func("add_int", _senri_ffi.types.int32, [_senri_ffi.types.int32, _senri_ffi.types.int32]);')
@@ -101,7 +101,7 @@ def test_ffi_call_invokes_function():
 
 def test_ffi_alloc_creates_buffer():
     """FFI_ALLOC 启用时，应该能分配内存"""
-    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD)
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD, stable=False)
     try:
         js.eval('var buf = _senri_ffi.alloc(16);')
         assert js.eval("typeof buf") == "object"
@@ -110,7 +110,7 @@ def test_ffi_alloc_creates_buffer():
 
 def test_ffi_struct_creates_type():
     """FFI_STRUCT 启用时，应该能创建结构体类型"""
-    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD)
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD, stable=False)
     try:
         js.eval('var Point = _senri_ffi.struct([_senri_ffi.types.int32, _senri_ffi.types.int32]);')
         assert js.eval("typeof Point") == "function"
@@ -130,7 +130,7 @@ def test_ffi_no_audit_through_internalbinding():
     不通过 __koss_bindings 路径，因此审核回调机制不适用于 FFI。
     审核通过能力位门控实现：没有 FFI_OPEN 能力位则 _senri_ffi.open 不存在。
     """
-    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD)
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD, stable=False)
     calls: list[str] = []
     try:
         def audit(target: str, args: list[str], pwd: str | None):
@@ -174,7 +174,7 @@ def test_ffi_capability_gating_is_primary_security():
 
 def test_ffi_full_workflow_with_all_caps():
     """完整的 FFI 工作流测试：加载库、调用函数、使用结构体"""
-    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD)
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD, stable=False)
     try:
         # 加载库
         js.eval(f'var lib = _senri_ffi.open("{TEST_LIB_PATH}");')
@@ -200,7 +200,7 @@ def test_ffi_full_workflow_with_all_caps():
 
 def test_ffi_struct_creation():
     """结构体类型创建测试"""
-    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD)
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD, stable=False)
     try:
         # 创建 Point 结构体类型
         js.eval('var Point = _senri_ffi.struct([_senri_ffi.types.int32, _senri_ffi.types.int32]);')

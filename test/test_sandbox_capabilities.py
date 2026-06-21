@@ -230,7 +230,7 @@ def test_fs_chmod_capability():
 
 def test_ffi_enabled_with_any_ffi_cap():
     """有任何 FFI 能力位时，_senri_ffi 应该存在"""
-    js = KossJS(capabilities=KossJS.FFI_OPEN | KossJS.MODULE_LOAD)
+    js = KossJS(capabilities=KossJS.FFI_OPEN | KossJS.MODULE_LOAD, stable=False)
     try:
         result = js.eval("typeof _senri_ffi")
         assert result == "object"
@@ -257,7 +257,7 @@ def test_ffi_disabled_in_sandbox():
 
 def test_ffi_open_function_exists():
     """FFI_OPEN 启用时，_senri_ffi.open 应该存在"""
-    js = KossJS(capabilities=KossJS.FFI_OPEN | KossJS.MODULE_LOAD)
+    js = KossJS(capabilities=KossJS.FFI_OPEN | KossJS.MODULE_LOAD, stable=False)
     try:
         result = js.eval("typeof _senri_ffi.open")
         assert result == "function"
@@ -266,7 +266,7 @@ def test_ffi_open_function_exists():
 
 def test_ffi_struct_function_exists():
     """FFI_STRUCT 启用时，_senri_ffi.struct 应该存在"""
-    js = KossJS(capabilities=KossJS.FFI_STRUCT | KossJS.MODULE_LOAD)
+    js = KossJS(capabilities=KossJS.FFI_STRUCT | KossJS.MODULE_LOAD, stable=False)
     try:
         result = js.eval("typeof _senri_ffi.struct")
         assert result == "function"
@@ -275,7 +275,7 @@ def test_ffi_struct_function_exists():
 
 def test_ffi_alloc_function_exists():
     """FFI_ALLOC 启用时，_senri_ffi.alloc 应该存在"""
-    js = KossJS(capabilities=KossJS.FFI_ALLOC | KossJS.MODULE_LOAD)
+    js = KossJS(capabilities=KossJS.FFI_ALLOC | KossJS.MODULE_LOAD, stable=False)
     try:
         result = js.eval("typeof _senri_ffi.alloc")
         assert result == "function"
@@ -284,7 +284,7 @@ def test_ffi_alloc_function_exists():
 
 def test_ffi_callback_function_exists():
     """FFI_CALLBACK 启用时，_senri_ffi.callback 应该存在"""
-    js = KossJS(capabilities=KossJS.FFI_CALLBACK | KossJS.MODULE_LOAD)
+    js = KossJS(capabilities=KossJS.FFI_CALLBACK | KossJS.MODULE_LOAD, stable=False)
     try:
         result = js.eval("typeof _senri_ffi.callback")
         assert result == "function"
@@ -293,7 +293,7 @@ def test_ffi_callback_function_exists():
 
 def test_all_ffi_capabilities():
     """KOSS_CAP_ALL_FFI 应该启用所有 FFI 操作"""
-    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD)
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD, stable=False)
     try:
         assert js.eval("typeof _senri_ffi") == "object"
         assert js.eval("typeof _senri_ffi.open") == "function"
@@ -305,7 +305,7 @@ def test_all_ffi_capabilities():
 
 def test_ffi_types_object():
     """FFI types 对象应该存在"""
-    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD)
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD, stable=False)
     try:
         result = js.eval("typeof _senri_ffi.types")
         assert result == "object"

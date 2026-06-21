@@ -4,10 +4,11 @@ use std::os::raw::c_char;
 use std::os::raw::c_void;
 use std::rc::Rc;
 use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
 use std::sync::Arc;
 #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
 
 use boa_engine::object::builtins::{JsFunction, JsPromise};
@@ -22,6 +23,10 @@ use crate::license_output::output_license_once;
 use crate::version::get_version;
 use crate::module_loader::KossModuleLoader;
 use crate::worker::{WorkerEvent, WorkerPool};
+
+// One-time warning flags for unstable mode (stable=false)
+static FFI_STABLE_WARNED: AtomicBool = AtomicBool::new(false);
+static WORKER_STABLE_WARNED: AtomicBool = AtomicBool::new(false);
 
 const FETCH_POLYFILL_CODE: &str = r#"
 'use strict';
@@ -568,7 +573,7 @@ const MAX_WORKER_POOL_SIZE: usize = 64;
 const MAX_EXTERNAL_MODULE_CODE_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
 
 use crate::sandbox::{
-    AuditDecision, KOSS_CAP_ALL, KOSS_CAP_ALL_CRYPTO, KOSS_CAP_ALL_FS, KOSS_CAP_ALL_NET,
+    AuditDecision, KOSS_CAP_ALL_CRYPTO, KOSS_CAP_ALL_FS, KOSS_CAP_ALL_NET,
     KOSS_CAP_EXTERNAL_LOADER, KOSS_CAP_WORKER, SandboxState,
 };
 
@@ -600,6 +605,8 @@ pub struct KossInstance {
     pub capabilities: u32,
     /// Sandbox state: audit mask and future extension fields.
     pub sandbox: SandboxState,
+    /// When true, FFI and Worker capabilities are disabled (stable mode).
+    pub stable: bool,
     /// Context MUST be the last field: Rust drops struct fields in declaration
     /// order, and other fields (event_loop.ffi_callback_fns) hold JsFunction
     /// handles that reference the Context. Dropping Context first causes
@@ -608,13 +615,14 @@ pub struct KossInstance {
 }
 
 impl KossInstance {
-    pub fn new(context: Context, caps: u32) -> Self {
+    pub fn new(context: Context, caps: u32, stable: bool) -> Self {
         KossInstance {
             event_loop: KossEventLoop::new(),
             worker_pool: None,
             external_module_loader: None,
             capabilities: caps,
             sandbox: SandboxState::default(),
+            stable,
             context,
         }
     }
@@ -883,6 +891,16 @@ fn register_internal_module_loader(instance: &mut KossInstance) {
             &name
         };
 
+        // Special case: worker/worker_threads require stable=false
+        // (KOSS_CAP_WORKER bit overlaps with FS_MKDIR, requiring stable-aware logic)
+        if module_name == "worker" || module_name == "worker_threads" {
+            let inst = unsafe { &*instance_ptr };
+            if inst.stable {
+                return Err(JsError::from(JsNativeError::error()
+                    .with_message("KossCapabilityError: Module 'worker_threads' is disabled in stable mode. Set stable=false when creating the instance to enable Worker features.")));
+            }
+        }
+
         // 1. Try embedded stdlib
         let direct_rel = format!("{}.js", module_name);
         if let Some(content) = crate::embedded_stdlib::get(&direct_rel) {
@@ -1013,6 +1031,35 @@ fn register_native_fetch(instance: &mut KossInstance) {
 }
 
 fn register_worker_api(instance: &mut KossInstance) {
+    if instance.stable {
+        // Register stub functions that throw explicit errors
+        let fns = [
+            "__koss_create_worker_pool",
+            "__koss_worker_post_message",
+            "__koss_worker_execute",
+            "__koss_worker_try_recv",
+            "__koss_worker_terminate",
+            "__koss_worker_shutdown",
+        ];
+        for name in &fns {
+            let js_fn = unsafe {
+                NativeFunction::from_closure(
+                    move |_t: &JsValue, _a: &[JsValue], _c: &mut Context| -> Result<JsValue, JsError> {
+                        Err(JsNativeError::typ()
+                            .with_message("Worker is disabled in stable mode. Set stable=false when creating the instance to enable Worker features.")
+                            .into())
+                    },
+                )
+            }.to_js_function(instance.context.realm());
+            instance.context.register_global_property(
+                boa_engine::js_string!(*name),
+                js_fn,
+                boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+            ).ok();
+        }
+        return;
+    }
+
     let instance_ptr = instance as *mut KossInstance;
 
     // __koss_create_worker_pool(size) → creates worker pool
@@ -1598,19 +1645,29 @@ const process = {
 // C ABI — Instance lifecycle
 // ===========================================================================
 
-/// Create a new isolated JS instance with all capabilities enabled.
-/// The caller owns this pointer and must free it with `koss_destroy`.
-#[unsafe(no_mangle)]
-pub extern "C" fn koss_create() -> *mut KossInstance {
-    output_license_once();
-    koss_create_with_caps(KOSS_CAP_ALL)
-}
-
-/// Create a new isolated JS instance with specific capabilities.
+/// Create a new isolated JS instance with specific capabilities and stable mode.
+/// When `stable` is true, FFI and Worker capabilities are stripped from `caps`.
 /// Use KOSS_CAP_ALL for full access, KOSS_CAP_SANDBOX for pure computation.
 #[unsafe(no_mangle)]
-pub extern "C" fn koss_create_with_caps(caps: u32) -> *mut KossInstance {
+pub extern "C" fn koss_create_with_caps(caps: u32, stable: bool) -> *mut KossInstance {
     output_license_once();
+    let effective_caps = if stable {
+        caps & !(crate::sandbox::KOSS_CAP_ALL_FFI | crate::sandbox::KOSS_CAP_WORKER)
+    } else {
+        if caps & crate::sandbox::KOSS_CAP_ALL_FFI != 0 {
+            if !FFI_STABLE_WARNED.swap(true, Ordering::Relaxed) {
+                eprintln!("[KossJS WARNING] Unstable mode: FFI features are enabled.");
+                eprintln!("[KossJS WARNING] FFI may have security implications in production.");
+            }
+        }
+        if caps & crate::sandbox::KOSS_CAP_WORKER != 0 {
+            if !WORKER_STABLE_WARNED.swap(true, Ordering::Relaxed) {
+                eprintln!("[KossJS WARNING] Unstable mode: Worker threads are enabled.");
+                eprintln!("[KossJS WARNING] Workers may have security implications in production.");
+            }
+        }
+        caps
+    };
     let context = match boa_engine::context::ContextBuilder::default().build() {
         Ok(ctx) => ctx,
         Err(e) => {
@@ -1618,7 +1675,7 @@ pub extern "C" fn koss_create_with_caps(caps: u32) -> *mut KossInstance {
             return std::ptr::null_mut();
         }
     };
-    let mut instance = Box::new(KossInstance::new(context, caps));
+    let mut instance = Box::new(KossInstance::new(context, effective_caps, stable));
     register_console(&mut instance.context);
     register_koss_global(&mut instance.context);
     buffer::register_buffer_globals(&mut instance.context);
@@ -1627,37 +1684,30 @@ pub extern "C" fn koss_create_with_caps(caps: u32) -> *mut KossInstance {
     // Always register nodejs globals (internalBinding, primordials, process)
     register_nodejs_globals(&mut instance.context);
     // Only register module loader if MODULE_LOAD capability is set
-    if caps & crate::sandbox::MODULE_LOAD != 0 {
+    if effective_caps & crate::sandbox::MODULE_LOAD != 0 {
         register_internal_module_loader(&mut instance);
     }
-    // Only register FFI if any FFI capability is set
-    if caps & crate::sandbox::KOSS_CAP_ALL_FFI != 0 {
+    // Register FFI: in stable mode, register stubs if caps had FFI (now stripped);
+    // in unstable mode, register real implementation if caps have FFI.
+    let has_ffi = caps & crate::sandbox::KOSS_CAP_ALL_FFI != 0;
+    if (stable && has_ffi) || (!stable && effective_caps & crate::sandbox::KOSS_CAP_ALL_FFI != 0) {
         register_senri_ffi_impl(&mut instance);
     }
-    if caps & KOSS_CAP_ALL_NET != 0 {
+    if effective_caps & KOSS_CAP_ALL_NET != 0 {
         register_fetch_polyfill(&mut instance.context);
         register_native_fetch(&mut instance);
     }
-    if caps & KOSS_CAP_WORKER != 0 {
+    // Register workers: in stable mode, register stubs if caps had Worker (now stripped);
+    // in unstable mode, register real implementation if caps have Worker.
+    let has_worker = caps & KOSS_CAP_WORKER != 0;
+    if (stable && has_worker) || (!stable && effective_caps & KOSS_CAP_WORKER != 0) {
         register_worker_api(&mut instance);
     }
     Box::into_raw(instance)
 }
 
-/// Create a new isolated JS instance with module resolution enabled.
-/// `root_dir` specifies the base directory for resolving bare module specifiers.
-/// All capabilities are enabled (equivalent to KOSS_CAP_ALL).
-///
-/// # Safety
-/// - `root_dir` must be a valid null-terminated UTF-8 string
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn koss_create_with_modules(root_dir: *const c_char) -> *mut KossInstance {
-    output_license_once();
-    unsafe { koss_create_with_modules_and_caps(root_dir, KOSS_CAP_ALL) }
-}
-
-/// Create a new isolated JS instance with module resolution and specific
-/// capabilities. `root_dir` specifies the base directory for resolving
+/// Create a new isolated JS instance with module resolution, specific capabilities,
+/// and stable mode. `root_dir` specifies the base directory for resolving
 /// bare module specifiers.
 ///
 /// # Safety
@@ -1666,16 +1716,35 @@ pub unsafe extern "C" fn koss_create_with_modules(root_dir: *const c_char) -> *m
 pub unsafe extern "C" fn koss_create_with_modules_and_caps(
     root_dir: *const c_char,
     caps: u32,
+    stable: bool,
 ) -> *mut KossInstance {
     output_license_once();
     unsafe {
         if root_dir.is_null() {
-            return koss_create_with_caps(caps);
+            return koss_create_with_caps(caps, stable);
         }
 
         let root_str = match CStr::from_ptr(root_dir).to_str() {
             Ok(s) => s,
-            Err(_) => return koss_create_with_caps(caps),
+            Err(_) => return koss_create_with_caps(caps, stable),
+        };
+
+        let effective_caps = if stable {
+            caps & !(crate::sandbox::KOSS_CAP_ALL_FFI | crate::sandbox::KOSS_CAP_WORKER)
+        } else {
+            if caps & crate::sandbox::KOSS_CAP_ALL_FFI != 0 {
+                if !FFI_STABLE_WARNED.swap(true, Ordering::Relaxed) {
+                    eprintln!("[KossJS WARNING] Unstable mode: FFI features are enabled.");
+                    eprintln!("[KossJS WARNING] FFI may have security implications in production.");
+                }
+            }
+            if caps & crate::sandbox::KOSS_CAP_WORKER != 0 {
+                if !WORKER_STABLE_WARNED.swap(true, Ordering::Relaxed) {
+                    eprintln!("[KossJS WARNING] Unstable mode: Worker threads are enabled.");
+                    eprintln!("[KossJS WARNING] Workers may have security implications in production.");
+                }
+            }
+            caps
         };
 
         let loader = Rc::new(KossModuleLoader::new(root_str));
@@ -1689,25 +1758,30 @@ pub unsafe extern "C" fn koss_create_with_modules_and_caps(
                 return std::ptr::null_mut();
             }
         };
-        let mut instance = Box::new(KossInstance::new(context, caps));
+        let mut instance = Box::new(KossInstance::new(context, effective_caps, stable));
         register_console(&mut instance.context);
         register_koss_global(&mut instance.context);
         register_native_bindings(&mut instance);
         // Always register nodejs globals (internalBinding, primordials, process)
         register_nodejs_globals(&mut instance.context);
         // Only register module loader if MODULE_LOAD capability is set
-        if caps & crate::sandbox::MODULE_LOAD != 0 {
+        if effective_caps & crate::sandbox::MODULE_LOAD != 0 {
             register_internal_module_loader(&mut instance);
         }
-        // Only register FFI if any FFI capability is set
-        if caps & crate::sandbox::KOSS_CAP_ALL_FFI != 0 {
+        // Register FFI: in stable mode, register stubs if caps had FFI (now stripped);
+        // in unstable mode, register real implementation if caps have FFI.
+        let has_ffi = caps & crate::sandbox::KOSS_CAP_ALL_FFI != 0;
+        if (stable && has_ffi) || (!stable && effective_caps & crate::sandbox::KOSS_CAP_ALL_FFI != 0) {
             register_senri_ffi_impl(&mut instance);
         }
-        if caps & KOSS_CAP_ALL_NET != 0 {
+        if effective_caps & KOSS_CAP_ALL_NET != 0 {
             register_fetch_polyfill(&mut instance.context);
             register_native_fetch(&mut instance);
         }
-        if caps & KOSS_CAP_WORKER != 0 {
+        // Register workers: in stable mode, register stubs if caps had Worker (now stripped);
+        // in unstable mode, register real implementation if caps have Worker.
+        let has_worker = caps & KOSS_CAP_WORKER != 0;
+        if (stable && has_worker) || (!stable && effective_caps & KOSS_CAP_WORKER != 0) {
             register_worker_api(&mut instance);
         }
         Box::into_raw(instance)
@@ -2300,6 +2374,18 @@ pub unsafe extern "C" fn koss_get_capabilities(ptr: *mut KossInstance) -> u32 {
     }
 }
 
+/// Returns true if the instance was created in stable mode (FFI/Worker disabled).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_is_stable(ptr: *mut KossInstance) -> bool {
+    output_license_once();
+    unsafe {
+        if ptr.is_null() {
+            return true;
+        }
+        (*ptr).stable
+    }
+}
+
 /// Set the audit mask for a KossJS instance.
 /// The audit mask controls which capability operations trigger audit callbacks.
 /// Only bits corresponding to already-granted capabilities are applied;
@@ -2395,7 +2481,12 @@ pub unsafe extern "C" fn koss_create_worker_pool(
 
         let instance = &mut *ptr;
         if instance.capabilities & KOSS_CAP_WORKER == 0 {
-            return KossResult::err(1, "worker capability disabled");
+            let msg = if instance.stable {
+                "Worker is disabled in stable mode. Set stable=false when creating the instance to enable Worker features."
+            } else {
+                "worker capability disabled"
+            };
+            return KossResult::err(1, msg);
         }
         instance.worker_pool = Some(WorkerPool::new((size as usize).min(MAX_WORKER_POOL_SIZE)));
         let capped = (size as usize).min(MAX_WORKER_POOL_SIZE);
@@ -2418,7 +2509,12 @@ pub unsafe extern "C" fn koss_worker_post_message(
 
         let instance = &mut *ptr;
         if instance.capabilities & KOSS_CAP_WORKER == 0 {
-            return KossResult::err(1, "worker capability disabled");
+            let msg = if instance.stable {
+                "Worker is disabled in stable mode. Set stable=false when creating the instance to enable Worker features."
+            } else {
+                "worker capability disabled"
+            };
+            return KossResult::err(1, msg);
         }
         let pool = match instance.worker_pool.as_ref() {
             Some(p) => p,
@@ -2452,7 +2548,12 @@ pub unsafe extern "C" fn koss_worker_execute(
 
         let instance = &mut *ptr;
         if instance.capabilities & KOSS_CAP_WORKER == 0 {
-            return KossResult::err(1, "worker capability disabled");
+            let msg = if instance.stable {
+                "Worker is disabled in stable mode. Set stable=false when creating the instance to enable Worker features."
+            } else {
+                "worker capability disabled"
+            };
+            return KossResult::err(1, msg);
         }
         let pool = match instance.worker_pool.as_ref() {
             Some(p) => p,
@@ -2485,7 +2586,12 @@ pub unsafe extern "C" fn koss_worker_try_recv(
 
         let instance = &mut *ptr;
         if instance.capabilities & KOSS_CAP_WORKER == 0 {
-            return KossResult::err(1, "worker capability disabled");
+            let msg = if instance.stable {
+                "Worker is disabled in stable mode. Set stable=false when creating the instance to enable Worker features."
+            } else {
+                "worker capability disabled"
+            };
+            return KossResult::err(1, msg);
         }
         let pool = match instance.worker_pool.as_ref() {
             Some(p) => p,
@@ -2540,7 +2646,12 @@ pub unsafe extern "C" fn koss_worker_terminate(
 
         let instance = &mut *ptr;
         if instance.capabilities & KOSS_CAP_WORKER == 0 {
-            return KossResult::err(1, "worker capability disabled");
+            let msg = if instance.stable {
+                "Worker is disabled in stable mode. Set stable=false when creating the instance to enable Worker features."
+            } else {
+                "worker capability disabled"
+            };
+            return KossResult::err(1, msg);
         }
         let pool = match instance.worker_pool.as_mut() {
             Some(p) => p,
@@ -2567,7 +2678,12 @@ pub unsafe extern "C" fn koss_worker_shutdown(
 
         let instance = &mut *ptr;
         if instance.capabilities & KOSS_CAP_WORKER == 0 {
-            return KossResult::err(1, "worker capability disabled");
+            let msg = if instance.stable {
+                "Worker is disabled in stable mode. Set stable=false when creating the instance to enable Worker features."
+            } else {
+                "worker capability disabled"
+            };
+            return KossResult::err(1, msg);
         }
         if let Some(ref mut pool) = instance.worker_pool {
             pool.shutdown();
@@ -2647,7 +2763,7 @@ fn is_capability_enabled(caps: u32, audit_mask: u32, name: &str) -> AuditDecisio
         // 加密模块
         "crypto" => KOSS_CAP_ALL_CRYPTO,
         // Worker
-        "worker" | "worker_threads" => crate::sandbox::DYNAMIC_CODE,
+        "worker" | "worker_threads" => KOSS_CAP_WORKER,
         _ => return AuditDecision::Allow, // always-available modules
     };
     
@@ -3440,6 +3556,34 @@ pub unsafe extern "C" fn koss_register_class(
 
 #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
 fn register_senri_ffi_impl(instance: &mut KossInstance) {
+    if instance.stable {
+        // Register stub that throws explicit error
+        let ctx = &mut instance.context;
+        use boa_engine::object::ObjectInitializer;
+        use boa_engine::property::Attribute;
+
+        let mut ob = ObjectInitializer::new(ctx);
+        let api_names = [("func", 0usize), ("open", 1usize)];
+        for (name, len) in &api_names {
+            let err_fn = unsafe {
+                NativeFunction::from_closure(
+                    move |_t: &JsValue, _a: &[JsValue], _c: &mut Context| -> Result<JsValue, JsError> {
+                        Err(JsNativeError::typ()
+                            .with_message("FFI is disabled in stable mode. Set stable=false when creating the instance to enable FFI features.")
+                            .into())
+                    },
+                )
+            };
+            ob.function(err_fn, js_string!(*name), *len);
+        }
+        let senri_obj = ob.build();
+        ctx.register_global_property(
+            boa_engine::js_string!("_senri_ffi"),
+            senri_obj,
+            Attribute::READONLY | Attribute::NON_ENUMERABLE,
+        ).ok();
+        return;
+    }
     let ptr = instance as *mut KossInstance as *mut c_void;
     crate::_senri_ffi::register_senri_ffi(
         &mut instance.context,
@@ -3452,6 +3596,31 @@ fn register_senri_ffi_impl(instance: &mut KossInstance) {
     let ctx = &mut instance.context;
     use boa_engine::object::ObjectInitializer;
     use boa_engine::property::Attribute;
+
+    if instance.stable {
+        // Register stub that throws explicit error
+        let mut ob = ObjectInitializer::new(ctx);
+        let api_names = [("func", 0usize), ("open", 1usize)];
+        for (name, len) in &api_names {
+            let err_fn = unsafe {
+                NativeFunction::from_closure(
+                    move |_t: &JsValue, _a: &[JsValue], _c: &mut Context| -> Result<JsValue, JsError> {
+                        Err(JsNativeError::typ()
+                            .with_message("FFI is disabled in stable mode. Set stable=false when creating the instance to enable FFI features.")
+                            .into())
+                    },
+                )
+            };
+            ob.function(err_fn, js_string!(*name), *len);
+        }
+        let senri_obj = ob.build();
+        ctx.register_global_property(
+            boa_engine::js_string!("_senri_ffi"),
+            senri_obj,
+            Attribute::READONLY | Attribute::NON_ENUMERABLE,
+        ).ok();
+        return;
+    }
 
     let types_obj = {
         let mut tb = ObjectInitializer::new(ctx);

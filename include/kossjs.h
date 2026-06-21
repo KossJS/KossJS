@@ -91,11 +91,19 @@ typedef enum {
 #define KOSS_CAP_EXTERNAL_LOADER MODULE_LOAD
 
 /* ── Instance lifecycle ─────────────────────────────────────────────── */
-KossInstance *koss_create(void);
-KossInstance *koss_create_with_caps(uint32_t caps);
-KossInstance *koss_create_with_modules(const char *root_dir);
-KossInstance *koss_create_with_modules_and_caps(const char *root_dir, uint32_t caps);
-void          koss_destroy(KossInstance *inst);
+KossInstance *koss_create_with_caps(uint32_t caps, bool stable);
+KossInstance *koss_create_with_modules_and_caps(const char *root_dir, uint32_t caps, bool stable);
+bool          koss_is_stable(KossInstance *inst);
+
+/* Backward-compatible wrappers — default stable=true */
+static inline KossInstance *koss_create(void) {
+    return koss_create_with_caps(KOSS_CAP_ALL, true);
+}
+static inline KossInstance *koss_create_with_modules(const char *root_dir) {
+    return koss_create_with_modules_and_caps(root_dir, KOSS_CAP_ALL, true);
+}
+
+void koss_destroy(KossInstance *inst);
 
 /* ── Capability query ───────────────────────────────────────────────── */
 uint32_t koss_get_capabilities(KossInstance *inst);

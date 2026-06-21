@@ -83,8 +83,28 @@ class KossJS:
         lib_path: str | None = None,
         with_modules: bool = False,
         root_dir: str | None = None,
-        capabilities: int | None = None,  # None = KOSS_CAP_ALL (backward compatible)
+        capabilities: int | None = None,
+        stable: bool = True,
     ):
+        """
+        Create a KossJS instance.
+
+        :param lib_path: Path to the kossjs shared library. Auto-detected if None.
+        :param with_modules: Enable ES module loading.
+        :param root_dir: Base directory for module resolution.
+        :param capabilities: Capability bitmask. None defaults to KOSS_CAP_ALL.
+        :param stable: If True (default), disables FFI and Worker capabilities.
+                       If False, enables these experimental features and prints
+                       warnings to stderr. Production environments should keep
+                       the default.
+
+        Examples:
+            # Production (stable mode, FFI/Worker disabled)
+            runtime = KossJS(stable=True)  # default
+
+            # Development/debugging (unstable mode, FFI/Worker enabled)
+            runtime = KossJS(stable=False)
+        """
         self._ptr: ctypes.c_void_p | None = None
         if lib_path is None:
             lib_path = self._find_library()
@@ -104,11 +124,11 @@ class KossJS:
         # Use with_modules to enable module loading from stdlib
         if with_modules and root_dir:
             self._ptr = self._lib.koss_create_with_modules_and_caps(
-                root_dir.encode("utf-8"), caps
+                root_dir.encode("utf-8"), caps, stable
             )
         else:
             # Still use with_modules but with current directory
-            self._ptr = self._lib.koss_create_with_modules_and_caps(b".", caps)
+            self._ptr = self._lib.koss_create_with_modules_and_caps(b".", caps, stable)
         
         if not self._ptr:
             raise RuntimeError("Failed to create KossJS instance")
@@ -130,17 +150,14 @@ class KossJS:
     def _setup_prototypes(self):
         lib = self._lib
         
-        lib.koss_create.restype = ctypes.c_void_p
-        lib.koss_create.argtypes = []
-        
         lib.koss_create_with_caps.restype = ctypes.c_void_p
-        lib.koss_create_with_caps.argtypes = [ctypes.c_uint32]
+        lib.koss_create_with_caps.argtypes = [ctypes.c_uint32, ctypes.c_bool]
 
-        lib.koss_create_with_modules.restype = ctypes.c_void_p
-        lib.koss_create_with_modules.argtypes = [ctypes.c_char_p]
-        
         lib.koss_create_with_modules_and_caps.restype = ctypes.c_void_p
-        lib.koss_create_with_modules_and_caps.argtypes = [ctypes.c_char_p, ctypes.c_uint32]
+        lib.koss_create_with_modules_and_caps.argtypes = [ctypes.c_char_p, ctypes.c_uint32, ctypes.c_bool]
+
+        lib.koss_is_stable.restype = ctypes.c_bool
+        lib.koss_is_stable.argtypes = [ctypes.c_void_p]
 
         lib.koss_get_capabilities.restype = ctypes.c_uint32
         lib.koss_get_capabilities.argtypes = [ctypes.c_void_p]
@@ -234,6 +251,15 @@ class KossJS:
         lib.koss_enable_audit_debug.restype = None
         lib.koss_enable_audit_debug.argtypes = [ctypes.c_void_p, ctypes.c_bool]
     
+    @property
+    def is_stable(self) -> bool:
+        """Check if this instance is running in stable mode."""
+        return self._lib.koss_is_stable(self._ptr)
+
+    def get_capabilities(self) -> int:
+        """Get the capability bitmask for this instance."""
+        return self._lib.koss_get_capabilities(self._ptr)
+
     def _get_binding(self, name: str) -> dict[str, Any]:
         """Get internal binding info from Rust."""
         result = self._lib.koss_get_binding(self._ptr, name.encode("utf-8"))
