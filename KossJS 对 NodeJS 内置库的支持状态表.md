@@ -1,7 +1,7 @@
 # KossJS 的 Node.js 内置库支持状态表
 
-> 更新时间：2026-06-21
-> 全部测试：536 passed
+> 更新时间：2026-06-23
+> 全部测试：528 passed, 8 skipped
 >
 > KossJS 定位为**同时兼容 Node.js 与 Web 标准**的嵌入式运行时。
 > Node.js 模块通过 `require()` 加载；Web API（如 `fetch`、`Headers`、`Response`）作为全局对象直接可用。
@@ -31,26 +31,26 @@
 
 | 模块 | 支持 API | 说明 |
 |------|---------|------|
-| **net** | `Socket`(connect/write/end/destroy/on('data')), `Server`(listen/close/on('connection')), `connect()`, `createServer()`, `isIP()`, `isIPv4()`, `isIPv6()` | 纯 JS shim，TCP 客户端/服务器基于 Rust TcpStream |
-| **dns** | `lookup()`(callback + Promise), `resolve()`, `resolve4()`, `resolve6()`, `promises.lookup()` | 基于 Rust DNS 解析 |
-| **tls** | `connect()`, `createServer()`, `TLSSocket`, `createSecureContext()`, `checkServerIdentity()` | 基于 net 模块的轻量封装 |
-| **http** | `createServer()`(HTTP 请求/响应处理), `IncomingMessage`, `ServerResponse`, `METHODS`, `STATUS_CODES` | 纯 JS shim |
-| **https** | `createServer()`, `request()`, `get()` | 基于 http + net |
-| **crypto** | `randomBytes()`, `createHash()`(sha256/sha1/md5), `randomUUID()`, `timingSafeEqual()`, `randomFill()`, `randomFillSync()`, `getHashes()` | Rust 实现（非密码学安全哈希） |
-| **stream** | `Readable`, `Writable`, `Duplex`, `Transform`, `PassThrough`, `pipeline()`, `finished()` | 纯 JS shim |
-| **zlib** | `gzipSync/gunzipSync()`, `deflateSync/inflateSync()`, `gzip()/gunzip()`(async), `constants` | Rust flate2 crate |
-| **dgram** | `createSocket()`, `socket.bind()`, `socket.send()`, `socket.close()`, `socket.address()` | UDP 基础封装（基于 TCP 桥接） |
+| **net** | `Socket`(connect/write/end/destroy/on('data')), `Server`(listen/close/on('connection')), `connect()`, `createServer()`, `isIP()`, `isIPv4()`, `isIPv6()` | 自定义 JS shim，TCP 客户端/服务器基于 `__koss_tcp_*` Rust 原生函数 |
+| **dns** | `lookup()`(callback + Promise), `resolve()`, `resolve4()`, `resolve6()`, `promises.lookup()` | 自定义 JS shim，基于 `__koss_dns_lookup` Rust 原生函数 |
+| **tls** | `connect()`, `createServer()`, `TLSSocket`, `createSecureContext()`, `checkServerIdentity()` | 基于 net 模块的轻量封装（无实际 TLS 加密） |
+| **http** | `createServer()`(HTTP 请求/响应处理), `IncomingMessage`, `ServerResponse`, `METHODS`, `STATUS_CODES` | 自定义 JS shim（仅服务端，客户端未实现） |
+| **https** | `createServer()`, `request()`, `get()` | 基于 http + net 封装（无实际 TLS） |
+| **crypto** | `randomBytes()`, `createHash()`(sha256/sha1/md5), `randomUUID()`, `timingSafeEqual()`, `randomFill()`, `randomFillSync()`, `getHashes()` | 自定义 JS shim，基于 `__koss_hash`/`__koss_random_bytes`/`__koss_random_uuid` Rust 原生函数 |
+| **stream** | `Readable`, `Writable`, `Duplex`, `Transform`, `PassThrough`, `pipeline()`, `finished()` | 自定义 JS shim（`compose()`/`addAbortSignal()` 未实现） |
+| **zlib** | `gzip/gunzip()`, `deflate/inflate()`(sync + async), `constants` | 自定义 JS shim，基于 `__koss_gzip*` Rust 原生函数（flate2 crate） |
+| **dgram** | `createSocket()`, `socket.bind()`, `socket.send()`, `socket.close()`, `socket.address()` | 自定义 JS shim（基于 TCP 桥接，非真实 UDP） |
 
 ---
 
 ## ✓ 纯 JS Shim（基础功能可用）
 
-| 模块 | 说明 |
+| 模块 | 支持 API | 说明 |
 |------|------|
-| **util** | `format()`, `inspect()`, `deprecate()`, `promisify()`, `inherits()`, `types.*`, `debuglog()`, `stripVTControlCharacters()`, `getSystemErrorName()` |
-| **trace_events** | `createTracing()`, `getEnabledCategories()`, `Tracing` class |
-| **perf_hooks** | `performance`, `PerformanceObserver`, `PerformanceMark/Measure`, `createHistogram()`, `monitorEventLoopDelay()`, `timerify()` |
-| **diagnostics_channel** | `channel()`, `subscribe()`, `unsubscribe()`, `publish()`, `hasSubscribers()` |
+| **util** | `format()`, `inspect()`, `deprecate()`, `promisify()`, `callbackify()`, `inherits()`, `debuglog()`, `stripVTControlCharacters()`, `getSystemErrorName()`, `types.*` | 自定义 JS shim |
+| **trace_events** | `createTracing()`, `getEnabledCategories()`, `Tracing` class (enable/disable/categories) | 自定义 JS shim |
+| **perf_hooks** | `performance`(now/mark/measure), `PerformanceObserver`, `PerformanceMark/Measure`, `createHistogram()`, `timerify()` | 自定义 JS shim（`monitorEventLoopDelay()` 为 stub） |
+| **diagnostics_channel** | `channel()`, `subscribe()`, `unsubscribe()`, `publish()`, `hasSubscribers()`, `Channel`/`ActiveChannel` classes | 自定义 JS shim |
 
 ---
 
