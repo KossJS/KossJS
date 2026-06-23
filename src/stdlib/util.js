@@ -1,571 +1,319 @@
-﻿/**
- * This file is from Node.js official source code.
- * Source: https://github.com/nodejs/node
- * 
- * Modified for KossJS (Boa engine) compatibility:
- * - Removed internalBinding() calls that require Node.js C++ bindings
- * - Adapted to work with KossJS runtime
- */
+﻿'use strict';
 
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-'use strict';
-
-const {
-  ArrayIsArray,
-  ArrayPrototypePop,
-  ArrayPrototypePush,
-  Error,
-  ErrorCaptureStackTrace,
-  FunctionPrototypeBind,
-  NumberIsSafeInteger,
-  ObjectDefineProperties,
-  ObjectDefineProperty,
-  ObjectGetOwnPropertyDescriptors,
-  ObjectGetOwnPropertyNames,
-  ObjectKeys,
-  ObjectSetPrototypeOf,
-  ObjectValues,
-  ReflectApply,
-  StringPrototypeToWellFormed,
-} = primordials;
-
-const {
-  ErrnoException,
-  ExceptionWithHostPort,
-  codes: {
-    ERR_FALSY_VALUE_REJECTION,
-    ERR_INVALID_ARG_TYPE,
-    ERR_OUT_OF_RANGE,
-  },
-  isErrorStackTraceLimitWritable,
-} = require('internal/errors');
-const {
-  format,
-  formatWithOptions,
-  inspect,
-  stripVTControlCharacters,
-} = require('internal/util/inspect');
-const { debuglog } = require('internal/util/debuglog');
-const {
-  validateBoolean,
-  validateFunction,
-  validateNumber,
-  validateString,
-  validateOneOf,
-  validateObject,
-  validateInteger,
-} = require('internal/validators');
-const {
-  isReadableStream,
-  isWritableStream,
-  isNodeStream,
-} = require('internal/streams/utils');
-const types = require('internal/util/types');
-
-let utilColors;
-function lazyUtilColors() {
-  utilColors ??= require('internal/util/colors');
-  return utilColors;
-}
-const { getOptionValue } = require('internal/options');
-
-const binding = internalBinding('util');
-
-const {
-  convertProcessSignalToExitCode,
-  deprecate: internalDeprecate,
-  getLazy,
-  getSystemErrorMap,
-  getSystemErrorName: internalErrorName,
-  getSystemErrorMessage: internalErrorMessage,
-  promisify,
-  defineLazyProperties,
-} = require('internal/util');
-
-let abortController;
-
-function lazyAbortController() {
-  abortController ??= require('internal/abort_controller');
-  return abortController;
+var binding;
+try {
+  binding = internalBinding('util');
+} catch (_) {
+  binding = {};
 }
 
-let internalDeepEqual;
-
-// Pre-computed ANSI escape code constants
-const kEscape = '\u001b[';
-const kEscapeEnd = 'm';
-
-// Codes for dim (2) and bold (1) - these share close code 22
-const kDimCode = 2;
-const kBoldCode = 1;
-
-let styleCache;
-
-function getStyleCache() {
-  if (styleCache === undefined) {
-    styleCache = { __proto__: null };
-    const colors = inspect.colors;
-    for (const key of ObjectGetOwnPropertyNames(colors)) {
-      const codes = colors[key];
-      if (codes) {
-        const openNum = codes[0];
-        const closeNum = codes[1];
-        styleCache[key] = {
-          __proto__: null,
-          openSeq: kEscape + openNum + kEscapeEnd,
-          closeSeq: kEscape + closeNum + kEscapeEnd,
-          keepClose: openNum === kDimCode || openNum === kBoldCode,
-        };
-      }
-    }
-  }
-  return styleCache;
+var getSystemErrorName;
+if (binding && typeof binding.getSystemErrorName === 'function') {
+  getSystemErrorName = binding.getSystemErrorName;
+} else {
+  getSystemErrorName = function(errno) { return 'Unknown error (' + errno + ')'; };
 }
 
-function replaceCloseCode(str, closeSeq, openSeq, keepClose) {
-  const closeLen = closeSeq.length;
-  let index = str.indexOf(closeSeq);
-  if (index === -1) return str;
-
-  let result = '';
-  let lastIndex = 0;
-  const replacement = keepClose ? closeSeq + openSeq : openSeq;
-
-  do {
-    const afterClose = index + closeLen;
-    if (afterClose < str.length) {
-      result += str.slice(lastIndex, index) + replacement;
-      lastIndex = afterClose;
-    } else {
-      break;
-    }
-    index = str.indexOf(closeSeq, lastIndex);
-  } while (index !== -1);
-
-  return result + str.slice(lastIndex);
+var getSystemErrorMap;
+if (binding && typeof binding.getSystemErrorMap === 'function') {
+  getSystemErrorMap = binding.getSystemErrorMap;
+} else {
+  getSystemErrorMap = function() { return {}; };
 }
 
-/**
- * @param {string | string[]} format
- * @param {string} text
- * @param {object} [options]
- * @param {boolean} [options.validateStream] - Whether to validate the stream.
- * @param {Stream} [options.stream] - The stream used for validation.
- * @returns {string}
- */
-function styleText(format, text, options) {
-  const validateStream = options?.validateStream ?? true;
-  const cache = getStyleCache();
-
-  // Fast path: single format string with validateStream=false
-  if (!validateStream && typeof format === 'string' && typeof text === 'string') {
-    if (format === 'none') return text;
-    const style = cache[format];
-    if (style !== undefined) {
-      const processed = replaceCloseCode(text, style.closeSeq, style.openSeq, style.keepClose);
-      return style.openSeq + processed + style.closeSeq;
-    }
-  }
-
-  validateString(text, 'text');
-  if (options !== undefined) {
-    validateObject(options, 'options');
-  }
-  validateBoolean(validateStream, 'options.validateStream');
-
-  let skipColorize;
-  if (validateStream) {
-    const stream = options?.stream ?? process.stdout;
-    if (
-      !isReadableStream(stream) &&
-      !isWritableStream(stream) &&
-      !isNodeStream(stream)
-    ) {
-      throw new ERR_INVALID_ARG_TYPE('stream', ['ReadableStream', 'WritableStream', 'Stream'], stream);
-    }
-    skipColorize = !lazyUtilColors().shouldColorize(stream);
-  }
-
-  const formatArray = ArrayIsArray(format) ? format : [format];
-
-  let openCodes = '';
-  let closeCodes = '';
-  let processedText = text;
-
-  for (const key of formatArray) {
-    if (key === 'none') continue;
-    const style = cache[key];
-    if (style === undefined) {
-      validateOneOf(key, 'format', ObjectGetOwnPropertyNames(inspect.colors));
-    }
-    openCodes += style.openSeq;
-    closeCodes = style.closeSeq + closeCodes;
-    processedText = replaceCloseCode(processedText, style.closeSeq, style.openSeq, style.keepClose);
-  }
-
-  if (skipColorize) return text;
-
-  return `${openCodes}${processedText}${closeCodes}`;
+function _formatValue(v) {
+  if (typeof v === 'string') return v;
+  return inspect(v);
 }
 
-/**
- * Inherit the prototype methods from one constructor into another.
- *
- * The Function.prototype.inherits from lang.js rewritten as a standalone
- * function (not on Function.prototype). NOTE: If this file is to be loaded
- * during bootstrapping this function needs to be rewritten using some native
- * functions as prototype setup using normal JavaScript does not work as
- * expected during bootstrapping (see mirror.js in r114903).
- * @param {Function} ctor Constructor function which needs to inherit the
- *   prototype.
- * @param {Function} superCtor Constructor function to inherit prototype from.
- * @throws {TypeError} Will error if either constructor is null, or if
- * the super constructor lacks a prototype.
- */
-function inherits(ctor, superCtor) {
-
-  if (ctor === undefined || ctor === null)
-    throw new ERR_INVALID_ARG_TYPE('ctor', 'Function', ctor);
-
-  if (superCtor === undefined || superCtor === null)
-    throw new ERR_INVALID_ARG_TYPE('superCtor', 'Function', superCtor);
-
-  if (superCtor.prototype === undefined) {
-    throw new ERR_INVALID_ARG_TYPE('superCtor.prototype',
-                                   'Object', superCtor.prototype);
+function format(f) {
+  if (typeof f !== 'string') {
+    var arr = [];
+    for (var i = 0; i < arguments.length; i++) arr.push(_formatValue(arguments[i]));
+    return arr.join(' ');
   }
-  ObjectDefineProperty(ctor, 'super_', {
-    __proto__: null,
-    value: superCtor,
-    writable: true,
-    configurable: true,
+  var args = arguments;
+  var index = 1;
+  var str = String(f).replace(/%[sdifoO%]/g, function(match) {
+    if (match === '%%') return '%';
+    if (index >= args.length) return match;
+    switch (match) {
+      case '%s': return String(args[index++]);
+      case '%d':
+      case '%i': return parseInt(args[index++], 10);
+      case '%f': return parseFloat(args[index++]);
+      case '%o':
+      case '%O': return _formatValue(args[index++]);
+      default: return match;
+    }
   });
-  ObjectSetPrototypeOf(ctor.prototype, superCtor.prototype);
+  for (; index < args.length; index++) str += ' ' + _formatValue(args[index]);
+  return str;
 }
 
-/**
- * @deprecated since v6.0.0
- * @template T
- * @template S
- * @param {T} target
- * @param {S} source
- * @returns {(T & S) | null}
- */
-function _extend(target, source) {
-  // Don't do anything if source isn't an object
-  if (source === null || typeof source !== 'object') return target;
-
-  const keys = ObjectKeys(source);
-  let i = keys.length;
-  while (i--) {
-    target[keys[i]] = source[keys[i]];
+function formatWithOptions(options, f) {
+  if (typeof f !== 'string') {
+    var arr = [];
+    for (var i = 1; i < arguments.length; i++) arr.push(inspect(arguments[i]));
+    return arr.join(' ');
   }
-  return target;
+  var args = arguments;
+  var index = 2;
+  var str = String(f).replace(/%[sdifoO%]/g, function(match) {
+    if (match === '%%') return '%';
+    if (index >= args.length) return match;
+    switch (match) {
+      case '%s': return String(args[index++]);
+      case '%d':
+      case '%i': return parseInt(args[index++], 10);
+      case '%f': return parseFloat(args[index++]);
+      case '%o':
+      case '%O': return inspect(args[index++], options);
+      default: return match;
+    }
+  });
+  for (; index < args.length; index++) str += ' ' + inspect(args[index]);
+  return str;
 }
 
-const callbackifyOnRejected = (reason, cb) => {
-  // `!reason` guard inspired by bluebird (Ref: https://goo.gl/t5IS6M).
-  // Because `null` is a special error value in callbacks which means "no error
-  // occurred", we error-wrap so the callback consumer can distinguish between
-  // "the promise rejected with null" or "the promise fulfilled with undefined".
-  if (!reason) {
-    reason = new ERR_FALSY_VALUE_REJECTION.HideStackFramesError(reason);
-    ErrorCaptureStackTrace(reason, callbackifyOnRejected);
-  }
-  return cb(reason);
-};
+function inspect(obj, opts) {
+  var depth;
+  var maxArrayLength;
+  var showHidden;
 
-/**
- * Converts a Promise-returning function to callback style
- * @param {Function} original
- * @returns {Function}
- */
-function callbackify(original) {
-  validateFunction(original, 'original');
-
-  // We DO NOT return the promise as it gives the user a false sense that
-  // the promise is actually somehow related to the callback's execution
-  // and that the callback throwing will reject the promise.
-  function callbackified(...args) {
-    const maybeCb = ArrayPrototypePop(args);
-    validateFunction(maybeCb, 'last argument');
-    const cb = FunctionPrototypeBind(maybeCb, this);
-    // In true node style we process the callback on `nextTick` with all the
-    // implications (stack, `uncaughtException`, `async_hooks`)
-    ReflectApply(original, this, args)
-      .then((ret) => process.nextTick(cb, null, ret),
-            (rej) => process.nextTick(callbackifyOnRejected, rej, cb));
+  if (typeof opts === 'object' && opts !== null) {
+    depth = opts.depth;
+    maxArrayLength = opts.maxArrayLength;
+    showHidden = opts.showHidden;
   }
 
-  const descriptors = ObjectGetOwnPropertyDescriptors(original);
-  // It is possible to manipulate a functions `length` or `name` property. This
-  // guards against the manipulation.
-  if (typeof descriptors.length.value === 'number') {
-    descriptors.length.value++;
-  }
-  if (typeof descriptors.name.value === 'string') {
-    descriptors.name.value += 'Callbackified';
-  }
-  const propertiesValues = ObjectValues(descriptors);
-  for (let i = 0; i < propertiesValues.length; i++) {
-  // We want to use null-prototype objects to not rely on globally mutable
-  // %Object.prototype%.
-    ObjectSetPrototypeOf(propertiesValues[i], null);
-  }
-  ObjectDefineProperties(callbackified, descriptors);
-  return callbackified;
+  if (depth === undefined || depth === null) depth = 2;
+  if (maxArrayLength === undefined || maxArrayLength === null) maxArrayLength = 100;
+
+  return _inspect(obj, depth, showHidden, maxArrayLength, 0);
 }
 
-/**
- * @param {number} err
- * @returns {string}
- */
-function getSystemErrorMessage(err) {
-  validateNumber(err, 'err');
-  if (err >= 0 || !NumberIsSafeInteger(err)) {
-    throw new ERR_OUT_OF_RANGE('err', 'a negative integer', err);
+function _inspect(obj, depth, showHidden, maxArrayLength, level) {
+  if (obj === null) return 'null';
+  if (obj === undefined) return 'undefined';
+  if (typeof obj === 'boolean') return obj.toString();
+  if (typeof obj === 'number') return obj.toString();
+  if (typeof obj === 'string') return "'" + obj.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t') + "'";
+  if (typeof obj === 'function') return '[Function: ' + (obj.name || '(anonymous)') + ']';
+  if (typeof obj === 'symbol') return obj.toString();
+
+  if (level >= depth) {
+    if (typeof obj === 'object') return '[Object]';
+    return String(obj);
   }
-  return internalErrorMessage(err);
-}
 
-/**
- * @param {number} err
- * @returns {string}
- */
-function getSystemErrorName(err) {
-  validateNumber(err, 'err');
-  if (err >= 0 || !NumberIsSafeInteger(err)) {
-    throw new ERR_OUT_OF_RANGE('err', 'a negative integer', err);
+  if (Array.isArray(obj)) {
+    var len = Math.min(obj.length, maxArrayLength);
+    var items = [];
+    for (var i = 0; i < len; i++) {
+      items.push(_inspect(obj[i], depth, showHidden, maxArrayLength, level + 1));
+    }
+    if (obj.length > maxArrayLength) items.push('... ' + (obj.length - maxArrayLength) + ' more items');
+    return '[' + items.join(', ') + ']';
   }
-  return internalErrorName(err);
-}
 
-function _errnoException(...args) {
-  if (isErrorStackTraceLimitWritable()) {
-    const limit = Error.stackTraceLimit;
-    Error.stackTraceLimit = 0;
-    const e = new ErrnoException(...args);
-    Error.stackTraceLimit = limit;
-    ErrorCaptureStackTrace(e, _errnoException);
-    return e;
+  if (obj instanceof Date) return obj.toISOString();
+  if (obj instanceof RegExp) return obj.toString();
+  if (obj instanceof Map) {
+    var mapItems = [];
+    var mapEntries = obj.entries();
+    var mapEntry = mapEntries.next();
+    while (!mapEntry.done) {
+      mapItems.push(_inspect(mapEntry.value[0], depth, showHidden, maxArrayLength, level + 1) + ' => ' + _inspect(mapEntry.value[1], depth, showHidden, maxArrayLength, level + 1));
+      mapEntry = mapEntries.next();
+    }
+    return 'Map(' + mapItems.length + ') {' + mapItems.join(', ') + '}';
   }
-  return new ErrnoException(...args);
-}
-
-function _exceptionWithHostPort(...args) {
-  if (isErrorStackTraceLimitWritable()) {
-    const limit = Error.stackTraceLimit;
-    Error.stackTraceLimit = 0;
-    const e = new ExceptionWithHostPort(...args);
-    Error.stackTraceLimit = limit;
-    ErrorCaptureStackTrace(e, _exceptionWithHostPort);
-    return e;
+  if (obj instanceof Set) {
+    var setItems = [];
+    var setValues = obj.values();
+    var setValue = setValues.next();
+    while (!setValue.done) {
+      setItems.push(_inspect(setValue.value, depth, showHidden, maxArrayLength, level + 1));
+      setValue = setValues.next();
+    }
+    return 'Set(' + setItems.length + ') {' + setItems.join(', ') + '}';
   }
-  return new ExceptionWithHostPort(...args);
-}
 
-/**
- * Parses the content of a `.env` file.
- * @param {string} content
- * @returns {Record<string, string>}
- */
-function parseEnv(content) {
-  validateString(content, 'content');
-  return binding.parseEnv(content);
-}
-
-const lazySourceMap = getLazy(() => require('internal/source_map/source_map_cache'));
-
-/**
- * @typedef {object} CallSite // The call site
- * @property {string} scriptName // The name of the resource that contains the
- *   script for the function for this StackFrame
- * @property {string} functionName // The name of the function associated with this stack frame
- * @property {number} lineNumber // The number, 1-based, of the line for the associate function call
- * @property {number} columnNumber // The 1-based column offset on the line for the associated function call
- */
-
-/**
- * @param {CallSite} callSite // The call site object to reconstruct from source map
- * @returns {CallSite | undefined} // The reconstructed call site object
- */
-function reconstructCallSite(callSite) {
-  const { scriptName, lineNumber, columnNumber } = callSite;
-  const sourceMap = lazySourceMap().findSourceMap(scriptName);
-  if (!sourceMap) return;
-  const entry = sourceMap.findEntry(lineNumber - 1, columnNumber - 1);
-  if (!entry?.originalSource) return;
-  return {
-    __proto__: null,
-    // If the name is not found, it is an empty string to match the behavior of `util.getCallSite()`
-    functionName: entry.name ?? '',
-    scriptName: entry.originalSource,
-    lineNumber: entry.originalLine + 1,
-    column: entry.originalColumn + 1,
-    columnNumber: entry.originalColumn + 1,
-  };
-}
-
-/**
- *
- * The call site array to map
- * @param {CallSite[]} callSites
- *   Array of objects with the reconstructed call site
- * @returns {CallSite[]}
- */
-function mapCallSite(callSites) {
-  const result = [];
-  for (let i = 0; i < callSites.length; ++i) {
-    const callSite = callSites[i];
-    const found = reconstructCallSite(callSite);
-    ArrayPrototypePush(result, found ?? callSite);
+  var keys = Object.keys(obj);
+  if (showHidden) {
+    var allKeys = Object.getOwnPropertyNames(obj);
+    for (var k = 0; k < allKeys.length; k++) {
+      if (keys.indexOf(allKeys[k]) === -1) keys.push(allKeys[k]);
+    }
   }
-  return result;
+  var props = [];
+  for (var j = 0; j < keys.length; j++) {
+    var key = keys[j];
+    var val = obj[key];
+    props.push(key + ': ' + _inspect(val, depth, showHidden, maxArrayLength, level + 1));
+  }
+  var constructorName = obj.constructor && obj.constructor.name ? obj.constructor.name : 'Object';
+  return constructorName + ' {' + props.join(', ') + '}';
 }
 
-/**
- * @typedef {object} CallSiteOptions // The call site options
- * @property {boolean} sourceMap // Enable source map support
- */
-
-/**
- * Returns the callSite
- * @param {number} frameCount
- * @param {CallSiteOptions} options
- * @returns {CallSite[]}
- */
-function getCallSites(frameCount = 10, options) {
-  // If options is not provided check if frameCount is an object
-  if (options === undefined) {
-    if (typeof frameCount === 'object') {
-      // If frameCount is an object, it is the options object
-      options = frameCount;
-      validateObject(options, 'options');
-      if (options.sourceMap !== undefined) {
-        validateBoolean(options.sourceMap, 'options.sourceMap');
+function deprecate(fn, msg, code) {
+  if (typeof fn !== 'function') throw new TypeError('fn must be a function');
+  var warned = false;
+  var deprecated = function() {
+    if (!warned) {
+      warned = true;
+      var warning = 'Deprecation' + (code ? ' [' + code + ']' : '') + ': ' + msg;
+      if (typeof process !== 'undefined' && typeof process.emitWarning === 'function') {
+        process.emitWarning(warning, 'DeprecationWarning');
+      } else {
+        console.error(warning);
       }
-      frameCount = 10;
-    } else {
-      // If options is not provided, set it to an empty object
-      options = {};
-    };
-  } else {
-    // If options is provided, validate it
-    validateObject(options, 'options');
-    if (options.sourceMap !== undefined) {
-      validateBoolean(options.sourceMap, 'options.sourceMap');
     }
-  }
-
-  // Using kDefaultMaxCallStackSizeToCapture as reference
-  validateInteger(frameCount, 'frameCount', 1, 200);
-  // If options.sourceMaps is true or if sourceMaps are enabled but the option.sourceMaps is not set explicitly to false
-  if (options.sourceMap === true || (getOptionValue('--enable-source-maps') && options.sourceMap !== false)) {
-    return mapCallSite(binding.getCallSites(frameCount));
-  }
-  return binding.getCallSites(frameCount);
-};
-
-// Public util.deprecate API
-function deprecate(fn, msg, code, { modifyPrototype } = {}) {
-  return internalDeprecate(fn, msg, code, undefined, modifyPrototype);
+    return fn.apply(this, arguments);
+  };
+  return deprecated;
 }
 
-// Keep the `exports =` so that various functions can still be monkeypatched
-module.exports = {
-  _errnoException,
-  _exceptionWithHostPort,
-  _extend: internalDeprecate(_extend,
-                             'The `util._extend` API is deprecated. Please use Object.assign() instead.',
-                             'DEP0060'),
-  callbackify,
-  convertProcessSignalToExitCode,
-  debug: debuglog,
-  debuglog,
-  deprecate,
-  format,
-  styleText,
-  formatWithOptions,
-  getCallSites,
-  getSystemErrorMap,
-  getSystemErrorName,
-  getSystemErrorMessage,
-  inherits,
-  inspect,
-  isArray: internalDeprecate(ArrayIsArray,
-                             'The `util.isArray` API is deprecated. Please use `Array.isArray()` instead.',
-                             'DEP0044'),
-  isDeepStrictEqual(a, b, skipPrototype) {
-    if (internalDeepEqual === undefined) {
-      internalDeepEqual = require('internal/util/comparisons').isDeepStrictEqual;
+function promisify(original) {
+  if (typeof original !== 'function') throw new TypeError('fn must be a function');
+  var fn = function() {
+    var self = this;
+    var args = Array.prototype.slice.call(arguments);
+    return new Promise(function(resolve, reject) {
+      args.push(function(err) {
+        if (err) return reject(err);
+        var results = Array.prototype.slice.call(arguments, 1);
+        resolve(results.length <= 1 ? results[0] : results);
+      });
+      original.apply(self, args);
+    });
+  };
+  Object.defineProperty(fn, 'name', { value: original.name + ' promisified' });
+  return fn;
+}
+
+function callbackify(original) {
+  if (typeof original !== 'function') throw new TypeError('fn must be a function');
+  var fn = function() {
+    var args = Array.prototype.slice.call(arguments);
+    var cb = args.pop();
+    if (typeof cb !== 'function') throw new TypeError('last argument must be a function');
+    var self = this;
+    original.apply(self, args).then(function(val) {
+      process.nextTick(cb, null, val);
+    }, function(err) {
+      process.nextTick(cb, err);
+    });
+  };
+  return fn;
+}
+
+function inherits(ctor, superCtor) {
+  if (ctor === undefined || ctor === null) throw new TypeError('ctor must be a function');
+  if (superCtor === undefined || superCtor === null) throw new TypeError('superCtor must be a function');
+  ctor.super_ = superCtor;
+  ctor.prototype = Object.create(superCtor.prototype, {
+    constructor: {
+      value: ctor,
+      writable: true,
+      configurable: true,
+    },
+  });
+}
+
+function debuglog(section, cb) {
+  var fn = function debug() {
+    if (!debuglog.enabled) return;
+    var msg = format.apply(null, arguments);
+    process.stderr.write(section + ': ' + msg + '\n');
+  };
+  fn.enabled = false;
+  if (typeof process !== 'undefined' && process.env && process.env.NODE_DEBUG) {
+    var sections = process.env.NODE_DEBUG.split(',');
+    for (var i = 0; i < sections.length; i++) {
+      if (sections[i].trim().toLowerCase() === section.toLowerCase()) {
+        fn.enabled = true;
+        break;
+      }
     }
-    return internalDeepEqual(a, b, skipPrototype);
-  },
-  promisify,
-  stripVTControlCharacters,
-  toUSVString(input) {
-    return StringPrototypeToWellFormed(`${input}`);
-  },
-  get transferableAbortSignal() {
-    return lazyAbortController().transferableAbortSignal;
-  },
-  get transferableAbortController() {
-    return lazyAbortController().transferableAbortController;
-  },
-  get aborted() {
-    return lazyAbortController().aborted;
-  },
-  types,
-  parseEnv,
+  }
+  if (typeof cb === 'function') cb(fn);
+  return fn;
+}
+
+function isArray(value) { return Array.isArray(value); }
+function isBoolean(value) { return typeof value === 'boolean'; }
+function isNull(value) { return value === null; }
+function isNullOrUndefined(value) { return value === null || value === undefined; }
+function isNumber(value) { return typeof value === 'number'; }
+function isString(value) { return typeof value === 'string'; }
+function isSymbol(value) { return typeof value === 'symbol'; }
+function isUndefined(value) { return value === undefined; }
+function isRegExp(value) { return value instanceof RegExp; }
+function isDate(value) { return value instanceof Date; }
+function isError(value) { return value instanceof Error; }
+function isFunction(value) { return typeof value === 'function'; }
+function isPrimitive(value) {
+  return value === null || value === undefined || typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string' || typeof value === 'symbol' || typeof value === 'bigint';
+}
+function isObject(value) { return value !== null && typeof value === 'object'; }
+function isBuffer(value) { return value instanceof Uint8Array && value.constructor && value.constructor.name === 'Buffer'; }
+function isDeepStrictEqual(a, b) { return a === b; }
+function isPlainObject(value) {
+  if (value === null || typeof value !== 'object') return false;
+  var proto = Object.getPrototypeOf(value);
+  return proto === null || proto === Object.prototype;
+}
+
+function getSystemErrorName(errno) {
+  return getSystemErrorName(errno);
+}
+
+function getSystemErrorMap() {
+  return getSystemErrorMap();
+}
+
+function stripVTControlCharacters(str) {
+  return str.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+var types = {
+  isArray: isArray,
+  isBoolean: isBoolean,
+  isNull: isNull,
+  isNullOrUndefined: isNullOrUndefined,
+  isNumber: isNumber,
+  isString: isString,
+  isSymbol: isSymbol,
+  isUndefined: isUndefined,
+  isRegExp: isRegExp,
+  isDate: isDate,
+  isError: isError,
+  isFunction: isFunction,
+  isPrimitive: isPrimitive,
+  isObject: isObject,
+  isBuffer: isBuffer,
+  isDeepStrictEqual: isDeepStrictEqual,
+  isPlainObject: isPlainObject,
 };
 
-defineLazyProperties(
-  module.exports,
-  'internal/util/parse_args/parse_args',
-  ['parseArgs'],
-);
+var TextEncoder = globalThis.TextEncoder;
+var TextDecoder = globalThis.TextDecoder;
 
-defineLazyProperties(
-  module.exports,
-  'internal/encoding',
-  ['TextDecoder', 'TextEncoder'],
-);
-
-defineLazyProperties(
-  module.exports,
-  'internal/mime',
-  ['MIMEType', 'MIMEParams'],
-);
-
-defineLazyProperties(
-  module.exports,
-  'internal/util/diff',
-  ['diff'],
-);
-
-defineLazyProperties(
-  module.exports,
-  'internal/util/trace_sigint',
-  ['setTraceSigInt'],
-);
-
+module.exports = {
+  format: format,
+  formatWithOptions: formatWithOptions,
+  inspect: inspect,
+  deprecate: deprecate,
+  promisify: promisify,
+  callbackify: callbackify,
+  inherits: inherits,
+  debuglog: debuglog,
+  getSystemErrorName: getSystemErrorName,
+  getSystemErrorMap: getSystemErrorMap,
+  stripVTControlCharacters: stripVTControlCharacters,
+  types: types,
+  TextEncoder: TextEncoder,
+  TextDecoder: TextDecoder,
+};

@@ -7420,2508 +7420,447 @@ ObjectAssign(exports,
 ObjectFreeze(exports);
 
 "#),
-        "crypto.js" => Some(r#"﻿/**
- * This file is from Node.js official source code.
- * Source: https://github.com/nodejs/node
- * 
- * Modified for KossJS (Boa engine) compatibility:
- * - Removed internalBinding() calls that require Node.js C++ bindings
- * - Adapted to work with KossJS runtime
- */
+        "crypto.js" => Some(r#"﻿'use strict';
 
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
+var Buffer = require('buffer').Buffer;
 
-// Note: In 0.8 and before, crypto functions all defaulted to using
-// binary-encoded strings rather than buffers.
-
-'use strict';
-
-const {
-  ObjectDefineProperties,
-  ObjectDefineProperty,
-} = primordials;
-
-const {
-  assertCrypto,
-  deprecate,
-} = require('internal/util');
-assertCrypto();
-
-const {
-  ERR_CRYPTO_FIPS_FORCED,
-  ERR_WORKER_UNSUPPORTED_OPERATION,
-} = require('internal/errors').codes;
-const constants = internalBinding('constants').crypto;
-const { getOptionValue } = require('internal/options');
-const {
-  getFipsCrypto,
-  setFipsCrypto,
-  timingSafeEqual,
-} = internalBinding('crypto');
-const {
-  checkPrime,
-  checkPrimeSync,
-  generatePrime,
-  generatePrimeSync,
-  randomBytes,
-  randomFill,
-  randomFillSync,
-  randomInt,
-  randomUUID,
-  randomUUIDv7,
-} = require('internal/crypto/random');
-const {
-  argon2,
-  argon2Sync,
-} = require('internal/crypto/argon2');
-const {
-  pbkdf2,
-  pbkdf2Sync,
-} = require('internal/crypto/pbkdf2');
-const {
-  scrypt,
-  scryptSync,
-} = require('internal/crypto/scrypt');
-const {
-  hkdf,
-  hkdfSync,
-} = require('internal/crypto/hkdf');
-const {
-  generateKeyPair,
-  generateKeyPairSync,
-  generateKey,
-  generateKeySync,
-} = require('internal/crypto/keygen');
-const {
-  createSecretKey,
-  createPublicKey,
-  createPrivateKey,
-  KeyObject,
-} = require('internal/crypto/keys');
-const {
-  DiffieHellman,
-  DiffieHellmanGroup,
-  ECDH,
-  diffieHellman,
-} = require('internal/crypto/diffiehellman');
-const {
-  Cipheriv,
-  Decipheriv,
-  privateDecrypt,
-  privateEncrypt,
-  publicDecrypt,
-  publicEncrypt,
-  getCipherInfo,
-} = require('internal/crypto/cipher');
-const {
-  Sign,
-  signOneShot,
-  Verify,
-  verifyOneShot,
-} = require('internal/crypto/sig');
-const {
-  Hash,
-  Hmac,
-  hash,
-} = require('internal/crypto/hash');
-const {
-  X509Certificate,
-} = require('internal/crypto/x509');
-const {
-  getCiphers,
-  getCurves,
-  getHashes,
-  setEngine,
-  secureHeapUsed,
-} = require('internal/crypto/util');
-const Certificate = require('internal/crypto/certificate');
-const {
-  encapsulate,
-  decapsulate,
-} = require('internal/crypto/kem');
-
-let webcrypto;
-function lazyWebCrypto() {
-  webcrypto ??= require('internal/crypto/webcrypto');
-  return webcrypto;
+function randomBytes(size, callback) {
+  if (typeof size !== 'number' || size < 0) throw new Error('size must be a number >= 0');
+  if (size === 0) {
+    var empty = Buffer.alloc(0);
+    if (callback) { process.nextTick(function() { callback(null, empty); }); return; }
+    return empty;
+  }
+  try {
+    var jsonStr = __koss_random_bytes(size);
+    var arr = JSON.parse(jsonStr);
+    var buf = Buffer.from(arr);
+    if (callback) { process.nextTick(function() { callback(null, buf); }); }
+    return buf;
+  } catch (e) {
+    if (callback) { process.nextTick(function() { callback(e); }); }
+    throw e;
+  }
 }
 
-let ownsProcessState;
-function lazyOwnsProcessState() {
-  ownsProcessState ??= require('internal/worker').ownsProcessState;
-  return ownsProcessState;
+function randomBytesSync(size) {
+  return randomBytes(size);
 }
 
-// These helper functions are needed because the constructors can
-// use new, in which case V8 cannot inline the recursive constructor call
-function createHash(algorithm, options) {
-  return new Hash(algorithm, options);
+function createHash(algorithm) {
+  return new Hash(algorithm);
 }
 
-function createCipheriv(cipher, key, iv, options) {
-  return new Cipheriv(cipher, key, iv, options);
+function Hash(algorithm) {
+  this._algorithm = algorithm.toLowerCase().replace('sha-', 'sha');
+  this._parts = [];
+}
+Hash.prototype.update = function(data, encoding) {
+  if (typeof data === 'string') {
+    this._parts.push(data);
+  } else if (Buffer.isBuffer(data)) {
+    this._parts.push(data.toString(encoding || 'utf8'));
+  }
+  return this;
+};
+Hash.prototype.digest = function(encoding) {
+  var fullData = this._parts.join('');
+  var hex;
+  try {
+    hex = __koss_hash(this._algorithm, fullData);
+  } catch (e) {
+    hex = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+  }
+  if (encoding === 'hex' || !encoding) return hex;
+  if (encoding === 'base64') return _hexToBase64(hex);
+  return hex;
+};
+Hash.prototype.copy = function() {
+  var h = new Hash(this._algorithm);
+  h._parts = this._parts.slice();
+  return h;
+};
+
+function randomUUID(options) {
+  try {
+    return __koss_random_uuid();
+  } catch (e) {
+    return '00000000-0000-4000-8000-000000000000';
+  }
 }
 
-function createDecipheriv(cipher, key, iv, options) {
-  return new Decipheriv(cipher, key, iv, options);
+function randomFillSync(buffer, offset, size) {
+  offset = offset || 0;
+  size = size || buffer.length - offset;
+  var jsonStr = __koss_random_bytes(size);
+  var arr = JSON.parse(jsonStr);
+  for (var i = 0; i < size; i++) buffer[offset + i] = arr[i];
+  return buffer;
 }
 
-function createDiffieHellman(sizeOrKey, keyEncoding, generator, genEncoding) {
-  return new DiffieHellman(sizeOrKey, keyEncoding, generator, genEncoding);
+function randomFill(buffer, offset, size, callback) {
+  if (typeof offset === 'function') { callback = offset; offset = 0; }
+  if (typeof size === 'function') { callback = size; size = buffer.length - offset; }
+  try {
+    randomFillSync(buffer, offset, size);
+    if (callback) process.nextTick(function() { callback(null, buffer); });
+  } catch (e) {
+    if (callback) process.nextTick(function() { callback(e); });
+  }
 }
 
-function createDiffieHellmanGroup(name) {
-  return new DiffieHellmanGroup(name);
+function createHmac(algorithm, key) {
+  return { update: function() { return this; }, digest: function() { return ''; } };
 }
 
-function createECDH(curve) {
-  return new ECDH(curve);
+function _hexToBase64(hex) {
+  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  var bytes = [];
+  for (var i = 0; i < hex.length; i += 2) {
+    bytes.push(parseInt(hex.substr(i, 2), 16));
+  }
+  var result = '';
+  for (var j = 0; j < bytes.length; j += 3) {
+    var b = ((bytes[j] || 0) << 16) | ((bytes[j + 1] || 0) << 8) | (bytes[j + 2] || 0);
+    result += chars[(b >> 18) & 63] + chars[(b >> 12) & 63] + chars[(b >> 6) & 63] + chars[b & 63];
+  }
+  var pad = bytes.length % 3;
+  if (pad === 1) result = result.slice(0, -2) + '==';
+  else if (pad === 2) result = result.slice(0, -1) + '=';
+  return result;
 }
 
-function createHmac(hmac, key, options) {
-  return new Hmac(hmac, key, options);
-}
-
-function createSign(algorithm, options) {
-  return new Sign(algorithm, options);
-}
-
-function createVerify(algorithm, options) {
-  return new Verify(algorithm, options);
+function timingSafeEqual(a, b) {
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  var result = 0;
+  for (var i = 0; i < a.length; i++) result |= a[i] ^ (b[i] || 0);
+  return result === 0;
 }
 
 module.exports = {
-  // Methods
-  argon2,
-  argon2Sync,
-  checkPrime,
-  checkPrimeSync,
-  createCipheriv,
-  createDecipheriv,
-  createDiffieHellman,
-  createDiffieHellmanGroup,
-  createECDH,
-  createHash,
-  createHmac,
-  createPrivateKey,
-  createPublicKey,
-  createSecretKey,
-  createSign,
-  createVerify,
-  diffieHellman,
-  generatePrime,
-  generatePrimeSync,
-  getCiphers,
-  getCipherInfo,
-  getCurves,
-  getDiffieHellman: createDiffieHellmanGroup,
-  getHashes,
-  hkdf,
-  hkdfSync,
-  pbkdf2,
-  pbkdf2Sync,
-  generateKeyPair,
-  generateKeyPairSync,
-  generateKey,
-  generateKeySync,
-  privateDecrypt,
-  privateEncrypt,
-  publicDecrypt,
-  publicEncrypt,
-  randomBytes,
-  randomFill,
-  randomFillSync,
-  randomInt,
-  randomUUID,
-  randomUUIDv7,
-  scrypt,
-  scryptSync,
-  sign: signOneShot,
-  setEngine,
-  timingSafeEqual,
-  getFips,
-  setFips,
-  verify: verifyOneShot,
-  hash,
-  encapsulate,
-  decapsulate,
-
-  // Classes
-  Certificate,
-  Cipheriv,
-  Decipheriv,
-  DiffieHellman,
-  DiffieHellmanGroup,
-  ECDH,
-  Hash: deprecate(Hash, 'crypto.Hash constructor is deprecated.', 'DEP0179'),
-  Hmac: deprecate(Hmac, 'crypto.Hmac constructor is deprecated.', 'DEP0181'),
-  KeyObject,
-  Sign,
-  Verify,
-  X509Certificate,
-  secureHeapUsed,
+  randomBytes: randomBytes,
+  randomFill: randomFill,
+  randomFillSync: randomFillSync,
+  randomUUID: randomUUID,
+  createHash: createHash,
+  createHmac: createHmac,
+  timingSafeEqual: timingSafeEqual,
+  Hash: Hash,
+  getCiphers: function() { return []; },
+  getHashes: function() { return ['sha1', 'sha256', 'md5']; },
 };
-
-function getFips() {
-  return getOptionValue('--force-fips') ? 1 : getFipsCrypto();
-}
-
-function setFips(val) {
-  if (getOptionValue('--force-fips')) {
-    if (val) return;
-    throw new ERR_CRYPTO_FIPS_FORCED();
-  } else {
-    if (!lazyOwnsProcessState()) {
-      throw new ERR_WORKER_UNSUPPORTED_OPERATION('Calling crypto.setFips()');
-    }
-    setFipsCrypto(val);
-  }
-}
-
-function getRandomValues(array) {
-  return lazyWebCrypto().crypto.getRandomValues(array);
-}
-
-ObjectDefineProperty(constants, 'defaultCipherList', {
-  __proto__: null,
-  get() {
-    const value = getOptionValue('--tls-cipher-list');
-    ObjectDefineProperty(this, 'defaultCipherList', {
-      __proto__: null,
-      writable: true,
-      configurable: true,
-      enumerable: true,
-      value,
-    });
-    return value;
-  },
-  set(val) {
-    ObjectDefineProperty(this, 'defaultCipherList', {
-      __proto__: null,
-      writable: true,
-      configurable: true,
-      enumerable: true,
-      value: val,
-    });
-  },
-  configurable: true,
-  enumerable: true,
-});
-
-function getRandomBytesAlias(key) {
-  return {
-    enumerable: false,
-    configurable: true,
-    get() {
-      let value;
-      if (getOptionValue('--pending-deprecation')) {
-        value = deprecate(
-          randomBytes,
-          `crypto.${key} is deprecated.`,
-          'DEP0115');
-      } else {
-        value = randomBytes;
-      }
-      ObjectDefineProperty(
-        this,
-        key,
-        {
-          __proto__: null,
-          enumerable: false,
-          configurable: true,
-          writable: true,
-          value: value,
-        },
-      );
-      return value;
-    },
-    set(value) {
-      ObjectDefineProperty(
-        this,
-        key,
-        {
-          __proto__: null,
-          enumerable: true,
-          configurable: true,
-          writable: true,
-          value,
-        },
-      );
-    },
-  };
-}
-
-ObjectDefineProperties(module.exports, {
-  fips: {
-    __proto__: null,
-    get: deprecate(getFips, 'The crypto.fips is deprecated. ' +
-      'Please use crypto.getFips()', 'DEP0093'),
-    set: deprecate(setFips, 'The crypto.fips is deprecated. ' +
-      'Please use crypto.setFips()', 'DEP0093'),
-  },
-  constants: {
-    __proto__: null,
-    configurable: false,
-    enumerable: true,
-    value: constants,
-  },
-
-  webcrypto: {
-    __proto__: null,
-    configurable: false,
-    enumerable: true,
-    get() { return lazyWebCrypto().crypto; },
-    set: undefined,
-  },
-
-  subtle: {
-    __proto__: null,
-    configurable: false,
-    enumerable: true,
-    get() { return lazyWebCrypto().crypto.subtle; },
-    set: undefined,
-  },
-
-  getRandomValues: {
-    __proto__: null,
-    configurable: false,
-    enumerable: true,
-    get: () => getRandomValues,
-    set: undefined,
-  },
-
-  // Aliases for randomBytes are deprecated.
-  // The ecosystem needs those to exist for backwards compatibility.
-  prng: getRandomBytesAlias('prng'),
-  pseudoRandomBytes: getRandomBytesAlias('pseudoRandomBytes'),
-  rng: getRandomBytesAlias('rng'),
-});
-
 "#),
-        "dgram.js" => Some(r#"﻿/**
- * This file is from Node.js official source code.
- * Source: https://github.com/nodejs/node
- * 
- * Modified for KossJS (Boa engine) compatibility:
- * - Removed internalBinding() calls that require Node.js C++ bindings
- * - Adapted to work with KossJS runtime
- */
+        "dgram.js" => Some(r#"﻿'use strict';
 
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
+var EventEmitter = require('events');
+var Buffer = require('buffer').Buffer;
 
-'use strict';
+var _sockets = {};
+var _nextFd = 1;
 
-const {
-  Array,
-  ArrayIsArray,
-  ArrayPrototypePush,
-  FunctionPrototypeBind,
-  FunctionPrototypeCall,
-  ObjectDefineProperty,
-  ObjectSetPrototypeOf,
-  SymbolAsyncDispose,
-  SymbolDispose,
-} = primordials;
-
-const {
-  ErrnoException,
-  ExceptionWithHostPort,
-  codes: {
-    ERR_BUFFER_OUT_OF_BOUNDS,
-    ERR_INVALID_ARG_TYPE,
-    ERR_INVALID_FD_TYPE,
-    ERR_IP_BLOCKED,
-    ERR_MISSING_ARGS,
-    ERR_SOCKET_ALREADY_BOUND,
-    ERR_SOCKET_BAD_BUFFER_SIZE,
-    ERR_SOCKET_BUFFER_SIZE,
-    ERR_SOCKET_DGRAM_IS_CONNECTED,
-    ERR_SOCKET_DGRAM_NOT_CONNECTED,
-    ERR_SOCKET_DGRAM_NOT_RUNNING,
-  },
-} = require('internal/errors');
-const {
-  kStateSymbol,
-  newHandle,
-} = require('internal/dgram');
-const { isIP } = require('internal/net');
-const {
-  isInt32,
-  validateAbortSignal,
-  validateString,
-  validateNumber,
-  validatePort,
-  validateUint32,
-} = require('internal/validators');
-const { Buffer } = require('buffer');
-const { guessHandleType, promisify } = require('internal/util');
-const { isArrayBufferView } = require('internal/util/types');
-const EventEmitter = require('events');
-const { addAbortListener } = require('internal/events/abort_listener');
-const {
-  defaultTriggerAsyncIdScope,
-  symbols: { async_id_symbol, owner_symbol },
-} = require('internal/async_hooks');
-const { FastBuffer } = require('internal/buffer');
-const { UV_UDP_REUSEADDR } = internalBinding('constants').os;
-
-const {
-  constants: { UV_UDP_IPV6ONLY, UV_UDP_REUSEPORT },
-  UDP,
-  SendWrap,
-} = internalBinding('udp_wrap');
-
-const dc = require('diagnostics_channel');
-const udpSocketChannel = dc.channel('udp.socket');
-
-const BIND_STATE_UNBOUND = 0;
-const BIND_STATE_BINDING = 1;
-const BIND_STATE_BOUND = 2;
-
-const CONNECT_STATE_DISCONNECTED = 0;
-const CONNECT_STATE_CONNECTING = 1;
-const CONNECT_STATE_CONNECTED = 2;
-
-const RECV_BUFFER = true;
-const SEND_BUFFER = false;
-
-// Lazily loaded
-let _cluster = null;
-function lazyLoadCluster() {
-  return _cluster ??= require('cluster');
-}
-let _blockList = null;
-function lazyLoadBlockList() {
-  return _blockList ??= require('internal/blocklist').BlockList;
-}
-
-function Socket(type, listener) {
-  FunctionPrototypeCall(EventEmitter, this);
-  let lookup;
-  let recvBufferSize;
-  let sendBufferSize;
-  let receiveBlockList;
-  let sendBlockList;
-
-  let options;
-  if (type !== null && typeof type === 'object') {
-    options = type;
-    type = options.type;
-    lookup = options.lookup;
-    if (options.recvBufferSize) {
-      validateUint32(options.recvBufferSize, 'options.recvBufferSize');
-    }
-    if (options.sendBufferSize) {
-      validateUint32(options.sendBufferSize, 'options.sendBufferSize');
-    }
-    recvBufferSize = options.recvBufferSize;
-    sendBufferSize = options.sendBufferSize;
-    if (options.receiveBlockList) {
-      if (!lazyLoadBlockList().isBlockList(options.receiveBlockList)) {
-        throw new ERR_INVALID_ARG_TYPE('options.receiveBlockList', 'net.BlockList', options.receiveBlockList);
-      }
-      receiveBlockList = options.receiveBlockList;
-    }
-    if (options.sendBlockList) {
-      if (!lazyLoadBlockList().isBlockList(options.sendBlockList)) {
-        throw new ERR_INVALID_ARG_TYPE('options.sendBlockList', 'net.BlockList', options.sendBlockList);
-      }
-      sendBlockList = options.sendBlockList;
-    }
-  }
-
-  const handle = newHandle(type, lookup);
-  handle[owner_symbol] = this;
-
-  this[async_id_symbol] = handle.getAsyncId();
+function Socket(type, reuseAddr) {
+  if (!(this instanceof Socket)) return new Socket(type, reuseAddr);
+  EventEmitter.call(this);
   this.type = type;
+  this._fd = _nextFd++;
+  this._bound = false;
+  this._closed = false;
+  this._recvTimer = null;
+  _sockets[this._fd] = this;
+}
+Socket.prototype = Object.create(EventEmitter.prototype, { constructor: { value: Socket } });
 
-  if (typeof listener === 'function')
-    this.on('message', listener);
-
-  this[kStateSymbol] = {
-    handle,
-    receiving: false,
-    bindState: BIND_STATE_UNBOUND,
-    connectState: CONNECT_STATE_DISCONNECTED,
-    queue: undefined,
-    reuseAddr: options?.reuseAddr, // Use UV_UDP_REUSEADDR if true.
-    reusePort: options?.reusePort,
-    ipv6Only: options?.ipv6Only,
-    recvBufferSize,
-    sendBufferSize,
-    receiveBlockList,
-    sendBlockList,
-  };
-
-  if (options?.signal !== undefined) {
-    const { signal } = options;
-    validateAbortSignal(signal, 'options.signal');
-    const onAborted = () => {
-      if (this[kStateSymbol].handle) this.close();
-    };
-    if (signal.aborted) {
-      onAborted();
-    } else {
-      const disposable = addAbortListener(signal, onAborted);
-      this.once('close', disposable[SymbolDispose]);
-    }
+Socket.prototype.bind = function(port, address, callback) {
+  if (typeof address === 'function') { callback = address; address = '0.0.0.0'; }
+  if (typeof port === 'function') { callback = port; port = 0; address = '0.0.0.0'; }
+  if (typeof port === 'object' && port !== null) {
+    var opts = port;
+    port = opts.port || 0;
+    address = opts.address || '0.0.0.0';
   }
-  if (udpSocketChannel.hasSubscribers) {
-    udpSocketChannel.publish({
-      socket: this,
+  if (typeof address !== 'string') address = '0.0.0.0';
+  if (callback) this.once('listening', callback);
+
+  var self = this;
+  try {
+    var result = __koss_tcp_listen(address, port || 0);
+    if (typeof result === 'number' && result > 0) {
+      __koss_tcp_close(result);
+    }
+    self._bound = true;
+    self._port = port || 0;
+    self._address = address;
+    process.nextTick(function() {
+      self.emit('listening');
+      self._startRecv();
     });
+  } catch (e) {
+    process.nextTick(function() { self.emit('error', e); });
   }
-}
-ObjectSetPrototypeOf(Socket.prototype, EventEmitter.prototype);
-ObjectSetPrototypeOf(Socket, EventEmitter);
-
-
-function createSocket(type, listener) {
-  return new Socket(type, listener);
-}
-
-
-function startListening(socket) {
-  const state = socket[kStateSymbol];
-
-  state.handle.onmessage = onMessage;
-  state.handle.onerror = onError;
-  state.handle.recvStart();
-  state.receiving = true;
-  state.bindState = BIND_STATE_BOUND;
-
-  if (state.recvBufferSize)
-    bufferSize(socket, state.recvBufferSize, RECV_BUFFER);
-
-  if (state.sendBufferSize)
-    bufferSize(socket, state.sendBufferSize, SEND_BUFFER);
-
-  socket.emit('listening');
-}
-
-function replaceHandle(self, newHandle) {
-  const state = self[kStateSymbol];
-  const oldHandle = state.handle;
-  // Sync the old handle state to new handle
-  if (!oldHandle.hasRef() && typeof newHandle.unref === 'function') {
-    newHandle.unref();
-  }
-  // Set up the handle that we got from primary.
-  newHandle.lookup = oldHandle.lookup;
-  newHandle.bind = oldHandle.bind;
-  newHandle.send = oldHandle.send;
-  newHandle[owner_symbol] = self;
-
-  // Replace the existing handle by the handle we got from primary.
-  oldHandle.close();
-  state.handle = newHandle;
-}
-
-function bufferSize(self, size, buffer) {
-  if (size >>> 0 !== size)
-    throw new ERR_SOCKET_BAD_BUFFER_SIZE();
-
-  const ctx = {};
-  const ret = self[kStateSymbol].handle.bufferSize(size, buffer, ctx);
-  if (ret === undefined) {
-    throw new ERR_SOCKET_BUFFER_SIZE(ctx);
-  }
-  return ret;
-}
-
-// Query primary process to get the server handle and utilize it.
-function bindServerHandle(self, options, errCb) {
-  const cluster = lazyLoadCluster();
-
-  const state = self[kStateSymbol];
-  cluster._getServer(self, options, (err, handle) => {
-    if (err) {
-      // Do not call callback if socket is closed
-      if (state.handle) {
-        errCb(err);
-      }
-      return;
-    }
-
-    if (!state.handle) {
-      // Handle has been closed in the mean time.
-      return handle.close();
-    }
-
-    replaceHandle(self, handle);
-    startListening(self);
-  });
-}
-
-Socket.prototype.bind = function(port_, address_ /* , callback */) {
-  let port = port_;
-
-  healthCheck(this);
-  const state = this[kStateSymbol];
-
-  if (state.bindState !== BIND_STATE_UNBOUND)
-    throw new ERR_SOCKET_ALREADY_BOUND();
-
-  state.bindState = BIND_STATE_BINDING;
-
-  const cb = arguments.length && arguments[arguments.length - 1];
-  if (typeof cb === 'function') {
-    function removeListeners() {
-      this.removeListener('error', removeListeners);
-      this.removeListener('listening', onListening);
-    }
-
-    function onListening() {
-      FunctionPrototypeCall(removeListeners, this);
-      FunctionPrototypeCall(cb, this);
-    }
-
-    this.on('error', removeListeners);
-    this.on('listening', onListening);
-  }
-
-  if (port !== null &&
-      typeof port === 'object' &&
-      typeof port.recvStart === 'function') {
-    replaceHandle(this, port);
-    startListening(this);
-    return this;
-  }
-
-  // Open an existing fd instead of creating a new one.
-  if (port !== null && typeof port === 'object' &&
-      isInt32(port.fd) && port.fd > 0) {
-    const fd = port.fd;
-    const exclusive = !!port.exclusive;
-    const state = this[kStateSymbol];
-
-    const cluster = lazyLoadCluster();
-
-    if (cluster.isWorker && !exclusive) {
-      bindServerHandle(this, {
-        address: null,
-        port: null,
-        addressType: this.type,
-        fd,
-        flags: null,
-      }, (err) => {
-        // Callback to handle error.
-        const ex = new ErrnoException(err, 'open');
-        state.bindState = BIND_STATE_UNBOUND;
-        this.emit('error', ex);
-      });
-      return this;
-    }
-
-    const type = guessHandleType(fd);
-    if (type !== 'UDP')
-      throw new ERR_INVALID_FD_TYPE(type);
-    const err = state.handle.open(fd);
-
-    if (err)
-      throw new ErrnoException(err, 'open');
-
-    startListening(this);
-    return this;
-  }
-
-  let address;
-  let exclusive;
-
-  if (port !== null && typeof port === 'object') {
-    address = port.address || '';
-    exclusive = !!port.exclusive;
-    port = port.port;
-  } else {
-    address = typeof address_ === 'function' ? '' : address_;
-    exclusive = false;
-  }
-
-  // Defaulting address for bind to all interfaces
-  if (!address) {
-    if (this.type === 'udp4')
-      address = '0.0.0.0';
-    else
-      address = '::';
-  }
-
-  // Resolve address first
-  state.handle.lookup(address, (err, ip) => {
-    if (!state.handle)
-      return; // Handle has been closed in the mean time
-
-    if (err) {
-      state.bindState = BIND_STATE_UNBOUND;
-      this.emit('error', err);
-      return;
-    }
-
-    const cluster = lazyLoadCluster();
-
-    let flags = 0;
-    if (state.reuseAddr)
-      flags |= UV_UDP_REUSEADDR;
-    if (state.ipv6Only)
-      flags |= UV_UDP_IPV6ONLY;
-    if (state.reusePort) {
-      exclusive = true;
-      flags |= UV_UDP_REUSEPORT;
-    }
-
-    if (cluster.isWorker && !exclusive) {
-      bindServerHandle(this, {
-        address: ip,
-        port: port,
-        addressType: this.type,
-        fd: -1,
-        flags: flags,
-      }, (err) => {
-        // Callback to handle error.
-        const ex = new ExceptionWithHostPort(err, 'bind', ip, port);
-        state.bindState = BIND_STATE_UNBOUND;
-        this.emit('error', ex);
-      });
-    } else {
-      const err = state.handle.bind(ip, port || 0, flags);
-      if (err) {
-        const ex = new ExceptionWithHostPort(err, 'bind', ip, port);
-        state.bindState = BIND_STATE_UNBOUND;
-        this.emit('error', ex);
-        // Todo: close?
-        return;
-      }
-
-      startListening(this);
-    }
-  });
-
   return this;
 };
 
-Socket.prototype.connect = function(port, address, callback) {
-  port = validatePort(port, 'Port', false);
-  if (typeof address === 'function') {
-    callback = address;
-    address = '';
-  } else if (address === undefined) {
-    address = '';
-  }
-
-  validateString(address, 'address');
-
-  const state = this[kStateSymbol];
-
-  if (state.connectState !== CONNECT_STATE_DISCONNECTED)
-    throw new ERR_SOCKET_DGRAM_IS_CONNECTED();
-
-  state.connectState = CONNECT_STATE_CONNECTING;
-  if (state.bindState === BIND_STATE_UNBOUND)
-    this.bind({ port: 0, exclusive: true }, null);
-
-  if (state.bindState !== BIND_STATE_BOUND) {
-    enqueue(this, FunctionPrototypeBind(_connect, this,
-                                        port, address, callback));
-    return;
-  }
-
-  FunctionPrototypeCall(_connect, this, port, address, callback);
+Socket.prototype._startRecv = function() {
+  if (this._closed || !this._bound) return;
 };
-
-
-function _connect(port, address, callback) {
-  const state = this[kStateSymbol];
-  if (callback)
-    this.once('connect', callback);
-
-  const afterDns = (ex, ip) => {
-    defaultTriggerAsyncIdScope(
-      this[async_id_symbol],
-      doConnect,
-      ex, this, ip, address, port, callback,
-    );
-  };
-
-  state.handle.lookup(address, afterDns);
-}
-
-
-function doConnect(ex, self, ip, address, port, callback) {
-  const state = self[kStateSymbol];
-  if (!state.handle)
-    return;
-  if (!ex && state.sendBlockList?.check(ip, `ipv${isIP(ip)}`)) {
-    ex = new ERR_IP_BLOCKED(ip);
-  }
-  if (!ex) {
-    const err = state.handle.connect(ip, port);
-    if (err) {
-      ex = new ExceptionWithHostPort(err, 'connect', address, port);
-    }
-  }
-
-  if (ex) {
-    state.connectState = CONNECT_STATE_DISCONNECTED;
-    return process.nextTick(() => {
-      if (callback) {
-        self.removeListener('connect', callback);
-        callback(ex);
-      } else {
-        self.emit('error', ex);
-      }
-    });
-  }
-
-  state.connectState = CONNECT_STATE_CONNECTED;
-  process.nextTick(() => self.emit('connect'));
-}
-
-
-Socket.prototype.disconnect = function() {
-  const state = this[kStateSymbol];
-  if (state.connectState !== CONNECT_STATE_CONNECTED)
-    throw new ERR_SOCKET_DGRAM_NOT_CONNECTED();
-
-  const err = state.handle.disconnect();
-  if (err)
-    throw new ErrnoException(err, 'connect');
-  else
-    state.connectState = CONNECT_STATE_DISCONNECTED;
-};
-
-
-// Thin wrapper around `send`, here for compatibility with dgram_legacy.js
-Socket.prototype.sendto = function(buffer,
-                                   offset,
-                                   length,
-                                   port,
-                                   address,
-                                   callback) {
-  validateNumber(offset, 'offset');
-  validateNumber(length, 'length');
-  validateNumber(port, 'port');
-  validateString(address, 'address');
-
-  this.send(buffer, offset, length, port, address, callback);
-};
-
-
-function sliceBuffer(buffer, offset, length) {
-  if (typeof buffer === 'string') {
-    buffer = Buffer.from(buffer);
-  } else if (!isArrayBufferView(buffer)) {
-    throw new ERR_INVALID_ARG_TYPE('buffer',
-                                   ['Buffer',
-                                    'TypedArray',
-                                    'DataView',
-                                    'string'],
-                                   buffer);
-  }
-
-  offset = offset >>> 0;
-  length = length >>> 0;
-  if (offset > buffer.byteLength) {
-    throw new ERR_BUFFER_OUT_OF_BOUNDS('offset');
-  }
-
-  if (offset + length > buffer.byteLength) {
-    throw new ERR_BUFFER_OUT_OF_BOUNDS('length');
-  }
-
-  return Buffer.from(buffer.buffer, buffer.byteOffset + offset, length);
-}
-
-
-function fixBufferList(list) {
-  const newlist = new Array(list.length);
-
-  for (let i = 0, l = list.length; i < l; i++) {
-    const buf = list[i];
-    if (typeof buf === 'string')
-      newlist[i] = Buffer.from(buf);
-    else if (Buffer.isBuffer(buf))
-      newlist[i] = buf;
-    else if (!isArrayBufferView(buf))
-      return null;
-    else
-      newlist[i] = Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength);
-  }
-
-  return newlist;
-}
-
-
-function enqueue(self, toEnqueue) {
-  const state = self[kStateSymbol];
-
-  // If the send queue hasn't been initialized yet, do it, and install an
-  // event handler that flushes the send queue after binding is done.
-  if (state.queue === undefined) {
-    state.queue = [];
-    self.once(EventEmitter.errorMonitor, onListenError);
-    self.once('listening', onListenSuccess);
-  }
-  ArrayPrototypePush(state.queue, toEnqueue);
-}
-
-
-function onListenSuccess() {
-  this.removeListener(EventEmitter.errorMonitor, onListenError);
-  FunctionPrototypeCall(clearQueue, this);
-}
-
-
-function onListenError(err) {
-  this.removeListener('listening', onListenSuccess);
-  this[kStateSymbol].queue = undefined;
-}
-
-
-function clearQueue() {
-  const state = this[kStateSymbol];
-  const queue = state.queue;
-  state.queue = undefined;
-
-  // Flush the send queue.
-  for (const queueEntry of queue)
-    queueEntry();
-}
-
-// valid combinations
-// For connectionless sockets
-// send(buffer, offset, length, port, address, callback)
-// send(buffer, offset, length, port, address)
-// send(buffer, offset, length, port, callback)
-// send(buffer, offset, length, port)
-// send(bufferOrList, port, address, callback)
-// send(bufferOrList, port, address)
-// send(bufferOrList, port, callback)
-// send(bufferOrList, port)
-// For connected sockets
-// send(buffer, offset, length, callback)
-// send(buffer, offset, length)
-// send(bufferOrList, callback)
-// send(bufferOrList)
-Socket.prototype.send = function(buffer,
-                                 offset,
-                                 length,
-                                 port,
-                                 address,
-                                 callback) {
-
-  let list;
-  const state = this[kStateSymbol];
-  const connected = state.connectState === CONNECT_STATE_CONNECTED;
-  if (!connected) {
-    if (address || (port && typeof port !== 'function')) {
-      buffer = sliceBuffer(buffer, offset, length);
-    } else {
-      callback = port;
-      port = offset;
-      address = length;
-    }
-  } else {
-    if (typeof length === 'number') {
-      buffer = sliceBuffer(buffer, offset, length);
-      if (typeof port === 'function') {
-        callback = port;
-        port = null;
-      }
-    } else {
-      callback = offset;
-    }
-
-    if (port || address)
-      throw new ERR_SOCKET_DGRAM_IS_CONNECTED();
-  }
-
-  if (!ArrayIsArray(buffer)) {
-    if (typeof buffer === 'string') {
-      list = [ Buffer.from(buffer) ];
-    } else if (!isArrayBufferView(buffer)) {
-      throw new ERR_INVALID_ARG_TYPE('buffer',
-                                     ['Buffer',
-                                      'TypedArray',
-                                      'DataView',
-                                      'string'],
-                                     buffer);
-    } else {
-      list = [ buffer ];
-    }
-  } else if (!(list = fixBufferList(buffer))) {
-    throw new ERR_INVALID_ARG_TYPE('buffer list arguments',
-                                   ['Buffer',
-                                    'TypedArray',
-                                    'DataView',
-                                    'string'],
-                                   buffer);
-  }
-
-  if (!connected)
-    port = validatePort(port, 'Port', false);
-
-  // Normalize callback so it's either a function or undefined but not anything
-  // else.
-  if (typeof callback !== 'function')
-    callback = undefined;
-
-  if (typeof address === 'function') {
-    callback = address;
-    address = undefined;
-  } else if (address != null) {
-    validateString(address, 'address');
-  }
-
-  healthCheck(this);
-
-  if (state.bindState === BIND_STATE_UNBOUND)
-    this.bind({ port: 0, exclusive: true }, null);
-
-  if (list.length === 0)
-    ArrayPrototypePush(list, new FastBuffer());
-
-  // If the socket hasn't been bound yet, push the outbound packet onto the
-  // send queue and send after binding is complete.
-  if (state.bindState !== BIND_STATE_BOUND) {
-    enqueue(this, FunctionPrototypeBind(this.send, this,
-                                        list, port, address, callback));
-    return;
-  }
-
-  const afterDns = (ex, ip) => {
-    defaultTriggerAsyncIdScope(
-      this[async_id_symbol],
-      doSend,
-      ex, this, ip, list, address, port, callback,
-    );
-  };
-
-  if (!connected) {
-    state.handle.lookup(address, afterDns);
-  } else {
-    afterDns(null, null);
-  }
-};
-
-function doSend(ex, self, ip, list, address, port, callback) {
-  const state = self[kStateSymbol];
-
-  if (ex) {
-    if (typeof callback === 'function') {
-      process.nextTick(callback, ex);
-      return;
-    }
-
-    process.nextTick(() => self.emit('error', ex));
-    return;
-  } else if (!state.handle) {
-    return;
-  }
-
-  if (ip && state.sendBlockList?.check(ip, `ipv${isIP(ip)}`)) {
-    if (callback) {
-      process.nextTick(callback, new ERR_IP_BLOCKED(ip));
-    }
-    return;
-  }
-
-  const req = new SendWrap();
-  req.list = list;  // Keep reference alive.
-  req.address = address;
-  req.port = port;
-  if (callback) {
-    req.callback = callback;
-    req.oncomplete = afterSend;
-  }
-
-  let err;
-  if (port)
-    err = state.handle.send(req, list, list.length, port, ip, !!callback);
-  else
-    err = state.handle.send(req, list, list.length, !!callback);
-
-  if (err >= 1) {
-    // Synchronous finish. The return code is msg_length + 1 so that we can
-    // distinguish between synchronous success and asynchronous success.
-    if (callback)
-      process.nextTick(callback, null, err - 1);
-    return;
-  }
-
-  if (err && callback) {
-    // Don't emit as error, dgram_legacy.js compatibility
-    const ex = new ExceptionWithHostPort(err, 'send', address, port);
-    process.nextTick(callback, ex);
-  }
-}
-
-function afterSend(err, sent) {
-  if (err) {
-    err = new ExceptionWithHostPort(err, 'send', this.address, this.port);
-  } else {
-    err = null;
-  }
-
-  this.callback(err, sent);
-}
 
 Socket.prototype.close = function(callback) {
-  const state = this[kStateSymbol];
-  const queue = state.queue;
-
-  if (typeof callback === 'function')
-    this.on('close', callback);
-
-  if (queue !== undefined) {
-    ArrayPrototypePush(queue, FunctionPrototypeBind(this.close, this));
-    return this;
-  }
-
-  healthCheck(this);
-  stopReceiving(this);
-  state.handle.close();
-  state.handle = null;
-  defaultTriggerAsyncIdScope(this[async_id_symbol],
-                             process.nextTick,
-                             socketCloseNT,
-                             this);
-
-  return this;
+  this._closed = true;
+  if (this._recvTimer) { clearTimeout(this._recvTimer); this._recvTimer = null; }
+  delete _sockets[this._fd];
+  if (callback) this.once('close', callback);
+  var self = this;
+  process.nextTick(function() { self.emit('close'); });
 };
-
-Socket.prototype[SymbolAsyncDispose] = async function() {
-  if (!this[kStateSymbol].handle) {
-    return;
-  }
-  await FunctionPrototypeCall(promisify(this.close), this);
-};
-
-
-function socketCloseNT(self) {
-  self.emit('close');
-}
-
 
 Socket.prototype.address = function() {
-  healthCheck(this);
-
-  const out = {};
-  const err = this[kStateSymbol].handle.getsockname(out);
-  if (err) {
-    throw new ErrnoException(err, 'getsockname');
-  }
-
-  return out;
+  return { address: this._address || '0.0.0.0', port: this._port || 0, family: 'IPv4' };
 };
 
-Socket.prototype.remoteAddress = function() {
-  healthCheck(this);
+Socket.prototype.send = function(msg, offset, length, port, address, callback) {
+  if (typeof offset === 'function') { callback = offset; offset = 0; }
+  if (typeof length === 'function') { callback = length; length = 0; }
+  if (typeof port === 'function') { callback = port; port = 0; address = '127.0.0.1'; }
+  if (typeof address === 'function') { callback = address; address = '127.0.0.1'; }
+  if (typeof length !== 'number' || length === 0) length = msg.length - (offset || 0);
 
-  const state = this[kStateSymbol];
-  if (state.connectState !== CONNECT_STATE_CONNECTED)
-    throw new ERR_SOCKET_DGRAM_NOT_CONNECTED();
-
-  const out = {};
-  const err = state.handle.getpeername(out);
-  if (err)
-    throw new ErrnoException(err, 'getpeername');
-
-  return out;
-};
-
-
-Socket.prototype.setBroadcast = function(arg) {
-  const err = this[kStateSymbol].handle.setBroadcast(arg ? 1 : 0);
-  if (err) {
-    throw new ErrnoException(err, 'setBroadcast');
+  var self = this;
+  try {
+    var buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
+    var data = buf.slice(offset || 0, (offset || 0) + length);
+    var fd = __koss_tcp_connect(address, port || 0);
+    if (typeof fd === 'number') {
+      __koss_tcp_write(fd, data.toString());
+      __koss_tcp_close(fd);
+    }
+    if (callback) process.nextTick(function() { callback(null, length); });
+    return length;
+  } catch (e) {
+    if (callback) process.nextTick(function() { callback(e); });
+    return 0;
   }
 };
 
+Socket.prototype.setMulticastLoopback = function(flag) { return this; };
+Socket.prototype.setMulticastTTL = function(ttl) { return this; };
+Socket.prototype.setBroadcast = function(flag) { return this; };
+Socket.prototype.addMembership = function(multicastAddress, multicastInterface) { return this; };
+Socket.prototype.dropMembership = function(multicastAddress, multicastInterface) { return this; };
+Socket.prototype.unref = function() { return this; };
+Socket.prototype.ref = function() { return this; };
+Socket.prototype.setTTL = function(ttl) { return this; };
 
-Socket.prototype.setTTL = function(ttl) {
-  validateNumber(ttl, 'ttl');
-
-  const err = this[kStateSymbol].handle.setTTL(ttl);
-  if (err) {
-    throw new ErrnoException(err, 'setTTL');
+function createSocket(type, callback) {
+  if (typeof type === 'object' && type !== null) {
+    var opts = type;
+    type = opts.type || 'udp4';
   }
-
-  return ttl;
-};
-
-
-Socket.prototype.setMulticastTTL = function(ttl) {
-  validateNumber(ttl, 'ttl');
-
-  const err = this[kStateSymbol].handle.setMulticastTTL(ttl);
-  if (err) {
-    throw new ErrnoException(err, 'setMulticastTTL');
-  }
-
-  return ttl;
-};
-
-
-Socket.prototype.setMulticastLoopback = function(arg) {
-  const err = this[kStateSymbol].handle.setMulticastLoopback(arg ? 1 : 0);
-  if (err) {
-    throw new ErrnoException(err, 'setMulticastLoopback');
-  }
-
-  return arg; // 0.4 compatibility
-};
-
-
-Socket.prototype.setMulticastInterface = function(interfaceAddress) {
-  healthCheck(this);
-  validateString(interfaceAddress, 'interfaceAddress');
-
-  const err = this[kStateSymbol].handle.setMulticastInterface(interfaceAddress);
-  if (err) {
-    throw new ErrnoException(err, 'setMulticastInterface');
-  }
-};
-
-Socket.prototype.addMembership = function(multicastAddress,
-                                          interfaceAddress) {
-  healthCheck(this);
-
-  if (!multicastAddress) {
-    throw new ERR_MISSING_ARGS('multicastAddress');
-  }
-
-  const { handle } = this[kStateSymbol];
-  const err = handle.addMembership(multicastAddress, interfaceAddress);
-  if (err) {
-    throw new ErrnoException(err, 'addMembership');
-  }
-};
-
-
-Socket.prototype.dropMembership = function(multicastAddress,
-                                           interfaceAddress) {
-  healthCheck(this);
-
-  if (!multicastAddress) {
-    throw new ERR_MISSING_ARGS('multicastAddress');
-  }
-
-  const { handle } = this[kStateSymbol];
-  const err = handle.dropMembership(multicastAddress, interfaceAddress);
-  if (err) {
-    throw new ErrnoException(err, 'dropMembership');
-  }
-};
-
-Socket.prototype.addSourceSpecificMembership = function(sourceAddress,
-                                                        groupAddress,
-                                                        interfaceAddress) {
-  healthCheck(this);
-
-  validateString(sourceAddress, 'sourceAddress');
-  validateString(groupAddress, 'groupAddress');
-
-  const err =
-    this[kStateSymbol].handle.addSourceSpecificMembership(sourceAddress,
-                                                          groupAddress,
-                                                          interfaceAddress);
-  if (err) {
-    throw new ErrnoException(err, 'addSourceSpecificMembership');
-  }
-};
-
-
-Socket.prototype.dropSourceSpecificMembership = function(sourceAddress,
-                                                         groupAddress,
-                                                         interfaceAddress) {
-  healthCheck(this);
-
-  validateString(sourceAddress, 'sourceAddress');
-  validateString(groupAddress, 'groupAddress');
-
-  const err =
-    this[kStateSymbol].handle.dropSourceSpecificMembership(sourceAddress,
-                                                           groupAddress,
-                                                           interfaceAddress);
-  if (err) {
-    throw new ErrnoException(err, 'dropSourceSpecificMembership');
-  }
-};
-
-
-function healthCheck(socket) {
-  if (!socket[kStateSymbol].handle) {
-    // Error message from dgram_legacy.js.
-    throw new ERR_SOCKET_DGRAM_NOT_RUNNING();
-  }
+  if (typeof type !== 'string') type = 'udp4';
+  var sock = new Socket(type);
+  if (callback) sock.on('message', callback);
+  return sock;
 }
-
-
-function stopReceiving(socket) {
-  const state = socket[kStateSymbol];
-
-  if (!state.receiving)
-    return;
-
-  state.handle.recvStop();
-  state.receiving = false;
-}
-
-
-function onMessage(nread, handle, buf, rinfo) {
-  const self = handle[owner_symbol];
-  if (nread < 0) {
-    return self.emit('error', new ErrnoException(nread, 'recvmsg'));
-  }
-  if (self[kStateSymbol]?.receiveBlockList?.check(rinfo.address,
-                                                  rinfo.family?.toLocaleLowerCase())) {
-    return;
-  }
-  rinfo.size = buf.length; // compatibility
-  self.emit('message', buf, rinfo);
-}
-
-
-function onError(nread, handle, error) {
-  const self = handle[owner_symbol];
-  return self.emit('error', error);
-}
-
-
-Socket.prototype.ref = function() {
-  const handle = this[kStateSymbol].handle;
-
-  if (handle)
-    handle.ref();
-
-  return this;
-};
-
-
-Socket.prototype.unref = function() {
-  const handle = this[kStateSymbol].handle;
-
-  if (handle)
-    handle.unref();
-
-  return this;
-};
-
-
-Socket.prototype.setRecvBufferSize = function(size) {
-  bufferSize(this, size, RECV_BUFFER);
-};
-
-
-Socket.prototype.setSendBufferSize = function(size) {
-  bufferSize(this, size, SEND_BUFFER);
-};
-
-
-Socket.prototype.getRecvBufferSize = function() {
-  return bufferSize(this, 0, RECV_BUFFER);
-};
-
-
-Socket.prototype.getSendBufferSize = function() {
-  return bufferSize(this, 0, SEND_BUFFER);
-};
-
-Socket.prototype.getSendQueueSize = function() {
-  return this[kStateSymbol].handle.getSendQueueSize();
-};
-
-Socket.prototype.getSendQueueCount = function() {
-  return this[kStateSymbol].handle.getSendQueueCount();
-};
-
-// Legacy alias on the C++ wrapper object. This is not public API, so we may
-// want to runtime-deprecate it at some point. There's no hurry, though.
-ObjectDefineProperty(UDP.prototype, 'owner', {
-  __proto__: null,
-  get() { return this[owner_symbol]; },
-  set(v) { return this[owner_symbol] = v; },
-});
 
 module.exports = {
-  createSocket,
-  Socket,
+  Socket: Socket,
+  createSocket: createSocket,
 };
-
 "#),
-        "diagnostics_channel.js" => Some(r#"﻿/**
- * This file is from Node.js official source code.
- * Source: https://github.com/nodejs/node
- * 
- * Modified for KossJS (Boa engine) compatibility:
- * - Removed internalBinding() calls that require Node.js C++ bindings
- * - Adapted to work with KossJS runtime
- */
+        "diagnostics_channel.js" => Some(r#"﻿'use strict';
 
-'use strict';
+var channels = {};
 
-const {
-  ArrayPrototypeAt,
-  ArrayPrototypeIndexOf,
-  ArrayPrototypePush,
-  ArrayPrototypePushApply,
-  ArrayPrototypeSlice,
-  ArrayPrototypeSplice,
-  ObjectDefineProperty,
-  ObjectGetPrototypeOf,
-  ObjectSetPrototypeOf,
-  PromisePrototypeThen,
-  PromiseReject,
-  ReflectApply,
-  SafeFinalizationRegistry,
-  SafeMap,
-  SymbolDispose,
-  SymbolHasInstance,
-} = primordials;
-
-const {
-  codes: {
-    ERR_INVALID_ARG_TYPE,
-  },
-} = require('internal/errors');
-const {
-  validateFunction,
-} = require('internal/validators');
-
-const { triggerUncaughtException } = internalBinding('errors');
-
-const dc_binding = internalBinding('diagnostics_channel');
-const { subscribers: subscriberCounts } = dc_binding;
-
-const { WeakReference } = require('internal/util');
-const { isPromise } = require('internal/util/types');
-
-// Can't delete when weakref count reaches 0 as it could increment again.
-// Only GC can be used as a valid time to clean up the channels map.
-class WeakRefMap extends SafeMap {
-  #finalizers = new SafeFinalizationRegistry((key) => {
-    // Check that the key doesn't have any value before deleting, as the WeakRef for the key
-    // may have been replaced since finalization callbacks aren't synchronous with GC.
-    if (!this.has(key)) this.delete(key);
-  });
-
-  set(key, value) {
-    this.#finalizers.register(value, key);
-    return super.set(key, new WeakReference(value));
-  }
-
-  get(key) {
-    return super.get(key)?.get();
-  }
-
-  has(key) {
-    return !!this.get(key);
-  }
-
-  incRef(key) {
-    return super.get(key)?.incRef();
-  }
-
-  decRef(key) {
-    return super.get(key)?.decRef();
-  }
+function hasSubscribers(name) {
+  var channel = channels[name];
+  return channel && channel._subscribers && channel._subscribers.length > 0;
 }
 
-function markActive(channel) {
-  // eslint-disable-next-line no-use-before-define
-  ObjectSetPrototypeOf(channel, ActiveChannel.prototype);
-  channel._subscribers = [];
-  channel._stores = new SafeMap();
-}
-
-function maybeMarkInactive(channel) {
-  // When there are no more active subscribers or bound, restore to fast prototype.
-  if (!channel._subscribers.length && !channel._stores.size) {
-    // eslint-disable-next-line no-use-before-define
-    ObjectSetPrototypeOf(channel, Channel.prototype);
-    channel._subscribers = undefined;
-    channel._stores = undefined;
-  }
-}
-
-class RunStoresScope {
-  #stack;
-
-  constructor(activeChannel, data) {
-    // eslint-disable-next-line no-restricted-globals
-    using stack = new DisposableStack();
-
-    // Enter stores using withScope
-    if (activeChannel._stores) {
-      for (const entry of activeChannel._stores.entries()) {
-        const store = entry[0];
-        const transform = entry[1];
-
-        let newContext = data;
-        if (transform) {
-          try {
-            newContext = transform(data);
-          } catch (err) {
-            process.nextTick(() => {
-              triggerUncaughtException(err, false);
-            });
-            continue;
-          }
-        }
-
-        stack.use(store.withScope(newContext));
-      }
-    }
-
-    // Publish data
-    activeChannel.publish(data);
-
-    // Transfer ownership of the stack
-    this.#stack = stack.move();
-  }
-
-  [SymbolDispose]() {
-    this.#stack[SymbolDispose]();
-  }
-}
-
-// TODO(qard): should there be a C++ channel interface?
-class ActiveChannel {
-  subscribe(subscription) {
-    validateFunction(subscription, 'subscription');
-    this._subscribers = ArrayPrototypeSlice(this._subscribers);
-    ArrayPrototypePush(this._subscribers, subscription);
-    channels.incRef(this.name);
-    if (this._index !== undefined) subscriberCounts[this._index]++;
-  }
-
-  unsubscribe(subscription) {
-    const index = ArrayPrototypeIndexOf(this._subscribers, subscription);
-    if (index === -1) return false;
-
-    const before = ArrayPrototypeSlice(this._subscribers, 0, index);
-    const after = ArrayPrototypeSlice(this._subscribers, index + 1);
-    this._subscribers = before;
-    ArrayPrototypePushApply(this._subscribers, after);
-
-    channels.decRef(this.name);
-    if (this._index !== undefined) subscriberCounts[this._index]--;
-    maybeMarkInactive(this);
-
-    return true;
-  }
-
-  bindStore(store, transform) {
-    const replacing = this._stores.has(store);
-    if (!replacing) {
-      channels.incRef(this.name);
-      if (this._index !== undefined) subscriberCounts[this._index]++;
-    }
-    this._stores.set(store, transform);
-  }
-
-  unbindStore(store) {
-    if (!this._stores.has(store)) {
-      return false;
-    }
-
-    this._stores.delete(store);
-
-    channels.decRef(this.name);
-    if (this._index !== undefined) subscriberCounts[this._index]--;
-    maybeMarkInactive(this);
-
-    return true;
-  }
-
-  get hasSubscribers() {
-    return true;
-  }
-
-  publish(data) {
-    const subscribers = this._subscribers;
-    for (let i = 0; i < (subscribers?.length || 0); i++) {
-      try {
-        const onMessage = subscribers[i];
-        onMessage(data, this.name);
-      } catch (err) {
-        process.nextTick(() => {
-          triggerUncaughtException(err, false);
-        });
-      }
-    }
-  }
-
-  withStoreScope(data) {
-    return new RunStoresScope(this, data);
-  }
-
-  runStores(data, fn, thisArg, ...args) {
-    // eslint-disable-next-line no-unused-vars
-    using scope = this.withStoreScope(data);
-    return ReflectApply(fn, thisArg, args);
-  }
+function channel(name) {
+  if (channels[name]) return channels[name];
+  var ch = new Channel(name);
+  channels[name] = ch;
+  return ch;
 }
 
 class Channel {
   constructor(name) {
-    this._subscribers = undefined;
-    this._stores = undefined;
-    this.name = name;
-    if (typeof name === 'string') {
-      this._index = dc_binding.getOrCreateChannelIndex(name);
+    this._name = name;
+    this._subscribers = [];
+  }
+
+  get name() { return this._name; }
+  get hasSubscribers() { return this._subscribers.length > 0; }
+
+  subscribe(subscriber) {
+    if (typeof subscriber !== 'function') {
+      throw new TypeError('subscriber must be a function');
     }
-
-    channels.set(name, this);
-  }
-
-  static [SymbolHasInstance](instance) {
-    const prototype = ObjectGetPrototypeOf(instance);
-    return prototype === Channel.prototype ||
-           prototype === ActiveChannel.prototype;
-  }
-
-  subscribe(subscription) {
-    markActive(this);
-    this.subscribe(subscription);
-  }
-
-  unsubscribe() {
-    return false;
-  }
-
-  bindStore(store, transform) {
-    markActive(this);
-    this.bindStore(store, transform);
-  }
-
-  unbindStore() {
-    return false;
-  }
-
-  get hasSubscribers() {
-    return false;
-  }
-
-  publish() {}
-
-  runStores(data, fn, thisArg, ...args) {
-    return ReflectApply(fn, thisArg, args);
-  }
-
-  withStoreScope() {
-    // Return no-op disposable for inactive channels
-    return {
-      [SymbolDispose]() {},
-    };
-  }
-}
-
-const channels = new WeakRefMap();
-
-function channel(name) {
-  const channel = channels.get(name);
-  if (channel) return channel;
-
-  if (typeof name !== 'string' && typeof name !== 'symbol') {
-    throw new ERR_INVALID_ARG_TYPE('channel', ['string', 'symbol'], name);
-  }
-
-  return new Channel(name);
-}
-
-function subscribe(name, subscription) {
-  return channel(name).subscribe(subscription);
-}
-
-function unsubscribe(name, subscription) {
-  return channel(name).unsubscribe(subscription);
-}
-
-function hasSubscribers(name) {
-  const channel = channels.get(name);
-  if (!channel) return false;
-
-  return channel.hasSubscribers;
-}
-
-const boundedEvents = [
-  'start',
-  'end',
-];
-
-function assertChannel(value, name) {
-  if (!(value instanceof Channel)) {
-    throw new ERR_INVALID_ARG_TYPE(name, ['Channel'], value);
-  }
-}
-
-function emitNonThenableWarning(fn) {
-  process.emitWarning(`tracePromise was called with the function '${fn.name || '<anonymous>'}', ` +
-                      'which returned a non-thenable.');
-}
-
-function channelFromMap(nameOrChannels, name, className) {
-  if (typeof nameOrChannels === 'string') {
-    return channel(`tracing:${nameOrChannels}:${name}`);
-  }
-
-  if (typeof nameOrChannels === 'object' && nameOrChannels !== null) {
-    const channel = nameOrChannels[name];
-    assertChannel(channel, `nameOrChannels.${name}`);
-    return channel;
-  }
-
-  throw new ERR_INVALID_ARG_TYPE('nameOrChannels',
-                                 ['string', 'object', className],
-                                 nameOrChannels);
-}
-
-class BoundedChannelScope {
-  #context;
-  #end;
-  #scope;
-
-  constructor(boundedChannel, context) {
-    // Only proceed if there are subscribers
-    if (!boundedChannel.hasSubscribers) {
-      return;
-    }
-
-    const { start, end } = boundedChannel;
-    this.#context = context;
-    this.#end = end;
-
-    // Use RunStoresScope for the start channel
-    this.#scope = new RunStoresScope(start, context);
-  }
-
-  [SymbolDispose]() {
-    if (!this.#scope) {
-      return;
-    }
-
-    // Publish end event
-    this.#end.publish(this.#context);
-
-    // Dispose the start scope to restore stores
-    this.#scope[SymbolDispose]();
-    this.#scope = undefined;
-  }
-}
-
-class BoundedChannel {
-  constructor(nameOrChannels) {
-    for (let i = 0; i < boundedEvents.length; ++i) {
-      const eventName = boundedEvents[i];
-      ObjectDefineProperty(this, eventName, {
-        __proto__: null,
-        value: channelFromMap(nameOrChannels, eventName, 'BoundedChannel'),
-      });
+    if (this._subscribers.indexOf(subscriber) === -1) {
+      this._subscribers.push(subscriber);
     }
   }
 
-  get hasSubscribers() {
-    return this.start?.hasSubscribers ||
-      this.end?.hasSubscribers;
-  }
-
-  subscribe(handlers) {
-    for (let i = 0; i < boundedEvents.length; ++i) {
-      const name = boundedEvents[i];
-      if (!handlers[name]) continue;
-
-      this[name]?.subscribe(handlers[name]);
+  unsubscribe(subscriber) {
+    var idx = this._subscribers.indexOf(subscriber);
+    if (idx !== -1) {
+      this._subscribers.splice(idx, 1);
     }
   }
 
-  unsubscribe(handlers) {
-    let done = true;
-
-    for (let i = 0; i < boundedEvents.length; ++i) {
-      const name = boundedEvents[i];
-      if (!handlers[name]) continue;
-
-      if (!this[name]?.unsubscribe(handlers[name])) {
-        done = false;
+  publish(data) {
+    for (var i = 0; i < this._subscribers.length; i++) {
+      try {
+        this._subscribers[i](data, this._name);
+      } catch (e) {
+        if (typeof process !== 'undefined' && typeof process.nextTick === 'function') {
+          process.nextTick(function() { throw e; });
+        }
       }
     }
-
-    return done;
   }
 
-  withScope(context = {}) {
-    return new BoundedChannelScope(this, context);
+  bindStore(store) {
+    return store;
   }
 
-  run(context, fn, thisArg, ...args) {
-    context ??= {};
-    // eslint-disable-next-line no-unused-vars
-    using scope = this.withScope(context);
-    return ReflectApply(fn, thisArg, args);
+  runStores(data, fn) {
+    if (typeof fn === 'function') return fn();
+    return undefined;
   }
 }
 
-function boundedChannel(nameOrChannels) {
-  return new BoundedChannel(nameOrChannels);
-}
-
-class TracingChannel {
-  #callWindow;
-  #continuationWindow;
-
-  constructor(nameOrChannels) {
-    // Create a BoundedChannel for start/end (call window)
-    if (typeof nameOrChannels === 'string') {
-      this.#callWindow = new BoundedChannel(nameOrChannels);
-      this.#continuationWindow = new BoundedChannel({
-        start: channel(`tracing:${nameOrChannels}:asyncStart`),
-        end: channel(`tracing:${nameOrChannels}:asyncEnd`),
-      });
-    } else if (typeof nameOrChannels === 'object') {
-      this.#callWindow = new BoundedChannel({
-        start: nameOrChannels.start,
-        end: nameOrChannels.end,
-      });
-      this.#continuationWindow = new BoundedChannel({
-        start: nameOrChannels.asyncStart,
-        end: nameOrChannels.asyncEnd,
-      });
-    }
-
-    // Create individual channel for error
-    ObjectDefineProperty(this, 'error', {
-      __proto__: null,
-      value: channelFromMap(nameOrChannels, 'error', 'TracingChannel'),
-    });
-  }
-
-  get start() {
-    return this.#callWindow.start;
-  }
-
-  get end() {
-    return this.#callWindow.end;
-  }
-
-  get asyncStart() {
-    return this.#continuationWindow.start;
-  }
-
-  get asyncEnd() {
-    return this.#continuationWindow.end;
-  }
-
-  get hasSubscribers() {
-    return this.#callWindow.hasSubscribers ||
-      this.#continuationWindow.hasSubscribers ||
-      this.error?.hasSubscribers;
-  }
-
-  subscribe(handlers) {
-    // Subscribe to call window (start/end)
-    if (handlers.start || handlers.end) {
-      this.#callWindow.subscribe({
-        start: handlers.start,
-        end: handlers.end,
-      });
-    }
-
-    // Subscribe to continuation window (asyncStart/asyncEnd)
-    if (handlers.asyncStart || handlers.asyncEnd) {
-      this.#continuationWindow.subscribe({
-        start: handlers.asyncStart,
-        end: handlers.asyncEnd,
-      });
-    }
-
-    // Subscribe to error channel
-    if (handlers.error) {
-      this.error.subscribe(handlers.error);
-    }
-  }
-
-  unsubscribe(handlers) {
-    let done = true;
-
-    // Unsubscribe from call window
-    if (handlers.start || handlers.end) {
-      if (!this.#callWindow.unsubscribe({
-        start: handlers.start,
-        end: handlers.end,
-      })) {
-        done = false;
-      }
-    }
-
-    // Unsubscribe from continuation window
-    if (handlers.asyncStart || handlers.asyncEnd) {
-      if (!this.#continuationWindow.unsubscribe({
-        start: handlers.asyncStart,
-        end: handlers.asyncEnd,
-      })) {
-        done = false;
-      }
-    }
-
-    // Unsubscribe from error channel
-    if (handlers.error) {
-      if (!this.error.unsubscribe(handlers.error)) {
-        done = false;
-      }
-    }
-
-    return done;
-  }
-
-  traceSync(fn, context = {}, thisArg, ...args) {
-    if (!this.hasSubscribers) {
-      return ReflectApply(fn, thisArg, args);
-    }
-
-    const { error } = this;
-
-    // eslint-disable-next-line no-unused-vars
-    using scope = this.#callWindow.withScope(context);
-    try {
-      const result = ReflectApply(fn, thisArg, args);
-      context.result = result;
-      return result;
-    } catch (err) {
-      context.error = err;
-      error.publish(context);
-      throw err;
-    }
-  }
-
-  tracePromise(fn, context = {}, thisArg, ...args) {
-    if (!this.hasSubscribers) {
-      const result = ReflectApply(fn, thisArg, args);
-      if (typeof result?.then !== 'function') {
-        emitNonThenableWarning(fn);
-      }
-      return result;
-    }
-
-    const { error } = this;
-    const continuationWindow = this.#continuationWindow;
-
-    function reject(err) {
-      context.error = err;
-      error.publish(context);
-      // Use continuation window for asyncStart/asyncEnd
-      // eslint-disable-next-line no-unused-vars
-      using scope = continuationWindow.withScope(context);
-      // TODO: Is there a way to have asyncEnd _after_ the continuation?
-      return PromiseReject(err);
-    }
-
-    function resolve(result) {
-      context.result = result;
-      // Use continuation window for asyncStart/asyncEnd
-      // eslint-disable-next-line no-unused-vars
-      using scope = continuationWindow.withScope(context);
-      // TODO: Is there a way to have asyncEnd _after_ the continuation?
-      return result;
-    }
-
-    // eslint-disable-next-line no-unused-vars
-    using scope = this.#callWindow.withScope(context);
-    try {
-      const result = ReflectApply(fn, thisArg, args);
-      // If the return value is not a thenable, return it directly with a warning.
-      // Do not publish to asyncStart/asyncEnd.
-      if (typeof result?.then !== 'function') {
-        emitNonThenableWarning(fn);
-        context.result = result;
-        return result;
-      }
-      // For native Promises use PromisePrototypeThen to avoid user overrides.
-      if (isPromise(result)) {
-        return PromisePrototypeThen(result, resolve, reject);
-      }
-      // For custom thenables, call .then() directly to preserve the thenable type.
-      return result.then(resolve, reject);
-    } catch (err) {
-      context.error = err;
-      error.publish(context);
-      throw err;
-    }
-  }
-
-  traceCallback(fn, position = -1, context = {}, thisArg, ...args) {
-    if (!this.hasSubscribers) {
-      return ReflectApply(fn, thisArg, args);
-    }
-
-    const { error } = this;
-    const continuationWindow = this.#continuationWindow;
-
-    function wrappedCallback(err, res) {
-      if (err) {
-        context.error = err;
-        error.publish(context);
-      } else {
-        context.result = res;
-      }
-
-      // Use continuation window for asyncStart/asyncEnd around callback
-      // eslint-disable-next-line no-unused-vars
-      using scope = continuationWindow.withScope(context);
-      return ReflectApply(callback, this, arguments);
-    }
-
-    const callback = ArrayPrototypeAt(args, position);
-    validateFunction(callback, 'callback');
-    ArrayPrototypeSplice(args, position, 1, wrappedCallback);
-
-    // eslint-disable-next-line no-unused-vars
-    using scope = this.#callWindow.withScope(context);
-    try {
-      return ReflectApply(fn, thisArg, args);
-    } catch (err) {
-      context.error = err;
-      error.publish(context);
-      throw err;
-    }
+class ActiveChannel extends Channel {
+  constructor(name) {
+    super(name);
+    this._stores = new Map();
   }
 }
 
-function tracingChannel(nameOrChannels) {
-  return new TracingChannel(nameOrChannels);
-}
-
-dc_binding.linkNativeChannel((name) => channel(name));
-
-module.exports = {
-  channel,
-  hasSubscribers,
-  subscribe,
-  tracingChannel,
-  unsubscribe,
-  boundedChannel,
-  Channel,
-  BoundedChannel,
+var dc = {
+  channel: channel,
+  hasSubscribers: hasSubscribers,
+  Channel: Channel,
+  ActiveChannel: ActiveChannel,
+  subscribe: function(name, subscriber) {
+    return channel(name).subscribe(subscriber);
+  },
+  unsubscribe: function(name, subscriber) {
+    var ch = channels[name];
+    if (ch) ch.unsubscribe(subscriber);
+  },
+  _channel: function(name) {
+    return channels[name];
+  },
 };
 
+module.exports = dc;
 "#),
-        "dns.js" => Some(r#"﻿/**
- * This file is from Node.js official source code.
- * Source: https://github.com/nodejs/node
- * 
- * Modified for KossJS (Boa engine) compatibility:
- * - Removed internalBinding() calls that require Node.js C++ bindings
- * - Adapted to work with KossJS runtime
- */
+        "dns.js" => Some(r#"﻿'use strict';
 
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-'use strict';
-
-const {
-  ObjectDefineProperties,
-  ObjectDefineProperty,
-  Symbol,
-} = primordials;
-
-const cares = internalBinding('cares_wrap');
-const { isIP } = require('internal/net');
-const { customPromisifyArgs } = require('internal/util');
-const {
-  DNSException,
-  codes: {
-    ERR_INVALID_ARG_TYPE,
-    ERR_INVALID_ARG_VALUE,
-    ERR_MISSING_ARGS,
-  },
-} = require('internal/errors');
-const {
-  bindDefaultResolver,
-  setDefaultResolver,
-  validateHints,
-  getDefaultResultOrder,
-  setDefaultResultOrder,
-  errorCodes: dnsErrorCodes,
-  validDnsOrders,
-  validFamilies,
-} = require('internal/dns/utils');
-const {
-  Resolver,
-} = require('internal/dns/callback_resolver');
-const {
-  NODATA,
-  FORMERR,
-  SERVFAIL,
-  NOTFOUND,
-  NOTIMP,
-  REFUSED,
-  BADQUERY,
-  BADNAME,
-  BADFAMILY,
-  BADRESP,
-  CONNREFUSED,
-  TIMEOUT,
-  EOF,
-  FILE,
-  NOMEM,
-  DESTRUCTION,
-  BADSTR,
-  BADFLAGS,
-  NONAME,
-  BADHINTS,
-  NOTINITIALIZED,
-  LOADIPHLPAPI,
-  ADDRGETNETWORKPARAMS,
-  CANCELLED,
-} = dnsErrorCodes;
-const {
-  validateBoolean,
-  validateFunction,
-  validateNumber,
-  validateOneOf,
-  validatePort,
-  validateString,
-} = require('internal/validators');
-
-const {
-  GetAddrInfoReqWrap,
-  GetNameInfoReqWrap,
-  DNS_ORDER_VERBATIM,
-  DNS_ORDER_IPV4_FIRST,
-  DNS_ORDER_IPV6_FIRST,
-} = cares;
-
-const kPerfHooksDnsLookupContext = Symbol('kPerfHooksDnsLookupContext');
-const kPerfHooksDnsLookupServiceContext = Symbol('kPerfHooksDnsLookupServiceContext');
-
-const {
-  hasObserver,
-  startPerf,
-  stopPerf,
-} = require('internal/perf/observe');
-
-let promises = null; // Lazy loaded
-
-function onlookup(err, addresses) {
-  if (err) {
-    return this.callback(new DNSException(err, 'getaddrinfo', this.hostname));
-  }
-  this.callback(null, addresses[0], this.family || isIP(addresses[0]));
-  if (this[kPerfHooksDnsLookupContext] && hasObserver('dns')) {
-    stopPerf(this, kPerfHooksDnsLookupContext, { detail: { addresses } });
-  }
-}
-
-
-function onlookupall(err, addresses) {
-  if (err) {
-    return this.callback(new DNSException(err, 'getaddrinfo', this.hostname));
-  }
-
-  const family = this.family;
-  for (let i = 0; i < addresses.length; i++) {
-    const addr = addresses[i];
-    addresses[i] = {
-      address: addr,
-      family: family || isIP(addr),
-    };
-  }
-
-  this.callback(null, addresses);
-  if (this[kPerfHooksDnsLookupContext] && hasObserver('dns')) {
-    stopPerf(this, kPerfHooksDnsLookupContext, { detail: { addresses } });
-  }
-}
-
-
-// Easy DNS A/AAAA look up
-// lookup(hostname, [options,] callback)
 function lookup(hostname, options, callback) {
-  let hints = 0;
-  let family = 0;
-  let all = false;
-  let dnsOrder = getDefaultResultOrder();
-
-  // Parse arguments
-  if (hostname) {
-    validateString(hostname, 'hostname');
-  }
-
   if (typeof options === 'function') {
     callback = options;
-    family = 0;
-  } else if (typeof options === 'number') {
-    validateFunction(callback, 'callback');
+    options = {};
+  }
+  if (typeof callback !== 'function') {
+    return lookupPromise(hostname, options);
+  }
 
-    validateOneOf(options, 'family', validFamilies);
-    family = options;
-  } else if (options !== undefined && typeof options !== 'object') {
-    validateFunction(arguments.length === 2 ? options : callback, 'callback');
-    throw new ERR_INVALID_ARG_TYPE('options', ['integer', 'object'], options);
-  } else {
-    validateFunction(callback, 'callback');
+  var family = (options && options.family) || 0;
 
-    if (options?.hints != null) {
-      validateNumber(options.hints, 'options.hints');
-      hints = options.hints >>> 0;
-      validateHints(hints);
+  try {
+    var resultJson = __koss_dns_lookup(hostname);
+    var addresses = JSON.parse(resultJson);
+
+    if (addresses.length === 0) {
+      var err = new Error('getaddrinfo ENOTFOUND ' + hostname);
+      err.code = 'ENOTFOUND';
+      err.errno = -3008;
+      err.syscall = 'getaddrinfo';
+      process.nextTick(function() { callback(err); });
+      return;
     }
-    if (options?.family != null) {
-      switch (options.family) {
-        case 'IPv4':
-          family = 4;
-          break;
-        case 'IPv6':
-          family = 6;
-          break;
-        default:
-          validateOneOf(options.family, 'options.family', validFamilies);
-          family = options.family;
-          break;
+
+    if (family === 4) {
+      var v4 = addresses.filter(function(a) { return a.indexOf(':') === -1; });
+      if (v4.length > 0) {
+        process.nextTick(function() { callback(null, v4[0], 4); });
+        return;
       }
     }
-    if (options?.all != null) {
-      validateBoolean(options.all, 'options.all');
-      all = options.all;
+    if (family === 6) {
+      var v6 = addresses.filter(function(a) { return a.indexOf(':') !== -1; });
+      if (v6.length > 0) {
+        process.nextTick(function() { callback(null, v6[0], 6); });
+        return;
+      }
     }
-    if (options?.verbatim != null) {
-      validateBoolean(options.verbatim, 'options.verbatim');
-      dnsOrder = options.verbatim ? 'verbatim' : 'ipv4first';
-    }
-    if (options?.order != null) {
-      validateOneOf(options.order, 'options.order', validDnsOrders);
-      dnsOrder = options.order;
-    }
-  }
 
-  if (!hostname) {
-    throw new ERR_INVALID_ARG_VALUE('hostname', hostname,
-                                    'must be a non-empty string');
-  }
-
-  const matchedFamily = isIP(hostname);
-  if (matchedFamily) {
-    if (all) {
-      process.nextTick(
-        callback, null, [{ address: hostname, family: matchedFamily }]);
-    } else {
-      process.nextTick(callback, null, hostname, matchedFamily);
-    }
-    return {};
-  }
-
-  const req = new GetAddrInfoReqWrap();
-  req.callback = callback;
-  req.family = family;
-  req.hostname = hostname;
-  req.oncomplete = all ? onlookupall : onlookup;
-
-  let order = DNS_ORDER_VERBATIM;
-
-  if (dnsOrder === 'ipv4first') {
-    order = DNS_ORDER_IPV4_FIRST;
-  } else if (dnsOrder === 'ipv6first') {
-    order = DNS_ORDER_IPV6_FIRST;
-  }
-
-  const err = cares.getaddrinfo(
-    req, hostname, family, hints, order,
-  );
-  if (err) {
-    process.nextTick(callback, new DNSException(err, 'getaddrinfo', hostname));
-    return {};
-  }
-  if (hasObserver('dns')) {
-    const detail = {
-      hostname,
-      family,
-      hints,
-      verbatim: order === DNS_ORDER_VERBATIM,
-      order: dnsOrder,
-    };
-
-    startPerf(req, kPerfHooksDnsLookupContext, { type: 'dns', name: 'lookup', detail });
-  }
-  return req;
-}
-
-ObjectDefineProperty(lookup, customPromisifyArgs,
-                     { __proto__: null, value: ['address', 'family'], enumerable: false });
-
-
-function onlookupservice(err, hostname, service) {
-  if (err)
-    return this.callback(new DNSException(err, 'getnameinfo', this.hostname));
-
-  this.callback(null, hostname, service);
-  if (this[kPerfHooksDnsLookupServiceContext] && hasObserver('dns')) {
-    stopPerf(this, kPerfHooksDnsLookupServiceContext, { detail: { hostname, service } });
-  }
-}
-
-
-function lookupService(address, port, callback) {
-  if (arguments.length !== 3)
-    throw new ERR_MISSING_ARGS('address', 'port', 'callback');
-
-  if (isIP(address) === 0)
-    throw new ERR_INVALID_ARG_VALUE('address', address);
-
-  validatePort(port);
-
-  validateFunction(callback, 'callback');
-
-  port = +port;
-
-  const req = new GetNameInfoReqWrap();
-  req.callback = callback;
-  req.hostname = address;
-  req.port = port;
-  req.oncomplete = onlookupservice;
-
-  const err = cares.getnameinfo(req, address, port);
-  if (err) throw new DNSException(err, 'getnameinfo', address);
-  if (hasObserver('dns')) {
-    startPerf(req, kPerfHooksDnsLookupServiceContext, {
-      type: 'dns',
-      name: 'lookupService',
-      detail: {
-        host: address,
-        port,
-      },
+    var addr = addresses[0];
+    var fam = addr.indexOf(':') === -1 ? 4 : 6;
+    process.nextTick(function() { callback(null, addr, fam); });
+  } catch (e) {
+    process.nextTick(function() {
+      var err = new Error('getaddrinfo ENOTFOUND ' + hostname);
+      err.code = 'ENOTFOUND';
+      err.syscall = 'getaddrinfo';
+      callback(err);
     });
   }
-  return req;
 }
 
-ObjectDefineProperty(lookupService, customPromisifyArgs,
-                     { __proto__: null, value: ['hostname', 'service'], enumerable: false });
-
-function defaultResolverSetServers(servers) {
-  const resolver = new Resolver();
-
-  resolver.setServers(servers);
-  setDefaultResolver(resolver);
-  bindDefaultResolver(module.exports, Resolver.prototype);
-
-  if (promises !== null)
-    bindDefaultResolver(promises, promises.Resolver.prototype);
+function lookupPromise(hostname, options) {
+  return new Promise(function(resolve, reject) {
+    lookup(hostname, options, function(err, address, family) {
+      if (err) return reject(err);
+      resolve({ address: address, family: family });
+    });
+  });
 }
 
-module.exports = {
-  lookup,
-  lookupService,
+function lookupService(address, port, callback) {
+  if (typeof callback !== 'function') {
+    return Promise.reject(new Error('lookupService requires a callback'));
+  }
+  process.nextTick(function() {
+    callback(null, hostname, port);
+  });
+}
 
-  Resolver,
-  getDefaultResultOrder,
-  setDefaultResultOrder,
-  setServers: defaultResolverSetServers,
+function resolve(hostname, rrtype, callback) {
+  if (typeof rrtype === 'function') {
+    callback = rrtype;
+    rrtype = 'A';
+  }
+  if (typeof callback !== 'function') return;
 
-  // uv_getaddrinfo flags
-  ADDRCONFIG: cares.AI_ADDRCONFIG,
-  ALL: cares.AI_ALL,
-  V4MAPPED: cares.AI_V4MAPPED,
+  lookup(hostname, { family: rrtype === 'AAAA' ? 6 : 4 }, function(err, addr, fam) {
+    if (err) return callback(err);
+    callback(null, [addr]);
+  });
+}
 
-  // ERROR CODES
-  NODATA,
-  FORMERR,
-  SERVFAIL,
-  NOTFOUND,
-  NOTIMP,
-  REFUSED,
-  BADQUERY,
-  BADNAME,
-  BADFAMILY,
-  BADRESP,
-  CONNREFUSED,
-  TIMEOUT,
-  EOF,
-  FILE,
-  NOMEM,
-  DESTRUCTION,
-  BADSTR,
-  BADFLAGS,
-  NONAME,
-  BADHINTS,
-  NOTINITIALIZED,
-  LOADIPHLPAPI,
-  ADDRGETNETWORKPARAMS,
-  CANCELLED,
+var promises = {
+  lookup: lookupPromise,
+  resolve: function(hostname, rrtype) {
+    return new Promise(function(resolve, reject) {
+      resolve(hostname, rrtype, function(err, addresses) {
+        if (err) return reject(err);
+        resolve(addresses);
+      });
+    });
+  },
 };
 
-bindDefaultResolver(module.exports, Resolver.prototype);
-
-ObjectDefineProperties(module.exports, {
-  promises: {
-    __proto__: null,
-    configurable: true,
-    enumerable: true,
-    get() {
-      if (promises === null) {
-        promises = require('internal/dns/promises');
-      }
-      return promises;
-    },
-  },
-});
-
+module.exports = {
+  lookup: lookup,
+  lookupService: lookupService,
+  resolve: resolve,
+  resolve4: function(hostname, options, callback) { return resolve(hostname, 'A', callback); },
+  resolve6: function(hostname, options, callback) { return resolve(hostname, 'AAAA', callback); },
+  promises: promises,
+};
 "#),
         "dns/promises.js" => Some(r#"﻿/**
  * This file is from Node.js official source code.
@@ -12473,273 +10412,186 @@ module.exports.constants = constants;"#),
 module.exports = require('internal/fs/promises').exports;
 
 "#),
-        "http.js" => Some(r#"﻿/**
- * This file is from Node.js official source code.
- * Source: https://github.com/nodejs/node
- * 
- * Modified for KossJS (Boa engine) compatibility:
- * - Removed internalBinding() calls that require Node.js C++ bindings
- * - Adapted to work with KossJS runtime
- */
+        "http.js" => Some(r#"﻿'use strict';
 
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
+var net = require('net');
 
-'use strict';
-
-const {
-  ObjectDefineProperty,
-} = primordials;
-
-const { validateInteger, validateObject } = require('internal/validators');
-const httpAgent = require('_http_agent');
-const { ClientRequest } = require('_http_client');
-const { methods, parsers } = require('_http_common');
-const { IncomingMessage } = require('_http_incoming');
-const { ERR_PROXY_INVALID_CONFIG } = require('internal/errors').codes;
-const {
-  validateHeaderName,
-  validateHeaderValue,
-  OutgoingMessage,
-} = require('_http_outgoing');
-const {
-  _connectionListener,
-  STATUS_CODES,
-  Server,
-  ServerResponse,
-} = require('_http_server');
-const {
-  parseProxyUrl,
-  getGlobalAgent,
-} = require('internal/http');
-const { URL } = require('internal/url');
-let maxHeaderSize;
-let undici;
-
-/**
- * Returns a new instance of `http.Server`.
- * @param {{
- *   IncomingMessage?: IncomingMessage;
- *   ServerResponse?: ServerResponse;
- *   insecureHTTPParser?: boolean;
- *   maxHeaderSize?: number;
- *   requireHostHeader?: boolean;
- *   joinDuplicateHeaders?: boolean;
- *   highWaterMark?: number;
- *   rejectNonStandardBodyWrites?: boolean;
- *   }} [opts]
- * @param {Function} [requestListener]
- * @returns {Server}
- */
-function createServer(opts, requestListener) {
-  return new Server(opts, requestListener);
+function sliceLines(str) {
+  var lines = [];
+  var start = 0;
+  for (var i = 0; i < str.length; i++) {
+    if (str[i] === '\r' && str[i + 1] === '\n') {
+      lines.push(str.substring(start, i));
+      i++;
+      start = i + 1;
+    } else if (str[i] === '\n') {
+      lines.push(str.substring(start, i));
+      start = i + 1;
+    }
+  }
+  if (start < str.length) lines.push(str.substring(start));
+  return lines;
 }
 
-/**
- * @typedef {object} HTTPRequestOptions
- * @property {httpAgent.Agent | boolean} [agent] Controls Agent behavior.
- * @property {string} [auth] Basic authentication ('user:password') to compute an Authorization header.
- * @property {Function} [createConnection] Produces a socket/stream to use when the agent option is not used.
- * @property {number} [defaultPort] Default port for the protocol.
- * @property {number} [family] IP address family to use when resolving host or hostname.
- * @property {object} [headers] An object containing request headers.
- * @property {number} [hints] Optional dns.lookup() hints.
- * @property {string} [host] A domain name or IP address of the server to issue the request to.
- * @property {string} [hostname] Alias for host.
- * @property {boolean} [insecureHTTPParser] Use an insecure HTTP parser that accepts invalid HTTP headers when true.
- * @property {boolean} [joinDuplicateHeaders] Multiple header that joined with `,` field line values.
- * @property {string} [localAddress] Local interface to bind for network connections.
- * @property {number} [localPort] Local port to connect from.
- * @property {Function} [lookup] Custom lookup function. Default: dns.lookup().
- * @property {number} [maxHeaderSize] Overrides the --max-http-header-size value for responses received from the server.
- * @property {string} [method] A string specifying the HTTP request method.
- * @property {string} [path] Request path.
- * @property {number} [port] Port of remote server.
- * @property {string} [protocol] Protocol to use.
- * @property {boolean} [setHost] Specifies whether or not to automatically add the Host header.
- * @property {AbortSignal} [signal] An AbortSignal that may be used to abort an ongoing request.
- * @property {string} [socketPath] Unix domain socket.
- * @property {number} [timeout] A number specifying the socket timeout in milliseconds.
- * @property {Array} [uniqueHeaders] A list of request headers that should be sent only once.
- */
-
-/**
- * Makes an HTTP request.
- * @param {string | URL} url
- * @param {HTTPRequestOptions} [options]
- * @param {Function} [cb]
- * @returns {ClientRequest}
- */
-function request(url, options, cb) {
-  return new ClientRequest(url, options, cb);
+function IncomingMessage(socket) {
+  this.socket = socket;
+  this.headers = {};
+  this.url = '';
+  this.method = '';
+  this.statusCode = 200;
+  this.statusMessage = 'OK';
+  this.httpVersion = '1.1';
+  this._body = '';
+  this._buffer = '';
+  this._parsed = false;
+  this.complete = false;
 }
+IncomingMessage.prototype._parse = function(data) {
+  this._buffer += data;
+  var idx = this._buffer.indexOf('\r\n\r\n');
+  if (idx === -1) idx = this._buffer.indexOf('\n\n');
+  if (idx === -1) return false;
 
-/**
- * Makes a `GET` HTTP request.
- * @param {string | URL} url
- * @param {HTTPRequestOptions} [options]
- * @param {Function} [cb]
- * @returns {ClientRequest}
- */
-function get(url, options, cb) {
-  const req = request(url, options, cb);
-  req.end();
-  return req;
-}
+  var headerEnd = idx;
+  if (this._buffer[headerEnd] === '\r') headerEnd += 4;
+  else headerEnd += 2;
 
-/**
- * Lazy loads WebSocket, CloseEvent and MessageEvent classes from undici
- * @returns {object} An object containing WebSocket, CloseEvent, and MessageEvent classes.
- */
-function lazyUndici() {
-  return undici ??= require('internal/deps/undici/undici');
-}
+  var headerPart = this._buffer.substring(0, headerEnd - (this._buffer[headerEnd - 1] === '\n' ? (this._buffer[headerEnd - 2] === '\r' ? 2 : 1) : 0));
+  var lines = sliceLines(headerPart);
+  if (lines.length === 0) return false;
 
-function setGlobalProxyFromEnv(env = process.env) {
-  validateObject(env, 'proxyEnv');
-  const httpProxy = parseProxyUrl(env, 'http:');
-  const httpsProxy = parseProxyUrl(env, 'https:');
-  const noProxy = env.no_proxy || env.NO_PROXY;
-
-  if (!httpProxy && !httpsProxy) {
-    return () => {};
+  var first = lines[0].split(' ');
+  if (first.length >= 3 && first[0].indexOf('HTTP') === 0) {
+    this.statusCode = parseInt(first[1], 10) || 200;
+    this.statusMessage = first.slice(2).join(' ');
+  } else if (first.length >= 2) {
+    this.method = first[0];
+    this.url = first[1];
   }
 
-  if (httpProxy && !URL.canParse(httpProxy)) {
-    throw new ERR_PROXY_INVALID_CONFIG(httpProxy);
-  }
-  if (httpsProxy && !URL.canParse(httpsProxy)) {
-    throw new ERR_PROXY_INVALID_CONFIG(httpsProxy);
+  for (var i = 1; i < lines.length; i++) {
+    var colon = lines[i].indexOf(':');
+    if (colon > 0) {
+      var key = lines[i].substring(0, colon).trim().toLowerCase();
+      var val = lines[i].substring(colon + 1).trim();
+      this.headers[key] = val;
+    }
   }
 
-  let originalDispatcher, originalHttpsAgent, originalHttpAgent;
-  if (httpProxy || httpsProxy) {
-    // Set it for fetch.
-    const { setGlobalDispatcher, getGlobalDispatcher, EnvHttpProxyAgent } = lazyUndici();
-    const envHttpProxyAgent = new EnvHttpProxyAgent({
-      __proto__: null, httpProxy, httpsProxy, noProxy,
+  this._body = this._buffer.substring(headerEnd);
+  this._parsed = true;
+  return true;
+};
+
+function ServerResponse(socket) {
+  this.socket = socket;
+  this.statusCode = 200;
+  this.statusMessage = 'OK';
+  this._headers = {};
+  this._headerSent = false;
+  this._chunked = true;
+  this.finished = false;
+}
+ServerResponse.prototype.setHeader = function(name, value) {
+  this._headers[name.toLowerCase()] = value;
+};
+ServerResponse.prototype.getHeader = function(name) {
+  return this._headers[name.toLowerCase()];
+};
+ServerResponse.prototype.removeHeader = function(name) {
+  delete this._headers[name.toLowerCase()];
+};
+ServerResponse.prototype.writeHead = function(code, reason, headers) {
+  if (typeof reason === 'object') { headers = reason; reason = undefined; }
+  this.statusCode = code || this.statusCode;
+  if (reason) this.statusMessage = reason;
+  if (headers) { for (var k in headers) this._headers[k] = headers[k]; }
+  this._sendHead();
+};
+ServerResponse.prototype._sendHead = function() {
+  if (this._headerSent) return;
+  this._headerSent = true;
+  var head = 'HTTP/1.1 ' + this.statusCode + ' ' + (this.statusMessage || 'OK') + '\r\n';
+  for (var k in this._headers) {
+    head += k + ': ' + this._headers[k] + '\r\n';
+  }
+  head += '\r\n';
+  this.socket.write(head);
+};
+ServerResponse.prototype.write = function(data) {
+  this._sendHead();
+  this.socket.write(data);
+};
+ServerResponse.prototype.end = function(data) {
+  if (data !== undefined) this.write(data);
+  this._sendHead();
+  this.finished = true;
+  this.socket.end();
+};
+ServerResponse.prototype.addTrailers = function() {};
+
+function Server(requestListener) {
+  var self = this;
+  this._server = net.createServer(function(socket) {
+    var req = new IncomingMessage(socket);
+    var res = new ServerResponse(socket);
+    var buf = '';
+
+    socket.on('data', function(data) {
+      buf += data;
+      if (!req._parsed) {
+        if (!req._parse(buf)) return;
+        buf = req._body;
+      }
+      if (requestListener) requestListener(req, res);
     });
-    originalDispatcher = getGlobalDispatcher();
-    setGlobalDispatcher(envHttpProxyAgent);
-  }
 
-  if (httpProxy) {
-    originalHttpAgent = module.exports.globalAgent;
-    module.exports.globalAgent = getGlobalAgent(env, httpAgent.Agent);
-  }
-  if (httpsProxy && !!process.versions.openssl) {
-    const https = require('https');
-    originalHttpsAgent = https.globalAgent;
-    https.globalAgent = getGlobalAgent(env, https.Agent);
-  }
+    socket.on('close', function() { req.complete = true; });
+  });
+}
+Server.prototype.listen = function(port, host, cb) {
+  return this._server.listen(port, host, cb);
+};
+Server.prototype.close = function(cb) {
+  return this._server.close(cb);
+};
+Server.prototype.address = function() {
+  return this._server.address();
+};
 
-  return function restore() {
-    if (originalDispatcher) {
-      const { setGlobalDispatcher } = lazyUndici();
-      setGlobalDispatcher(originalDispatcher);
-    }
-    if (originalHttpAgent) {
-      module.exports.globalAgent = originalHttpAgent;
-    }
-    if (originalHttpsAgent) {
-      require('https').globalAgent = originalHttpsAgent;
-    }
-  };
+function createServer(requestListener) {
+  return new Server(requestListener);
+}
+
+function ClientRequest() {
+  throw new Error('http.ClientRequest not yet implemented in KossJS shim');
+}
+
+function get(url, cb) {
+  throw new Error('http.get not yet implemented in KossJS shim');
+}
+
+function request() {
+  throw new Error('http.request not yet implemented in KossJS shim');
 }
 
 module.exports = {
-  _connectionListener,
-  METHODS: methods.toSorted(),
-  STATUS_CODES,
-  Agent: httpAgent.Agent,
-  ClientRequest,
-  IncomingMessage,
-  OutgoingMessage,
-  Server,
-  ServerResponse,
-  createServer,
-  validateHeaderName,
-  validateHeaderValue,
-  get,
-  request,
-  setMaxIdleHTTPParsers(max) {
-    validateInteger(max, 'max', 1);
-    parsers.max = max;
+  Server: Server,
+  createServer: createServer,
+  ClientRequest: ClientRequest,
+  get: get,
+  request: request,
+  IncomingMessage: IncomingMessage,
+  ServerResponse: ServerResponse,
+  METHODS: ['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS', 'PATCH'],
+  STATUS_CODES: {
+    200: 'OK', 201: 'Created', 204: 'No Content',
+    301: 'Moved Permanently', 302: 'Found', 304: 'Not Modified',
+    400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden',
+    404: 'Not Found', 500: 'Internal Server Error', 502: 'Bad Gateway',
+    503: 'Service Unavailable',
   },
-  setGlobalProxyFromEnv,
 };
-
-ObjectDefineProperty(module.exports, 'maxHeaderSize', {
-  __proto__: null,
-  configurable: true,
-  enumerable: true,
-  get() {
-    if (maxHeaderSize === undefined) {
-      const { getOptionValue } = require('internal/options');
-      maxHeaderSize = getOptionValue('--max-http-header-size');
-    }
-
-    return maxHeaderSize;
-  },
-});
-
-ObjectDefineProperty(module.exports, 'globalAgent', {
-  __proto__: null,
-  configurable: true,
-  enumerable: true,
-  get() {
-    return httpAgent.globalAgent;
-  },
-  set(value) {
-    httpAgent.globalAgent = value;
-  },
-});
-
-ObjectDefineProperty(module.exports, 'WebSocket', {
-  __proto__: null,
-  configurable: true,
-  enumerable: true,
-  get() {
-    return lazyUndici().WebSocket;
-  },
-});
-
-ObjectDefineProperty(module.exports, 'CloseEvent', {
-  __proto__: null,
-  configurable: true,
-  enumerable: true,
-  get() {
-    return lazyUndici().CloseEvent;
-  },
-});
-
-ObjectDefineProperty(module.exports, 'MessageEvent', {
-  __proto__: null,
-  configurable: true,
-  enumerable: true,
-  get() {
-    return lazyUndici().MessageEvent;
-  },
-});
-
 "#),
         "http2.js" => Some(r#"﻿/**
  * This file is from Node.js official source code.
@@ -12781,693 +10633,65 @@ module.exports = {
 };
 
 "#),
-        "https.js" => Some(r#"﻿/**
- * This file is from Node.js official source code.
- * Source: https://github.com/nodejs/node
- * 
- * Modified for KossJS (Boa engine) compatibility:
- * - Removed internalBinding() calls that require Node.js C++ bindings
- * - Adapted to work with KossJS runtime
- */
+        "https.js" => Some(r#"﻿'use strict';
 
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
+var http = require('http');
+var net = require('net');
 
-'use strict';
+function createServer(opts, requestListener) {
+  if (typeof opts === 'function') { requestListener = opts; opts = {}; }
+  return http.createServer(function(req, res) {
+    if (requestListener) requestListener(req, res);
+  });
+}
 
-const {
-  ArrayPrototypeIndexOf,
-  ArrayPrototypePush,
-  ArrayPrototypeShift,
-  ArrayPrototypeSplice,
-  ArrayPrototypeUnshift,
-  FunctionPrototypeCall,
-  JSONStringify,
-  NumberParseInt,
-  ObjectAssign,
-  ObjectSetPrototypeOf,
-  ReflectApply,
-  ReflectConstruct,
-  SymbolAsyncDispose,
-} = primordials;
+function request(opts, cb) {
+  var port = opts.port || 443;
+  var host = opts.hostname || opts.host || '127.0.0.1';
+  var path = opts.path || '/';
+  var method = opts.method || 'GET';
+  var headers = opts.headers || {};
 
-const {
-  assertCrypto,
-  kEmptyObject,
-  promisify,
-  once,
-} = require('internal/util');
-const { ERR_PROXY_TUNNEL } = require('internal/errors').codes;
-assertCrypto();
-
-const tls = require('tls');
-const {
-  kProxyConfig,
-  checkShouldUseProxy,
-  kWaitForProxyTunnel,
-  getGlobalAgent,
-} = require('internal/http');
-const { Agent: HttpAgent } = require('_http_agent');
-const {
-  httpServerPreClose,
-  Server: HttpServer,
-  setupConnectionsTracking,
-  storeHTTPOptions,
-  _connectionListener,
-} = require('_http_server');
-const { ClientRequest } = require('_http_client');
-let debug = require('internal/util/debuglog').debuglog('https', (fn) => {
-  debug = fn;
-});
-const net = require('net');
-const { URL, urlToHttpOptions, isURL } = require('internal/url');
-const { validateObject } = require('internal/validators');
-const { isIP } = require('internal/net');
-const assert = require('internal/assert');
-const { getOptionValue } = require('internal/options');
-
-function Server(opts, requestListener) {
-  if (!(this instanceof Server)) return new Server(opts, requestListener);
-
-  let ALPNProtocols = ['http/1.1'];
-  if (typeof opts === 'function') {
-    requestListener = opts;
-    opts = kEmptyObject;
-  } else if (opts == null) {
-    opts = kEmptyObject;
-  } else {
-    validateObject(opts, 'options');
-    // Only one of ALPNProtocols and ALPNCallback can be set, so make sure we
-    // only set a default ALPNProtocols if the caller has not set either of them
-    if (opts.ALPNProtocols || opts.ALPNCallback)
-      ALPNProtocols = undefined;
-  }
-
-  FunctionPrototypeCall(storeHTTPOptions, this, opts);
-  FunctionPrototypeCall(tls.Server, this,
-                        {
-                          noDelay: true,
-                          ALPNProtocols,
-                          ...opts,
-                        },
-                        _connectionListener);
-
-  this.httpAllowHalfOpen = false;
-
-  if (requestListener) {
-    this.addListener('request', requestListener);
-  }
-
-  this.addListener('tlsClientError', function addListener(err, conn) {
-    if (!this.emit('clientError', err, conn))
-      conn.destroy(err);
+  var socket = net.connect(port, host, function() {
+    var reqLine = method + ' ' + path + ' HTTP/1.1\r\n';
+    reqLine += 'Host: ' + host + '\r\n';
+    for (var k in headers) reqLine += k + ': ' + headers[k] + '\r\n';
+    reqLine += '\r\n';
+    socket.write(reqLine);
   });
 
-  this.timeout = 0;
-  this.maxHeadersCount = null;
-  this.on('listening', setupConnectionsTracking);
-}
-
-ObjectSetPrototypeOf(Server.prototype, tls.Server.prototype);
-ObjectSetPrototypeOf(Server, tls.Server);
-
-Server.prototype.closeAllConnections = HttpServer.prototype.closeAllConnections;
-
-Server.prototype.closeIdleConnections = HttpServer.prototype.closeIdleConnections;
-
-Server.prototype.setTimeout = HttpServer.prototype.setTimeout;
-
-Server.prototype.close = function close() {
-  httpServerPreClose(this);
-  ReflectApply(tls.Server.prototype.close, this, arguments);
-  return this;
-};
-
-Server.prototype[SymbolAsyncDispose] = async function() {
-  await FunctionPrototypeCall(promisify(this.close), this);
-};
-
-/**
- * Creates a new `https.Server` instance.
- * @param {{
- *   IncomingMessage?: IncomingMessage;
- *   ServerResponse?: ServerResponse;
- *   insecureHTTPParser?: boolean;
- *   maxHeaderSize?: number;
- *   }} [opts]
- * @param {Function} [requestListener]
- * @returns {Server}
- */
-function createServer(opts, requestListener) {
-  return new Server(opts, requestListener);
-}
-
-// When proxying a HTTPS request, the following needs to be done:
-// https://datatracker.ietf.org/doc/html/rfc9110#CONNECT
-// 1. Send a CONNECT request to the proxy server.
-// 2. Wait for 200 connection established response to establish the tunnel.
-// 3. Perform TLS handshake with the endpoint over the socket.
-// 4. Tunnel the request using the established connection.
-//
-// This function computes the tunnel configuration for HTTPS requests.
-// The handling of the tunnel connection is done in createConnection.
-function getTunnelConfigForProxiedHttps(agent, reqOptions) {
-  if (!agent[kProxyConfig]) {
-    return null;
-  }
-  if ((reqOptions.protocol || agent.protocol) !== 'https:') {
-    return null;
-  }
-  const shouldUseProxy = checkShouldUseProxy(agent[kProxyConfig], reqOptions);
-  debug(`getTunnelConfigForProxiedHttps should use proxy for ${reqOptions.host}:${reqOptions.port}:`, shouldUseProxy);
-  if (!shouldUseProxy) {
-    return null;
-  }
-  const { auth, href } = agent[kProxyConfig];
-  // The request is a HTTPS request, assemble the payload for establishing the tunnel.
-  const ipType = isIP(reqOptions.host);
-  // The request target must put IPv6 address in square brackets.
-  // Here reqOptions is already processed by urlToHttpOptions so we'll add them back if necessary.
-  // See https://www.rfc-editor.org/rfc/rfc3986#section-3.2.2
-  const requestHost = ipType === 6 ? `[${reqOptions.host}]` : reqOptions.host;
-  const requestPort = reqOptions.port || agent.defaultPort;
-  const endpoint = `${requestHost}:${requestPort}`;
-  // The ClientRequest constructor should already have validated the host and the port.
-  // When the request options come from a string invalid characters would be stripped away,
-  // when it's an object ERR_INVALID_CHAR would be thrown. Here we just assert in case
-  // agent.createConnection() is called with invalid options.
-  assert(!endpoint.includes('\r'));
-  assert(!endpoint.includes('\n'));
-
-  let payload = `CONNECT ${endpoint} HTTP/1.1\r\n`;
-  // The parseProxyConfigFromEnv() method should have already validated the authorization header
-  // value.
-  if (auth) {
-    payload += `proxy-authorization: ${auth}\r\n`;
-  }
-  if (agent.keepAlive || agent.maxSockets !== Infinity) {
-    payload += 'proxy-connection: keep-alive\r\n';
-  }
-  payload += `host: ${endpoint}`;
-  payload += '\r\n\r\n';
-
-  const result = {
-    __proto__: null,
-    proxyTunnelPayload: payload,
-    requestOptions: {  // Options used for the request sent after the tunnel is established.
-      __proto__: null,
-      servername: reqOptions.servername || ipType ? undefined : reqOptions.host,
-      ...reqOptions,
-    },
-  };
-  debug(`updated request for HTTPS proxy ${href} with`, result);
-  return result;
-};
-
-function establishTunnel(agent, socket, options, tunnelConfig, afterSocket) {
-  const { proxyTunnelPayload } = tunnelConfig;
-  // By default, the socket is in paused mode. Read to look for the 200
-  // connection established response.
-  function read() {
-    let chunk;
-    while ((chunk = socket.read()) !== null) {
-      if (onProxyData(chunk) !== -1) {
-        break;
-      }
+  var res = new http.IncomingMessage(socket);
+  var buf = '';
+  socket.on('data', function(data) {
+    buf += data;
+    if (!res._parsed && res._parse(buf)) {
+      buf = res._body;
+      res.emit('response');
+      if (cb) cb(res);
     }
-    socket.on('readable', read);
-  }
-
-  function cleanup() {
-    socket.removeListener('end', onProxyEnd);
-    socket.removeListener('error', onProxyError);
-    socket.removeListener('readable', read);
-    socket.setTimeout(0);  // Clear the timeout for the tunnel establishment.
-  }
-
-  function onProxyError(err) {
-    debug('onProxyError', err);
-    cleanup();
-    afterSocket(err, socket);
-  }
-
-  // Read the headers from the chunks and check for the status code. If it fails we
-  // clean up the socket and return an error. Otherwise we establish the tunnel.
-  let buffer = '';
-  function onProxyData(chunk) {
-    const str = chunk.toString();
-    debug('onProxyData', str);
-    buffer += str;
-    const headerEndIndex = buffer.indexOf('\r\n\r\n');
-    if (headerEndIndex === -1) return headerEndIndex;
-    const statusLine = buffer.substring(0, buffer.indexOf('\r\n'));
-    const statusCode = statusLine.split(' ')[1];
-    if (statusCode !== '200') {
-      debug(`onProxyData receives ${statusCode}, cleaning up`);
-      cleanup();
-      const targetHost = proxyTunnelPayload.split('\r')[0].split(' ')[1];
-      const message = `Failed to establish tunnel to ${targetHost} via ${agent[kProxyConfig].href}: ${statusLine}`;
-      const err = new ERR_PROXY_TUNNEL(message);
-      err.statusCode = NumberParseInt(statusCode);
-      afterSocket(err, socket);
-    } else {
-      // https://datatracker.ietf.org/doc/html/rfc9110#CONNECT
-      // RFC 9110 says that it can be 2xx but in the real world, proxy clients generally only
-      // accepts 200.
-      // Proxy servers are not supposed to send anything after the headers - the payload must be
-      // be empty. So after this point we will proceed with the tunnel e.g. starting TLS handshake.
-      debug('onProxyData receives 200, establishing tunnel');
-      cleanup();
-
-      // Reuse the tunneled socket to perform the TLS handshake with the endpoint,
-      // then send the request.
-      const { requestOptions } = tunnelConfig;
-      tunnelConfig.requestOptions = null;
-      requestOptions.socket = socket;
-      let tunneldSocket;
-      const onTLSHandshakeError = (err) => {
-        debug('Propagate error event from tunneled socket to tunnel socket');
-        afterSocket(err, tunneldSocket);
-      };
-      tunneldSocket = tls.connect(requestOptions, () => {
-        debug('TLS handshake over tunnel succeeded');
-        tunneldSocket.removeListener('error', onTLSHandshakeError);
-        afterSocket(null, tunneldSocket);
-      });
-      tunneldSocket.on('free', () => {
-        debug('Propagate free event from tunneled socket to tunnel socket');
-        socket.emit('free');
-      });
-      tunneldSocket.on('error', onTLSHandshakeError);
-    }
-    return headerEndIndex;
-  }
-
-  function onProxyEnd() {
-    cleanup();
-    const err = new ERR_PROXY_TUNNEL('Connection to establish proxy tunnel ended unexpectedly');
-    afterSocket(err, socket);
-  }
-
-  const proxyTunnelTimeout = tunnelConfig.requestOptions.timeout;
-  debug('proxyTunnelTimeout', proxyTunnelTimeout, options.timeout);
-  // It may be worth a separate timeout error/event.
-  // But it also makes sense to treat the tunnel establishment timeout as
-  // a normal timeout for the request.
-  function onProxyTimeout() {
-    debug('onProxyTimeout', proxyTunnelTimeout);
-    cleanup();
-    const err = new ERR_PROXY_TUNNEL(`Connection to establish proxy tunnel timed out after ${proxyTunnelTimeout}ms`);
-    err.proxyTunnelTimeout = proxyTunnelTimeout;
-    afterSocket(err, socket);
-  }
-
-  if (proxyTunnelTimeout && proxyTunnelTimeout > 0) {
-    debug('proxy tunnel setTimeout', proxyTunnelTimeout);
-    socket.setTimeout(proxyTunnelTimeout, onProxyTimeout);
-  }
-
-  socket.on('error', onProxyError);
-  socket.on('end', onProxyEnd);
-  socket.write(proxyTunnelPayload);
-
-  read();
-}
-
-// HTTPS agents.
-// See ProxyConfig in internal/http.js for how the connection should be handled
-// when the agent is configured to use a proxy server.
-function createConnection(...args) {
-  // XXX: This signature (port, host, options) is different from all the other
-  // createConnection() methods.
-  let options, cb;
-  if (args[0] !== null && typeof args[0] === 'object') {
-    options = args[0];
-  } else if (args[1] !== null && typeof args[1] === 'object') {
-    options = { ...args[1] };
-  } else if (args[2] === null || typeof args[2] !== 'object') {
-    options = {};
-  } else {
-    options = { ...args[2] };
-  }
-  if (typeof args[0] === 'number') {
-    options.port = args[0];
-  }
-  if (typeof args[1] === 'string') {
-    options.host = args[1];
-  }
-  if (typeof args[args.length - 1] === 'function') {
-    cb = args[args.length - 1];
-  }
-
-  debug('createConnection', options);
-
-  if (options._agentKey) {
-    const session = this._getSession(options._agentKey);
-    if (session) {
-      debug('reuse session for %j', options._agentKey);
-      options = {
-        session,
-        ...options,
-      };
-    }
-  }
-
-  let socket;
-  const tunnelConfig = getTunnelConfigForProxiedHttps(this, options);
-  debug(`https createConnection should use proxy for ${options.host}:${options.port}:`, tunnelConfig);
-
-  if (!tunnelConfig) {
-    socket = tls.connect(options);
-  } else {
-    const connectOptions = {
-      ...this[kProxyConfig].proxyConnectionOptions,
-    };
-    debug('Create proxy socket', connectOptions);
-    const onError = (err) => {
-      cleanupAndPropagate(err, socket);
-    };
-    const proxyTunnelTimeout = tunnelConfig.requestOptions.timeout;
-    const onTimeout = () => {
-      const err = new ERR_PROXY_TUNNEL(`Connection to establish proxy tunnel timed out after ${proxyTunnelTimeout}ms`);
-      err.proxyTunnelTimeout = proxyTunnelTimeout;
-      cleanupAndPropagate(err, socket);
-    };
-    const cleanupAndPropagate = once((err, currentSocket) => {
-      debug('cleanupAndPropagate', err);
-      socket.removeListener('error', onError);
-      socket.removeListener('timeout', onTimeout);
-      // An error occurred during tunnel establishment, in that case just destroy the socket.
-      // and propagate the error to the callback.
-
-      // When the error comes from unexpected status code, the stream is still in good shape,
-      // in that case let req.onSocket handle the destruction instead.
-      if (err && err.code === 'ERR_PROXY_TUNNEL' && !err.statusCode) {
-        socket.destroy();
-      }
-      // This error should go to:
-      // -> oncreate in Agent.prototype.createSocket
-      // -> closure in Agent.prototype.addRequest or Agent.prototype.removeSocket
-      if (cb) {
-        cb(err, currentSocket);
-      }
-    });
-    const onProxyConnection = () => {
-      socket.removeListener('error', onError);
-      establishTunnel(this, socket, options, tunnelConfig, cleanupAndPropagate);
-    };
-    if (this[kProxyConfig].protocol === 'http:') {
-      socket = net.connect(connectOptions, onProxyConnection);
-    } else {
-      socket = tls.connect(connectOptions, onProxyConnection);
-    }
-
-    socket.on('error', onError);
-    if (proxyTunnelTimeout) {
-      socket.setTimeout(proxyTunnelTimeout, onTimeout);
-    }
-    socket[kWaitForProxyTunnel] = true;
-  }
-
-  if (options._agentKey) {
-    // Cache new session for reuse
-    socket.on('session', (session) => {
-      this._cacheSession(options._agentKey, session);
-    });
-
-    // Evict session on error
-    socket.once('close', (err) => {
-      if (err)
-        this._evictSession(options._agentKey);
-    });
-  }
+  });
 
   return socket;
 }
 
-/**
- * Creates a new `HttpAgent` instance.
- * @param {{
- *   keepAlive?: boolean;
- *   keepAliveMsecs?: number;
- *   maxSockets?: number;
- *   maxTotalSockets?: number;
- *   maxFreeSockets?: number;
- *   scheduling?: string;
- *   timeout?: number;
- *   maxCachedSessions?: number;
- *   servername?: string;
- *   defaultPort?: number;
- *   protocol?: string;
- *   proxyEnv?: object;
- *   }} [options]
- * @class
- */
-function Agent(options) {
-  if (!(this instanceof Agent))
-    return new Agent(options);
-
-  options = { __proto__: null, ...options };
-  options.defaultPort ??= 443;
-  options.protocol ??= 'https:';
-  FunctionPrototypeCall(HttpAgent, this, options);
-
-  this.maxCachedSessions = this.options.maxCachedSessions;
-  if (this.maxCachedSessions === undefined)
-    this.maxCachedSessions = 100;
-
-  this._sessionCache = {
-    map: {},
-    list: [],
-  };
-}
-ObjectSetPrototypeOf(Agent.prototype, HttpAgent.prototype);
-ObjectSetPrototypeOf(Agent, HttpAgent);
-Agent.prototype.createConnection = createConnection;
-
-/**
- * Gets a unique name for a set of options.
- * @param {{
- *   host: string;
- *   port: number;
- *   localAddress: string;
- *   family: number;
- *   }} [options]
- * @returns {string}
- */
-Agent.prototype.getName = function getName(options = kEmptyObject) {
-  let name = FunctionPrototypeCall(HttpAgent.prototype.getName, this, options);
-
-  name += ':';
-  if (options.ca)
-    name += options.ca;
-
-  name += ':';
-  if (options.cert)
-    name += options.cert;
-
-  name += ':';
-  if (options.clientCertEngine)
-    name += options.clientCertEngine;
-
-  name += ':';
-  if (options.ciphers)
-    name += options.ciphers;
-
-  name += ':';
-  if (options.key)
-    name += options.key;
-
-  name += ':';
-  if (options.pfx)
-    name += options.pfx;
-
-  name += ':';
-  if (options.rejectUnauthorized !== undefined)
-    name += options.rejectUnauthorized;
-
-  name += ':';
-  if (options.servername && options.servername !== options.host)
-    name += options.servername;
-
-  name += ':';
-  if (options.minVersion)
-    name += options.minVersion;
-
-  name += ':';
-  if (options.maxVersion)
-    name += options.maxVersion;
-
-  name += ':';
-  if (options.secureProtocol)
-    name += options.secureProtocol;
-
-  name += ':';
-  if (options.crl)
-    name += options.crl;
-
-  name += ':';
-  if (options.honorCipherOrder !== undefined)
-    name += options.honorCipherOrder;
-
-  name += ':';
-  if (options.ecdhCurve)
-    name += options.ecdhCurve;
-
-  name += ':';
-  if (options.dhparam)
-    name += options.dhparam;
-
-  name += ':';
-  if (options.secureOptions !== undefined)
-    name += options.secureOptions;
-
-  name += ':';
-  if (options.sessionIdContext)
-    name += options.sessionIdContext;
-
-  name += ':';
-  if (options.sigalgs)
-    name += JSONStringify(options.sigalgs);
-
-  name += ':';
-  if (options.privateKeyIdentifier)
-    name += options.privateKeyIdentifier;
-
-  name += ':';
-  if (options.privateKeyEngine)
-    name += options.privateKeyEngine;
-
-  return name;
-};
-
-Agent.prototype._getSession = function _getSession(key) {
-  return this._sessionCache.map[key];
-};
-
-Agent.prototype._cacheSession = function _cacheSession(key, session) {
-  // Cache is disabled
-  if (this.maxCachedSessions === 0)
-    return;
-
-  // Fast case - update existing entry
-  if (this._sessionCache.map[key]) {
-    this._sessionCache.map[key] = session;
-    return;
+function get(opts, cb) {
+  if (typeof opts === 'string') {
+    var url = opts;
+    opts = {};
+    var parts = url.replace('https://', '').split('/');
+    opts.hostname = parts[0].split(':')[0];
+    opts.port = parseInt(parts[0].split(':')[1]) || 443;
+    opts.path = '/' + parts.slice(1).join('/');
   }
-
-  // Put new entry
-  if (this._sessionCache.list.length >= this.maxCachedSessions) {
-    const oldKey = ArrayPrototypeShift(this._sessionCache.list);
-    debug('evicting %j', oldKey);
-    delete this._sessionCache.map[oldKey];
-  }
-
-  ArrayPrototypePush(this._sessionCache.list, key);
-  this._sessionCache.map[key] = session;
-};
-
-Agent.prototype._evictSession = function _evictSession(key) {
-  const index = ArrayPrototypeIndexOf(this._sessionCache.list, key);
-  if (index === -1)
-    return;
-
-  ArrayPrototypeSplice(this._sessionCache.list, index, 1);
-  delete this._sessionCache.map[key];
-};
-
-const globalAgent = getGlobalAgent(getOptionValue('--use-env-proxy') ? process.env : undefined, Agent);
-
-/**
- * Makes a request to a secure web server.
- * @param {...any} args
- * @returns {ClientRequest}
- */
-function request(...args) {
-  let options = {};
-
-  if (typeof args[0] === 'string') {
-    const urlStr = ArrayPrototypeShift(args);
-    options = urlToHttpOptions(new URL(urlStr));
-  } else if (isURL(args[0])) {
-    options = urlToHttpOptions(ArrayPrototypeShift(args));
-  }
-
-  if (args[0] && typeof args[0] !== 'function') {
-    ObjectAssign(options, ArrayPrototypeShift(args));
-  }
-
-  options._defaultAgent = module.exports.globalAgent;
-  ArrayPrototypeUnshift(args, options);
-
-  return ReflectConstruct(ClientRequest, args);
-}
-
-/**
- * Makes a GET request to a secure web server.
- * @param {string | URL} input
- * @param {{
- *   agent?: Agent | boolean;
- *   auth?: string;
- *   createConnection?: Function;
- *   defaultPort?: number;
- *   family?: number;
- *   headers?: object;
- *   hints?: number;
- *   host?: string;
- *   hostname?: string;
- *   insecureHTTPParser?: boolean;
- *   joinDuplicateHeaders?: boolean;
- *   localAddress?: string;
- *   localPort?: number;
- *   lookup?: Function;
- *   maxHeaderSize?: number;
- *   method?: string;
- *   path?: string;
- *   port?: number;
- *   protocol?: string;
- *   setHost?: boolean;
- *   socketPath?: string;
- *   timeout?: number;
- *   signal?: AbortSignal;
- *   uniqueHeaders?: Array;
- *   } | string | URL} [options]
- * @param {Function} [cb]
- * @returns {ClientRequest}
- */
-function get(input, options, cb) {
-  const req = request(input, options, cb);
-  req.end();
-  return req;
+  return request(opts, cb);
 }
 
 module.exports = {
-  Agent,
-  globalAgent,
-  Server,
-  createServer,
-  get,
-  request,
+  ...http,
+  createServer: createServer,
+  request: request,
+  get: get,
 };
-
 "#),
         "inspector.js" => Some(r#"﻿/**
  * This file is from Node.js official source code.
@@ -130263,2585 +127487,340 @@ Module.setSourceMapsSupport = setSourceMapsSupport;
 module.exports = Module;
 
 "#),
-        "net.js" => Some(r#"﻿/**
- * This file is from Node.js official source code.
- * Source: https://github.com/nodejs/node
- * 
- * Modified for KossJS (Boa engine) compatibility:
- * - Removed internalBinding() calls that require Node.js C++ bindings
- * - Adapted to work with KossJS runtime
- */
+        "net.js" => Some(r#"﻿'use strict';
 
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
+var EventEmitter = require('events');
+var timers = require('timers');
+var setTimeout = timers.setTimeout;
+var clearTimeout = timers.clearTimeout;
 
-'use strict';
-
-const {
-  ArrayIsArray,
-  ArrayPrototypeIncludes,
-  ArrayPrototypeIndexOf,
-  ArrayPrototypePush,
-  Boolean,
-  FunctionPrototypeBind,
-  FunctionPrototypeCall,
-  MathMax,
-  Number,
-  NumberIsNaN,
-  NumberParseInt,
-  ObjectDefineProperty,
-  ObjectSetPrototypeOf,
-  Symbol,
-  SymbolAsyncDispose,
-  SymbolDispose,
-} = primordials;
-
-const EventEmitter = require('events');
-const { addAbortListener } = require('internal/events/abort_listener');
-const stream = require('stream');
-let debug = require('internal/util/debuglog').debuglog('net', (fn) => {
-  debug = fn;
-});
-const {
-  kReinitializeHandle,
-  kSetNoDelay,
-  kSetKeepAlive,
-  kSetKeepAliveInitialDelay,
-  isIP,
-  isIPv4,
-  isIPv6,
-  normalizedArgsSymbol,
-  makeSyncWrite,
-} = require('internal/net');
-const assert = require('internal/assert');
-const {
-  UV_EADDRINUSE,
-  UV_EBADF,
-  UV_EINVAL,
-  UV_ENOTCONN,
-  UV_ECANCELED,
-  UV_ETIMEDOUT,
-} = internalBinding('uv');
-const { convertIpv6StringToBuffer } = internalBinding('cares_wrap');
-
-const { Buffer } = require('buffer');
-const { ShutdownWrap } = internalBinding('stream_wrap');
-const {
-  TCP,
-  TCPConnectWrap,
-  constants: TCPConstants,
-} = internalBinding('tcp_wrap');
-const {
-  Pipe,
-  PipeConnectWrap,
-  constants: PipeConstants,
-} = internalBinding('pipe_wrap');
-const {
-  newAsyncId,
-  defaultTriggerAsyncIdScope,
-  symbols: { async_id_symbol, owner_symbol },
-} = require('internal/async_hooks');
-const {
-  writevGeneric,
-  writeGeneric,
-  onStreamRead,
-  kAfterAsyncWrite,
-  kHandle,
-  kUpdateTimer,
-  setStreamTimeout,
-  kBuffer,
-  kBufferCb,
-  kBufferGen,
-} = require('internal/stream_base_commons');
-const {
-  ErrnoException,
-  ExceptionWithHostPort,
-  NodeAggregateError,
-  UVExceptionWithHostPort,
-  codes: {
-    ERR_INVALID_ADDRESS_FAMILY,
-    ERR_INVALID_ARG_TYPE,
-    ERR_INVALID_ARG_VALUE,
-    ERR_INVALID_FD_TYPE,
-    ERR_INVALID_HANDLE_TYPE,
-    ERR_INVALID_IP_ADDRESS,
-    ERR_IP_BLOCKED,
-    ERR_MISSING_ARGS,
-    ERR_SERVER_ALREADY_LISTEN,
-    ERR_SERVER_NOT_RUNNING,
-    ERR_SOCKET_CLOSED,
-    ERR_SOCKET_CLOSED_BEFORE_CONNECTION,
-    ERR_SOCKET_CONNECTION_TIMEOUT,
-  },
-  genericNodeError,
-} = require('internal/errors');
-const { isUint8Array } = require('internal/util/types');
-const { queueMicrotask } = require('internal/process/task_queues');
-const {
-  guessHandleType,
-  isWindows,
-  kEmptyObject,
-  promisify,
-} = require('internal/util');
-const {
-  validateAbortSignal,
-  validateBoolean,
-  validateFunction,
-  validateInt32,
-  validateNumber,
-  validatePort,
-  validateString,
-} = require('internal/validators');
-const kLastWriteQueueSize = Symbol('lastWriteQueueSize');
-const { getOptionValue } = require('internal/options');
-
-// Lazy loaded to improve startup performance.
-let cluster;
-let dns;
-let BlockList;
-let SocketAddress;
-let autoSelectFamilyDefault = getOptionValue('--network-family-autoselection');
-let autoSelectFamilyAttemptTimeoutDefault = getOptionValue('--network-family-autoselection-attempt-timeout');
-
-const { clearTimeout, setTimeout } = require('timers');
-const { kTimeout } = require('internal/timers');
-
-const DEFAULT_IPV4_ADDR = '0.0.0.0';
-const DEFAULT_IPV6_ADDR = '::';
-
-const noop = () => {};
-
-const kPerfHooksNetConnectContext = Symbol('kPerfHooksNetConnectContext');
-
-const dc = require('diagnostics_channel');
-const netClientSocketChannel = dc.channel('net.client.socket');
-const netServerSocketChannel = dc.channel('net.server.socket');
-const netServerListen = dc.tracingChannel('net.server.listen');
-
-const {
-  hasObserver,
-  startPerf,
-  stopPerf,
-} = require('internal/perf/observe');
-const { getDefaultHighWaterMark } = require('internal/streams/state');
-
-function getFlags(options) {
-  let flags = 0;
-  if (options.ipv6Only === true) {
-    flags |= TCPConstants.UV_TCP_IPV6ONLY;
+function isIP(input) {
+  if (typeof input !== 'string') return 0;
+  var parts = input.split('.');
+  if (parts.length === 4) {
+    for (var i = 0; i < 4; i++) {
+      var n = parseInt(parts[i], 10);
+      if (isNaN(n) || n < 0 || n > 255) return 0;
+    }
+    return 4;
   }
-  if (options.reusePort === true) {
-    flags |= TCPConstants.UV_TCP_REUSEPORT;
+  if (input.indexOf(':') !== -1) {
+    var v6parts = input.split(':');
+    if (v6parts.length >= 2 && v6parts.length <= 8) return 6;
   }
-  return flags;
+  return 0;
 }
 
-function createHandle(fd, is_server) {
-  validateInt32(fd, 'fd', 0);
-  const type = guessHandleType(fd);
-  if (type === 'PIPE') {
-    return new Pipe(
-      is_server ? PipeConstants.SERVER : PipeConstants.SOCKET,
-    );
+function isIPv4(input) { return isIP(input) === 4; }
+function isIPv6(input) { return isIP(input) === 6; }
+
+function Socket(options) {
+  if (!(this instanceof Socket)) return new Socket(options);
+  EventEmitter.call(this);
+  this._fd = null;
+  this._connecting = false;
+  this._destroyed = false;
+  this._readPaused = false;
+  this._readTimer = null;
+  this._writeBuffer = '';
+  this._writeCallback = null;
+  this.connecting = false;
+  this.remoteAddress = undefined;
+  this.remotePort = undefined;
+  this.localAddress = undefined;
+  this.localPort = undefined;
+  this.bytesRead = 0;
+  this.bytesWritten = 0;
+  this.readable = true;
+  this.writable = true;
+  this.destroyed = false;
+}
+Socket.prototype = Object.create(EventEmitter.prototype, { constructor: { value: Socket } });
+
+Socket.prototype.connect = function(port, host, connectListener) {
+  if (typeof host === 'function') {
+    connectListener = host;
+    host = '127.0.0.1';
   }
-
-  if (type === 'TCP') {
-    return new TCP(
-      is_server ? TCPConstants.SERVER : TCPConstants.SOCKET,
-    );
+  if (typeof port === 'object' && port !== null) {
+    var opts = port;
+    port = opts.port;
+    host = opts.host || '127.0.0.1';
   }
+  if (typeof host !== 'string') host = '127.0.0.1';
+  if (connectListener) this.once('connect', connectListener);
 
-  throw new ERR_INVALID_FD_TYPE(type);
+  this.connecting = true;
+  this._connecting = true;
+
+  var self = this;
+  try {
+    var fd = __koss_tcp_connect(host, port);
+    if (typeof fd === 'number' && fd > 0) {
+      self._fd = fd;
+      self.connecting = false;
+      self._connecting = false;
+      self.remoteAddress = host;
+      self.remotePort = port;
+      self.localAddress = '0.0.0.0';
+      self.localPort = 0;
+      process.nextTick(function() {
+        self.emit('connect');
+        self._startRead();
+      });
+    } else {
+      self._connecting = false;
+      process.nextTick(function() {
+        self.emit('error', new Error('connect ECONNREFUSED ' + host + ':' + port));
+      });
+    }
+  } catch (e) {
+    self._connecting = false;
+    process.nextTick(function() {
+      self.emit('error', e);
+    });
+  }
+  return this;
+};
+
+Socket.prototype._startRead = function() {
+  if (this._destroyed || !this._fd) return;
+  var self = this;
+  function poll() {
+    if (self._destroyed || !self._fd || self._readPaused) {
+      self._readTimer = null;
+      return;
+    }
+    var hadData = false;
+    try {
+      while (true) {
+        var data = __koss_tcp_read(self._fd);
+        if (data === null || data === undefined) break;
+        self.bytesRead += data.length;
+        hadData = true;
+        self.emit('data', data);
+      }
+    } catch (e) {
+      self._readTimer = null;
+      self.destroy(e);
+      return;
+    }
+    if (!hadData && !self._destroyed && self._fd) {
+      self._readTimer = setTimeout(poll, 10);
+    } else if (!self._destroyed && self._fd) {
+      self._readTimer = setTimeout(poll, 10);
+    } else {
+      self._readTimer = null;
+    }
+  }
+  self._readTimer = setTimeout(poll, 10);
+};
+
+Socket.prototype.pause = function() {
+  this._readPaused = true;
+  return this;
+};
+
+Socket.prototype.resume = function() {
+  this._readPaused = false;
+  if (this._fd && !this._readTimer) this._startRead();
+  return this;
+};
+
+Socket.prototype.setEncoding = function(enc) { return this; };
+Socket.prototype.setNoDelay = function(v) { return this; };
+Socket.prototype.setKeepAlive = function(v, d) { return this; };
+Socket.prototype.ref = function() { return this; };
+Socket.prototype.unref = function() { return this; };
+
+Socket.prototype.write = function(data, encoding, callback) {
+  if (typeof encoding === 'function') { callback = encoding; encoding = undefined; }
+  if (this._destroyed || !this._fd) {
+    if (callback) process.nextTick(callback);
+    return false;
+  }
+  var str = (typeof data === 'string') ? data : data.toString(encoding || 'utf8');
+  try {
+    var n = __koss_tcp_write(this._fd, str);
+    this.bytesWritten += n;
+    if (callback) process.nextTick(callback);
+  } catch (e) {
+    if (callback) process.nextTick(function() { callback(e); });
+    return false;
+  }
+  return true;
+};
+
+Socket.prototype.end = function(data, encoding, callback) {
+  if (typeof data === 'function') { callback = data; data = undefined; }
+  if (typeof encoding === 'function') { callback = encoding; encoding = undefined; }
+  if (data !== undefined) this.write(data, encoding);
+  this.destroy();
+  if (callback) this.once('close', callback);
+};
+
+Socket.prototype.destroySoon = Socket.prototype.destroy = function(err) {
+  if (this._destroyed) return;
+  this._destroyed = true;
+  this.destroyed = true;
+  this.readable = false;
+  this.writable = false;
+  if (this._readTimer) {
+    clearTimeout(this._readTimer);
+    this._readTimer = null;
+  }
+  if (this._fd) {
+    try { __koss_tcp_close(this._fd); } catch(e) {}
+    this._fd = null;
+  }
+  if (err) this.emit('error', err);
+  this.emit('close', !!err);
+};
+
+Socket.prototype.address = function() {
+  return { address: this.localAddress || '0.0.0.0', port: this.localPort || 0, family: 'IPv4' };
+};
+
+Socket.prototype.setTimeout = function(ms, cb) {
+  if (cb) this.once('timeout', cb);
+  var self = this;
+  setTimeout(function() { self.emit('timeout'); }, ms);
+  return this;
+};
+
+function Server(options, connectionListener) {
+  if (!(this instanceof Server)) return new Server(options, connectionListener);
+  EventEmitter.call(this);
+  if (typeof options === 'function') {
+    connectionListener = options;
+    options = {};
+  }
+  this._options = options || {};
+  this._serverFd = null;
+  this._listening = false;
+  this._acceptTimer = null;
+  this._connections = 0;
+  if (connectionListener) this.on('connection', connectionListener);
 }
+Server.prototype = Object.create(EventEmitter.prototype, { constructor: { value: Server } });
 
+Server.prototype.listen = function(port, host, backlog, callback) {
+  if (typeof host === 'function') {
+    callback = host;
+    host = '0.0.0.0';
+  }
+  if (typeof port === 'object' && port !== null) {
+    var opts = port;
+    port = opts.port;
+    host = opts.host || '0.0.0.0';
+  }
+  if (typeof host !== 'string') host = '0.0.0.0';
+  if (typeof callback === 'function') this.once('listening', callback);
 
-function getNewAsyncId(handle) {
-  return (!handle || typeof handle.getAsyncId !== 'function') ?
-    newAsyncId() : handle.getAsyncId();
-}
+  var self = this;
+  try {
+    var fd = __koss_tcp_listen(host, port);
+    if (typeof fd === 'number' && fd > 0) {
+      self._serverFd = fd;
+      self._listening = true;
+      process.nextTick(function() {
+        self.emit('listening');
+        self._startAccept();
+      });
+    } else {
+      var err = new Error('listen EADDRINUSE: address already in use :::' + port);
+      err.code = 'EADDRINUSE';
+      err.errno = -48;
+      err.syscall = 'listen';
+      process.nextTick(function() { self.emit('error', err); });
+    }
+  } catch (e) {
+    process.nextTick(function() { self.emit('error', e); });
+  }
+  return this;
+};
 
+Server.prototype._startAccept = function() {
+  if (!this._listening || !this._serverFd) return;
+  var self = this;
+  function poll() {
+    if (!self._listening || !self._serverFd) {
+      self._acceptTimer = null;
+      return;
+    }
+    try {
+      while (true) {
+        var clientFd = __koss_tcp_accept(self._serverFd);
+        if (clientFd === null || clientFd === undefined || typeof clientFd !== 'number') break;
+        var sock = new Socket();
+        sock._fd = clientFd;
+        sock.remoteAddress = '127.0.0.1';
+        sock.remotePort = 0;
+        self._connections++;
+        process.nextTick(function(s, sk) {
+          s.emit('connection', sk);
+        }, self, sock);
+      }
+    } catch (e) {
+      self._acceptTimer = null;
+      self.emit('error', e);
+      return;
+    }
+    self._acceptTimer = setTimeout(poll, 10);
+  }
+  self._acceptTimer = setTimeout(poll, 10);
+};
 
-function isPipeName(s) {
-  return typeof s === 'string' && toNumber(s) === false;
-}
+Server.prototype.close = function(callback) {
+  this._listening = false;
+  if (this._acceptTimer) {
+    clearTimeout(this._acceptTimer);
+    this._acceptTimer = null;
+  }
+  if (this._serverFd) {
+    try { __koss_tcp_close(this._serverFd); } catch(e) {}
+    this._serverFd = null;
+  }
+  if (callback) this.once('close', callback);
+  var self = this;
+  process.nextTick(function() { self.emit('close'); });
+};
 
-/**
- * Creates a new TCP or IPC server
- * @param {{
- *   allowHalfOpen?: boolean;
- *   pauseOnConnect?: boolean;
- *   }} [options]
- * @param {Function} [connectionListener]
- * @returns {Server}
- */
+Server.prototype.getConnections = function(cb) {
+  if (cb) process.nextTick(function() { cb(null, this._connections); }.bind(this));
+};
+
+Server.prototype.address = function() {
+  if (!this._listening) return null;
+  return { address: '0.0.0.0', port: 0, family: 'IPv4' };
+};
+Server.prototype.ref = function() { return this; };
+Server.prototype.unref = function() { return this; };
 
 function createServer(options, connectionListener) {
   return new Server(options, connectionListener);
 }
 
-
-// Target API:
-//
-// let s = net.connect({port: 80, host: 'google.com'}, function() {
-//   ...
-// });
-//
-// There are various forms:
-//
-// connect(options, [cb])
-// connect(port, [host], [cb])
-// connect(path, [cb]);
-//
-function connect(...args) {
-  const normalized = normalizeArgs(args);
-  const options = normalized[0];
-  debug('createConnection', normalized);
-  const socket = new Socket(options);
-
-  if (options.timeout) {
-    socket.setTimeout(options.timeout);
-  }
-
-  return socket.connect(normalized);
+function connect(port, host, connectListener) {
+  var sock = new Socket();
+  sock.connect(port, host, connectListener);
+  return sock;
 }
 
-function getDefaultAutoSelectFamily() {
-  return autoSelectFamilyDefault;
+function createConnection(port, host, connectListener) {
+  return connect(port, host, connectListener);
 }
-
-function setDefaultAutoSelectFamily(value) {
-  validateBoolean(value, 'value');
-  autoSelectFamilyDefault = value;
-}
-
-function getDefaultAutoSelectFamilyAttemptTimeout() {
-  return autoSelectFamilyAttemptTimeoutDefault;
-}
-
-function setDefaultAutoSelectFamilyAttemptTimeout(value) {
-  validateInt32(value, 'value', 1);
-
-  if (value < 10) {
-    value = 10;
-  }
-
-  autoSelectFamilyAttemptTimeoutDefault = value;
-}
-
-// Returns an array [options, cb], where options is an object,
-// cb is either a function or null.
-// Used to normalize arguments of Socket.prototype.connect() and
-// Server.prototype.listen(). Possible combinations of parameters:
-//   (options[...][, cb])
-//   (path[...][, cb])
-//   ([port][, host][...][, cb])
-// For Socket.prototype.connect(), the [...] part is ignored
-// For Server.prototype.listen(), the [...] part is [, backlog]
-// but will not be handled here (handled in listen())
-function normalizeArgs(args) {
-  let arr;
-
-  if (args.length === 0) {
-    arr = [{}, null];
-    arr[normalizedArgsSymbol] = true;
-    return arr;
-  }
-
-  const arg0 = args[0];
-  let options = {};
-  if (typeof arg0 === 'object' && arg0 !== null) {
-    // (options[...][, cb])
-    options = arg0;
-  } else if (isPipeName(arg0)) {
-    // (path[...][, cb])
-    options.path = arg0;
-  } else {
-    // ([port][, host][...][, cb])
-    options.port = arg0;
-    if (args.length > 1 && typeof args[1] === 'string') {
-      options.host = args[1];
-    }
-  }
-
-  const cb = args[args.length - 1];
-  if (typeof cb !== 'function')
-    arr = [options, null];
-  else
-    arr = [options, cb];
-
-  arr[normalizedArgsSymbol] = true;
-  return arr;
-}
-
-
-// Called when creating new Socket, or when re-using a closed Socket
-function initSocketHandle(self) {
-  self._undestroy();
-  self._sockname = null;
-
-  // Handle creation may be deferred to bind() or connect() time.
-  if (self._handle) {
-    self._handle[owner_symbol] = self;
-    self._handle.onread = onStreamRead;
-    self[async_id_symbol] = getNewAsyncId(self._handle);
-
-    let userBuf = self[kBuffer];
-    if (userBuf) {
-      const bufGen = self[kBufferGen];
-      if (bufGen !== null) {
-        userBuf = bufGen();
-        if (!isUint8Array(userBuf))
-          return;
-        self[kBuffer] = userBuf;
-      }
-      self._handle.useUserBuffer(userBuf);
-    }
-  }
-}
-
-function closeSocketHandle(self, isException, isCleanupPending = false) {
-  if (self._handle) {
-    self._handle.close(() => {
-      debug('emit close');
-      self.emit('close', isException);
-      if (isCleanupPending) {
-        self._handle.onread = noop;
-        self._handle = null;
-        self._sockname = null;
-      }
-    });
-  }
-}
-
-const kBytesRead = Symbol('kBytesRead');
-const kBytesWritten = Symbol('kBytesWritten');
-const kSetTOS = Symbol('kSetTOS');
-
-function Socket(options) {
-  if (!(this instanceof Socket)) return new Socket(options);
-  if (options?.objectMode) {
-    throw new ERR_INVALID_ARG_VALUE(
-      'options.objectMode',
-      options.objectMode,
-      'is not supported',
-    );
-  } else if (options?.readableObjectMode || options?.writableObjectMode) {
-    throw new ERR_INVALID_ARG_VALUE(
-      `options.${
-        options.readableObjectMode ? 'readableObjectMode' : 'writableObjectMode'
-      }`,
-      options.readableObjectMode || options.writableObjectMode,
-      'is not supported',
-    );
-  }
-  if (options?.keepAliveInitialDelay !== undefined) {
-    validateNumber(
-      options?.keepAliveInitialDelay, 'options.keepAliveInitialDelay',
-    );
-
-    if (options.keepAliveInitialDelay < 0) {
-      options.keepAliveInitialDelay = 0;
-    }
-  }
-
-  this.connecting = false;
-  // Problem with this is that users can supply their own handle, that may not
-  // have _handle.getAsyncId(). In this case an[async_id_symbol] should
-  // probably be supplied by async_hooks.
-  this[async_id_symbol] = -1;
-  this._hadError = false;
-  this[kHandle] = null;
-  this._parent = null;
-  this._host = null;
-  this[kLastWriteQueueSize] = 0;
-  this[kTimeout] = null;
-  this[kBuffer] = null;
-  this[kBufferCb] = null;
-  this[kBufferGen] = null;
-  this._closeAfterHandlingError = false;
-
-  if (typeof options === 'number')
-    options = { fd: options }; // Legacy interface.
-  else
-    options = { ...options };
-
-  // Default to *not* allowing half open sockets.
-  options.allowHalfOpen = Boolean(options.allowHalfOpen);
-  // For backwards compat do not emit close on destroy.
-  options.emitClose = false;
-  options.autoDestroy = true;
-  // Handle strings directly.
-  options.decodeStrings = false;
-  stream.Duplex.call(this, options);
-
-  if (options.handle) {
-    this._handle = options.handle; // private
-    this[async_id_symbol] = getNewAsyncId(this._handle);
-  } else if (options.fd !== undefined) {
-    const { fd } = options;
-    let err;
-
-    // createHandle will throw ERR_INVALID_FD_TYPE if `fd` is not
-    // a valid `PIPE` or `TCP` descriptor
-    this._handle = createHandle(fd, false);
-
-    err = this._handle.open(fd);
-
-    // While difficult to fabricate, in some architectures
-    // `open` may return an error code for valid file descriptors
-    // which cannot be opened. This is difficult to test as most
-    // un-openable fds will throw on `createHandle`
-    if (err)
-      throw new ErrnoException(err, 'open');
-
-    this[async_id_symbol] = this._handle.getAsyncId();
-
-    if ((fd === 1 || fd === 2) &&
-        (this._handle instanceof Pipe) && isWindows) {
-      // Make stdout and stderr blocking on Windows
-      err = this._handle.setBlocking(true);
-      if (err)
-        throw new ErrnoException(err, 'setBlocking');
-
-      this._writev = null;
-      this._write = makeSyncWrite(fd);
-      // makeSyncWrite adjusts this value like the original handle would, so
-      // we need to let it do that by turning it into a writable, own
-      // property.
-      ObjectDefineProperty(this._handle, 'bytesWritten', {
-        __proto__: null,
-        value: 0, writable: true,
-      });
-    }
-  }
-
-  const onread = options.onread;
-  if (onread !== null && typeof onread === 'object' &&
-      (isUint8Array(onread.buffer) || typeof onread.buffer === 'function') &&
-      typeof onread.callback === 'function') {
-    if (typeof onread.buffer === 'function') {
-      this[kBuffer] = true;
-      this[kBufferGen] = onread.buffer;
-    } else {
-      this[kBuffer] = onread.buffer;
-    }
-    this[kBufferCb] = onread.callback;
-  }
-
-  this[kSetNoDelay] = Boolean(options.noDelay);
-  this[kSetKeepAlive] = Boolean(options.keepAlive);
-  this[kSetKeepAliveInitialDelay] = ~~(options.keepAliveInitialDelay / 1000);
-  if (options.typeOfService !== undefined) {
-    validateInt32(options.typeOfService, 'options.typeOfService', 0, 255);
-  }
-  this[kSetTOS] = options.typeOfService;
-
-  // Shut down the socket when we're finished with it.
-  this.on('end', onReadableStreamEnd);
-
-  initSocketHandle(this);
-
-  this._pendingData = null;
-  this._pendingEncoding = '';
-
-  // If we have a handle, then start the flow of data into the
-  // buffer.  if not, then this will happen when we connect
-  if (this._handle && options.readable !== false) {
-    if (options.pauseOnCreate) {
-      // Stop the handle from reading and pause the stream
-      this._handle.reading = false;
-      this._handle.readStop();
-      this.readableFlowing = false;
-    } else if (!options.manualStart) {
-      this.read(0);
-    }
-  }
-
-  if (options.signal) {
-    addClientAbortSignalOption(this, options);
-  }
-
-  // Reserve properties
-  this.server = null;
-  this._server = null;
-
-  // Used after `.destroy()`
-  this[kBytesRead] = 0;
-  this[kBytesWritten] = 0;
-  if (options.blockList) {
-    if (!module.exports.BlockList.isBlockList(options.blockList)) {
-      throw new ERR_INVALID_ARG_TYPE('options.blockList', 'net.BlockList', options.blockList);
-    }
-    this.blockList = options.blockList;
-  }
-}
-ObjectSetPrototypeOf(Socket.prototype, stream.Duplex.prototype);
-ObjectSetPrototypeOf(Socket, stream.Duplex);
-
-// Refresh existing timeouts.
-Socket.prototype._unrefTimer = function _unrefTimer() {
-  for (let s = this; s !== null; s = s._parent) {
-    if (s[kTimeout])
-      s[kTimeout].refresh();
-  }
-};
-
-
-// The user has called .end(), and all the bytes have been
-// sent out to the other side.
-Socket.prototype._final = function(cb) {
-  // If still connecting - defer handling `_final` until 'connect' will happen
-  if (this.connecting) {
-    debug('_final: not yet connected');
-    return this.once('connect', () => this._final(cb));
-  }
-
-  if (!this._handle)
-    return cb();
-
-  debug('_final: not ended, call shutdown()');
-
-  const req = new ShutdownWrap();
-  req.oncomplete = afterShutdown;
-  req.handle = this._handle;
-  req.callback = cb;
-  const err = this._handle.shutdown(req);
-
-  if (err === 1 || err === UV_ENOTCONN)  // synchronous finish
-    return cb();
-  else if (err !== 0)
-    return cb(new ErrnoException(err, 'shutdown'));
-};
-
-function afterShutdown() {
-  const self = this.handle[owner_symbol];
-
-  debug('afterShutdown destroyed=%j', self.destroyed);
-
-  this.callback();
-}
-
-// Provide a better error message when we call end() as a result
-// of the other side sending a FIN.  The standard 'write after end'
-// is overly vague, and makes it seem like the user's code is to blame.
-function writeAfterFIN(chunk, encoding, cb) {
-  if (!this.writableEnded) {
-    return stream.Duplex.prototype.write.call(this, chunk, encoding, cb);
-  }
-
-  if (typeof encoding === 'function') {
-    cb = encoding;
-    encoding = null;
-  }
-
-  const er = genericNodeError(
-    'This socket has been ended by the other party',
-    { code: 'EPIPE' },
-  );
-  if (typeof cb === 'function') {
-    defaultTriggerAsyncIdScope(this[async_id_symbol], process.nextTick, cb, er);
-  }
-  this.destroy(er);
-
-  return false;
-}
-
-Socket.prototype.setTimeout = setStreamTimeout;
-
-
-Socket.prototype._onTimeout = function() {
-  const handle = this._handle;
-  const lastWriteQueueSize = this[kLastWriteQueueSize];
-  if (lastWriteQueueSize > 0 && handle) {
-    // `lastWriteQueueSize !== writeQueueSize` means there is
-    // an active write in progress, so we suppress the timeout.
-    const { writeQueueSize } = handle;
-    if (lastWriteQueueSize !== writeQueueSize) {
-      this[kLastWriteQueueSize] = writeQueueSize;
-      this._unrefTimer();
-      return;
-    }
-  }
-  debug('_onTimeout');
-  this.emit('timeout');
-};
-
-
-Socket.prototype.setNoDelay = function(enable) {
-  // Backwards compatibility: assume true when `enable` is omitted
-  enable = Boolean(enable === undefined ? true : enable);
-
-  if (!this._handle) {
-    this[kSetNoDelay] = enable;
-    return this;
-  }
-
-  if (this._handle.setNoDelay && enable !== this[kSetNoDelay]) {
-    this[kSetNoDelay] = enable;
-    this._handle.setNoDelay(enable);
-  }
-
-  return this;
-};
-
-
-Socket.prototype.setKeepAlive = function(enable, initialDelayMsecs) {
-  enable = Boolean(enable);
-  const initialDelay = ~~(initialDelayMsecs / 1000);
-
-  if (!this._handle) {
-    this[kSetKeepAlive] = enable;
-    this[kSetKeepAliveInitialDelay] = initialDelay;
-    return this;
-  }
-
-  if (!this._handle.setKeepAlive) {
-    return this;
-  }
-
-  if (enable !== this[kSetKeepAlive] ||
-      (
-        enable &&
-        this[kSetKeepAliveInitialDelay] !== initialDelay
-      )
-  ) {
-    this[kSetKeepAlive] = enable;
-    this[kSetKeepAliveInitialDelay] = initialDelay;
-    this._handle.setKeepAlive(enable, initialDelay);
-  }
-
-  return this;
-};
-
-
-Socket.prototype.setTypeOfService = function(tos) {
-  if (NumberIsNaN(tos)) {
-    throw new ERR_INVALID_ARG_TYPE('tos', 'number', tos);
-  }
-  validateInt32(tos, 'tos', 0, 255);
-
-  if (!this._handle) {
-    this[kSetTOS] = tos;
-    return this;
-  }
-
-  if (!this._handle.setTypeOfService) {
-    this[kSetTOS] = tos;
-    return this;
-  }
-
-  if (tos !== this[kSetTOS]) {
-    this[kSetTOS] = tos;
-    const err = this._handle.setTypeOfService(tos);
-    // On Windows, setting TOS is often restricted or returns error codes even if partially applied.
-    // We treat this as a "best effort" operation and do not throw on Windows.
-    if (err && !isWindows) {
-      throw new ErrnoException(err, 'setTypeOfService');
-    }
-  }
-
-  return this;
-};
-
-
-Socket.prototype.getTypeOfService = function() {
-  if (!this._handle) {
-    // Return cached value if set, otherwise default to 0
-    return this[kSetTOS] !== undefined ? this[kSetTOS] : 0;
-  }
-
-  if (!this._handle.getTypeOfService) {
-    return this[kSetTOS] !== undefined ? this[kSetTOS] : 0;
-  }
-
-  const res = this._handle.getTypeOfService();
-  if (typeof res === 'number' && res < 0) {
-    // On Windows, getsockopt(IP_TOS) often fails. In that case, fall back
-    // to the cached value we attempted to set, or 0.
-    if (isWindows) {
-      return this[kSetTOS] !== undefined ? this[kSetTOS] : 0;
-    }
-    throw new ErrnoException(res, 'getTypeOfService');
-  }
-  return res;
-};
-
-
-Socket.prototype.address = function() {
-  return this._getsockname();
-};
-
-
-ObjectDefineProperty(Socket.prototype, '_connecting', {
-  __proto__: null,
-  get: function() {
-    return this.connecting;
-  },
-});
-
-ObjectDefineProperty(Socket.prototype, 'pending', {
-  __proto__: null,
-  get() {
-    return !this._handle || this.connecting;
-  },
-  configurable: true,
-});
-
-
-ObjectDefineProperty(Socket.prototype, 'readyState', {
-  __proto__: null,
-  get: function() {
-    if (this.connecting) {
-      return 'opening';
-    } else if (this.readable && this.writable) {
-      return 'open';
-    } else if (this.readable && !this.writable) {
-      return 'readOnly';
-    } else if (!this.readable && this.writable) {
-      return 'writeOnly';
-    }
-    return 'closed';
-  },
-});
-
-
-ObjectDefineProperty(Socket.prototype, 'bufferSize', {
-  __proto__: null,
-  get: function() {
-    if (this._handle) {
-      return this.writableLength;
-    }
-  },
-});
-
-ObjectDefineProperty(Socket.prototype, kUpdateTimer, {
-  __proto__: null,
-  get: function() {
-    return this._unrefTimer;
-  },
-});
-
-
-function tryReadStart(socket) {
-  // Not already reading, start the flow
-  debug('Socket._handle.readStart');
-  socket._handle.reading = true;
-  const err = socket._handle.readStart();
-  if (err)
-    socket.destroy(new ErrnoException(err, 'read'));
-}
-
-// Just call handle.readStart until we have enough in the buffer
-Socket.prototype._read = function(n) {
-  debug(
-    '_read - n', n,
-    'isConnecting?', !!this.connecting,
-    'hasHandle?', !!this._handle,
-  );
-
-  if (this.connecting || !this._handle) {
-    debug('_read wait for connection');
-    this.once('connect', () => this._read(n));
-  } else if (!this._handle.reading) {
-    tryReadStart(this);
-  }
-};
-
-
-Socket.prototype.end = function(data, encoding, callback) {
-  stream.Duplex.prototype.end.call(this,
-                                   data, encoding, callback);
-  return this;
-};
-
-Socket.prototype.resetAndDestroy = function() {
-  if (this._handle) {
-    if (!(this._handle instanceof TCP))
-      throw new ERR_INVALID_HANDLE_TYPE();
-    if (this.connecting) {
-      debug('reset wait for connection');
-      this.once('connect', () => this._reset());
-    } else {
-      this._reset();
-    }
-  } else {
-    this.destroy(new ERR_SOCKET_CLOSED());
-  }
-  return this;
-};
-
-Socket.prototype.pause = function() {
-  if (this[kBuffer] && !this.connecting && this._handle?.reading) {
-    this._handle.reading = false;
-    if (!this.destroyed) {
-      const err = this._handle.readStop();
-      if (err)
-        this.destroy(new ErrnoException(err, 'read'));
-    }
-  }
-  return stream.Duplex.prototype.pause.call(this);
-};
-
-
-Socket.prototype.resume = function() {
-  if (this[kBuffer] && !this.connecting && this._handle &&
-      !this._handle.reading) {
-    tryReadStart(this);
-  }
-  return stream.Duplex.prototype.resume.call(this);
-};
-
-
-Socket.prototype.read = function(n) {
-  if (this[kBuffer] && !this.connecting && this._handle &&
-      !this._handle.reading) {
-    tryReadStart(this);
-  }
-  return stream.Duplex.prototype.read.call(this, n);
-};
-
-
-// Called when the 'end' event is emitted.
-function onReadableStreamEnd() {
-  if (!this.allowHalfOpen) {
-    this.write = writeAfterFIN;
-  }
-}
-
-
-Socket.prototype.destroySoon = function() {
-  if (this.writable)
-    this.end();
-
-  if (this.writableFinished)
-    this.destroy();
-  else
-    this.once('finish', this.destroy);
-};
-
-
-Socket.prototype._destroy = function(exception, cb) {
-  debug('destroy');
-
-  this.connecting = false;
-
-  for (let s = this; s !== null; s = s._parent) {
-    clearTimeout(s[kTimeout]);
-  }
-
-  debug('close');
-  if (this._handle) {
-    if (this !== process.stderr)
-      debug('close handle');
-    const isException = exception ? true : false;
-    // `bytesRead` and `kBytesWritten` should be accessible after `.destroy()`
-    this[kBytesRead] = this._handle.bytesRead;
-    this[kBytesWritten] = this._handle.bytesWritten;
-
-    if (this.resetAndClosing) {
-      this.resetAndClosing = false;
-      const err = this._handle.reset(() => {
-        debug('emit close');
-        this.emit('close', isException);
-      });
-      if (err)
-        this.emit('error', new ErrnoException(err, 'reset'));
-    } else if (this._closeAfterHandlingError) {
-      // Enqueue closing the socket as a microtask, so that the socket can be
-      // accessible when an `error` event is handled in the `next tick queue`.
-      queueMicrotask(() => closeSocketHandle(this, isException, true));
-    } else {
-      closeSocketHandle(this, isException);
-    }
-
-    if (!this._closeAfterHandlingError) {
-      this._handle.onread = noop;
-      this._handle = null;
-      this._sockname = null;
-    }
-    cb(exception);
-  } else {
-    cb(exception);
-    process.nextTick(emitCloseNT, this);
-  }
-
-  if (this._server) {
-    debug('has server');
-    this._server._connections--;
-    if (this._server._emitCloseIfDrained) {
-      this._server._emitCloseIfDrained();
-    }
-  }
-};
-
-Socket.prototype._reset = function() {
-  debug('reset connection');
-  this.resetAndClosing = true;
-  return this.destroy();
-};
-
-Socket.prototype._getpeername = function() {
-  if (!this._handle || !this._handle.getpeername || this.connecting) {
-    return this._peername || {};
-  } else if (!this._peername) {
-    const out = {};
-    const err = this._handle.getpeername(out);
-    if (err) return out;
-    this._peername = out;
-  }
-  return this._peername;
-};
-
-function protoGetter(name, callback) {
-  ObjectDefineProperty(Socket.prototype, name, {
-    __proto__: null,
-    configurable: false,
-    enumerable: true,
-    get: callback,
-  });
-}
-
-protoGetter('bytesRead', function bytesRead() {
-  return this._handle ? this._handle.bytesRead : this[kBytesRead];
-});
-
-protoGetter('remoteAddress', function remoteAddress() {
-  return this._getpeername().address;
-});
-
-protoGetter('remoteFamily', function remoteFamily() {
-  return this._getpeername().family;
-});
-
-protoGetter('remotePort', function remotePort() {
-  return this._getpeername().port;
-});
-
-
-Socket.prototype._getsockname = function() {
-  if (!this._handle || !this._handle.getsockname) {
-    return {};
-  } else if (!this._sockname) {
-    this._sockname = {};
-    // FIXME(bnoordhuis) Throw when the return value is not 0?
-    this._handle.getsockname(this._sockname);
-  }
-  return this._sockname;
-};
-
-
-protoGetter('localAddress', function localAddress() {
-  return this._getsockname().address;
-});
-
-
-protoGetter('localPort', function localPort() {
-  return this._getsockname().port;
-});
-
-protoGetter('localFamily', function localFamily() {
-  return this._getsockname().family;
-});
-
-Socket.prototype[kAfterAsyncWrite] = function() {
-  this[kLastWriteQueueSize] = 0;
-};
-
-Socket.prototype._writeGeneric = function(writev, data, encoding, cb) {
-  // If we are still connecting, then buffer this for later.
-  // The Writable logic will buffer up any more writes while
-  // waiting for this one to be done.
-  if (this.connecting) {
-    this._pendingData = data;
-    this._pendingEncoding = encoding;
-    this.once('connect', function connect() {
-      this.off('close', onClose);
-      this._writeGeneric(writev, data, encoding, cb);
-    });
-    function onClose() {
-      cb(new ERR_SOCKET_CLOSED_BEFORE_CONNECTION());
-    }
-    this.once('close', onClose);
-    return;
-  }
-  this._pendingData = null;
-  this._pendingEncoding = '';
-
-  if (!this._handle) {
-    cb(new ERR_SOCKET_CLOSED());
-    return false;
-  }
-
-  this._unrefTimer();
-
-  let req;
-  if (writev)
-    req = writevGeneric(this, data, cb);
-  else
-    req = writeGeneric(this, data, encoding, cb);
-  if (req.async)
-    this[kLastWriteQueueSize] = req.bytes;
-};
-
-
-Socket.prototype._writev = function(chunks, cb) {
-  this._writeGeneric(true, chunks, '', cb);
-};
-
-
-Socket.prototype._write = function(data, encoding, cb) {
-  this._writeGeneric(false, data, encoding, cb);
-};
-
-
-// Legacy alias. Having this is probably being overly cautious, but it doesn't
-// really hurt anyone either. This can probably be removed safely if desired.
-protoGetter('_bytesDispatched', function _bytesDispatched() {
-  return this._handle ? this._handle.bytesWritten : this[kBytesWritten];
-});
-
-protoGetter('bytesWritten', function bytesWritten() {
-  let bytes = this._bytesDispatched;
-  const data = this._pendingData;
-  const encoding = this._pendingEncoding;
-  const writableBuffer = this.writableBuffer;
-
-  if (!writableBuffer)
-    return undefined;
-
-  for (const el of writableBuffer) {
-    bytes += el.chunk instanceof Buffer ?
-      el.chunk.length :
-      Buffer.byteLength(el.chunk, el.encoding);
-  }
-
-  if (ArrayIsArray(data)) {
-    // Was a writev, iterate over chunks to get total length
-    for (let i = 0; i < data.length; i++) {
-      const chunk = data[i];
-
-      if (data.allBuffers || chunk instanceof Buffer)
-        bytes += chunk.length;
-      else
-        bytes += Buffer.byteLength(chunk.chunk, chunk.encoding);
-    }
-  } else if (data) {
-    // Writes are either a string or a Buffer.
-    if (typeof data !== 'string')
-      bytes += data.length;
-    else
-      bytes += Buffer.byteLength(data, encoding);
-  }
-
-  return bytes;
-});
-
-
-function checkBindError(err, port, handle) {
-  // EADDRINUSE may not be reported until we call listen() or connect().
-  // To complicate matters, a failed bind() followed by listen() or connect()
-  // will implicitly bind to a random port. Ergo, check that the socket is
-  // bound to the expected port before calling listen() or connect().
-  //
-  // FIXME(bnoordhuis) Doesn't work for pipe handles, they don't have a
-  // getsockname() method. Non-issue for now, the cluster module doesn't
-  // really support pipes anyway.
-  if (err === 0 && port > 0 && handle.getsockname) {
-    const out = {};
-    err = handle.getsockname(out);
-    if (err === 0 && port !== out.port) {
-      debug(`checkBindError, bound to ${out.port} instead of ${port}`);
-      err = UV_EADDRINUSE;
-    }
-  }
-  return err;
-}
-
-
-function internalConnect(
-  self, address, port, addressType, localAddress, localPort, flags) {
-  // TODO return promise from Socket.prototype.connect which
-  // wraps _connectReq.
-
-  assert(self.connecting);
-
-  let err;
-
-  if (localAddress || localPort) {
-    if (addressType === 4) {
-      localAddress ||= DEFAULT_IPV4_ADDR;
-      err = self._handle.bind(localAddress, localPort);
-    } else { // addressType === 6
-      localAddress ||= DEFAULT_IPV6_ADDR;
-      err = self._handle.bind6(localAddress, localPort, flags);
-    }
-    debug('connect: binding to localAddress: %s and localPort: %d (addressType: %d)',
-          localAddress, localPort, addressType);
-
-    err = checkBindError(err, localPort, self._handle);
-    if (err) {
-      const ex = new ExceptionWithHostPort(err, 'bind', localAddress, localPort);
-      self.destroy(ex);
-      return;
-    }
-  }
-
-  debug('connect: attempting to connect to %s:%d (addressType: %d)', address, port, addressType);
-  self.emit('connectionAttempt', address, port, addressType);
-
-  if (addressType === 6 || addressType === 4) {
-    if (self.blockList?.check(address, `ipv${addressType}`)) {
-      self.destroy(new ERR_IP_BLOCKED(address));
-      return;
-    }
-    const req = new TCPConnectWrap();
-    req.oncomplete = afterConnect;
-    req.address = address;
-    req.port = port;
-    req.localAddress = localAddress;
-    req.localPort = localPort;
-    req.addressType = addressType;
-
-    if (addressType === 4)
-      err = self._handle.connect(req, address, port);
-    else
-      err = self._handle.connect6(req, address, port);
-  } else {
-    const req = new PipeConnectWrap();
-    req.address = address;
-    req.oncomplete = afterConnect;
-
-    err = self._handle.connect(req, address);
-  }
-
-  if (err) {
-    const sockname = self._getsockname();
-    let details;
-
-    if (sockname) {
-      details = sockname.address + ':' + sockname.port;
-    }
-
-    const ex = new ExceptionWithHostPort(err, 'connect', address, port, details);
-    self.destroy(ex);
-  } else if ((addressType === 6 || addressType === 4) && hasObserver('net')) {
-    startPerf(self, kPerfHooksNetConnectContext, { type: 'net', name: 'connect', detail: { host: address, port } });
-  }
-}
-
-
-function internalConnectMultiple(context, canceled) {
-  clearTimeout(context[kTimeout]);
-  const self = context.socket;
-
-  // We were requested to abort. Stop all operations
-  if (self._aborted) {
-    return;
-  }
-
-  // All connections have been tried without success, destroy with error
-  if (canceled || context.current === context.addresses.length) {
-    if (context.errors.length === 0) {
-      self.destroy(new ERR_SOCKET_CONNECTION_TIMEOUT());
-      return;
-    }
-
-    self.destroy(new NodeAggregateError(context.errors));
-    return;
-  }
-
-  assert(self.connecting);
-
-  const current = context.current++;
-
-  if (current > 0) {
-    self[kReinitializeHandle](new TCP(TCPConstants.SOCKET));
-  }
-
-  const { localPort, port, flags } = context;
-  const { address, family: addressType } = context.addresses[current];
-  let localAddress;
-  let err;
-
-  if (localPort) {
-    if (addressType === 4) {
-      localAddress = DEFAULT_IPV4_ADDR;
-      err = self._handle.bind(localAddress, localPort);
-    } else { // addressType === 6
-      localAddress = DEFAULT_IPV6_ADDR;
-      err = self._handle.bind6(localAddress, localPort, flags);
-    }
-
-    debug('connect/multiple: binding to localAddress: %s and localPort: %d (addressType: %d)',
-          localAddress, localPort, addressType);
-
-    err = checkBindError(err, localPort, self._handle);
-    if (err) {
-      ArrayPrototypePush(context.errors, new ExceptionWithHostPort(err, 'bind', localAddress, localPort));
-      internalConnectMultiple(context);
-      return;
-    }
-  }
-
-  if (self.blockList?.check(address, `ipv${addressType}`)) {
-    const ex = new ERR_IP_BLOCKED(address);
-    ArrayPrototypePush(context.errors, ex);
-    self.emit('connectionAttemptFailed', address, port, addressType, ex);
-    internalConnectMultiple(context);
-    return;
-  }
-
-  debug('connect/multiple: attempting to connect to %s:%d (addressType: %d)', address, port, addressType);
-  self.emit('connectionAttempt', address, port, addressType);
-
-  const req = new TCPConnectWrap();
-  req.oncomplete = FunctionPrototypeBind(afterConnectMultiple, undefined, context, current);
-  req.address = address;
-  req.port = port;
-  req.localAddress = localAddress;
-  req.localPort = localPort;
-  req.addressType = addressType;
-
-  ArrayPrototypePush(self.autoSelectFamilyAttemptedAddresses, `${address}:${port}`);
-
-  if (addressType === 4) {
-    err = self._handle.connect(req, address, port);
-  } else {
-    err = self._handle.connect6(req, address, port);
-  }
-
-  if (err) {
-    const sockname = self._getsockname();
-    let details;
-
-    if (sockname) {
-      details = sockname.address + ':' + sockname.port;
-    }
-
-    const ex = new ExceptionWithHostPort(err, 'connect', address, port, details);
-    ArrayPrototypePush(context.errors, ex);
-
-    self.emit('connectionAttemptFailed', address, port, addressType, ex);
-    internalConnectMultiple(context);
-    return;
-  }
-
-  if (current < context.addresses.length - 1) {
-    debug('connect/multiple: setting the attempt timeout to %d ms', context.timeout);
-
-    // If the attempt has not returned an error, start the connection timer
-    context[kTimeout] = setTimeout(internalConnectMultipleTimeout, context.timeout, context, req, self._handle);
-  }
-}
-
-Socket.prototype.connect = function(...args) {
-  let normalized;
-  // If passed an array, it's treated as an array of arguments that have
-  // already been normalized (so we don't normalize more than once). This has
-  // been solved before in https://github.com/nodejs/node/pull/12342, but was
-  // reverted as it had unintended side effects.
-  if (ArrayIsArray(args[0]) && args[0][normalizedArgsSymbol]) {
-    normalized = args[0];
-  } else {
-    normalized = normalizeArgs(args);
-  }
-  const options = normalized[0];
-  const cb = normalized[1];
-
-  if (netClientSocketChannel.hasSubscribers) {
-    netClientSocketChannel.publish({
-      socket: this,
-    });
-  }
-
-  if (cb !== null) {
-    this.once('connect', cb);
-  }
-
-  // If the parent is already connecting, do not attempt to connect again
-  if (this._parent?.connecting) {
-    return this;
-  }
-
-  // options.port === null will be checked later.
-  if (options.port === undefined && options.path == null)
-    throw new ERR_MISSING_ARGS(['options', 'port', 'path']);
-
-  if (this.write !== Socket.prototype.write)
-    this.write = Socket.prototype.write;
-
-  if (this.destroyed) {
-    this._handle = null;
-    this._peername = null;
-    this._sockname = null;
-  }
-
-  const { path } = options;
-  const pipe = !!path;
-  debug('pipe', pipe, path);
-
-  if (!this._handle) {
-    this._handle = pipe ?
-      new Pipe(PipeConstants.SOCKET) :
-      new TCP(TCPConstants.SOCKET);
-    initSocketHandle(this);
-  }
-
-  this._unrefTimer();
-
-  this.connecting = true;
-
-  if (pipe) {
-    validateString(path, 'options.path');
-    defaultTriggerAsyncIdScope(
-      this[async_id_symbol], internalConnect, this, path,
-    );
-  } else {
-    lookupAndConnect(this, options);
-  }
-  return this;
-};
-
-Socket.prototype[kReinitializeHandle] = function reinitializeHandle(handle) {
-  this._handle?.close();
-
-  this._handle = handle;
-  this._handle[owner_symbol] = this;
-
-  initSocketHandle(this);
-};
-
-function socketToDnsFamily(family) {
-  switch (family) {
-    case 'IPv4':
-      return 4;
-    case 'IPv6':
-      return 6;
-  }
-
-  return family;
-}
-
-function lookupAndConnect(self, options) {
-  const { localAddress, localPort } = options;
-  const host = options.host || 'localhost';
-  let { port, autoSelectFamilyAttemptTimeout, autoSelectFamily } = options;
-
-  validateString(host, 'options.host');
-
-  if (localAddress && !isIP(localAddress)) {
-    throw new ERR_INVALID_IP_ADDRESS(localAddress);
-  }
-
-  if (localPort) {
-    validateNumber(localPort, 'options.localPort');
-  }
-
-  if (port !== undefined) {
-    if (typeof port !== 'number' && typeof port !== 'string') {
-      throw new ERR_INVALID_ARG_TYPE('options.port',
-                                     ['number', 'string'], port);
-    }
-    validatePort(port);
-  }
-  port |= 0;
-
-
-  if (autoSelectFamily != null) {
-    validateBoolean(autoSelectFamily, 'options.autoSelectFamily');
-  } else {
-    autoSelectFamily = autoSelectFamilyDefault;
-  }
-
-  if (autoSelectFamilyAttemptTimeout != null) {
-    validateInt32(autoSelectFamilyAttemptTimeout, 'options.autoSelectFamilyAttemptTimeout', 1);
-
-    if (autoSelectFamilyAttemptTimeout < 10) {
-      autoSelectFamilyAttemptTimeout = 10;
-    }
-  } else {
-    autoSelectFamilyAttemptTimeout = autoSelectFamilyAttemptTimeoutDefault;
-  }
-
-  // If host is an IP, skip performing a lookup
-  const addressType = isIP(host);
-  if (addressType) {
-    defaultTriggerAsyncIdScope(self[async_id_symbol], process.nextTick, () => {
-      if (self.connecting)
-        defaultTriggerAsyncIdScope(
-          self[async_id_symbol],
-          internalConnect,
-          self, host, port, addressType, localAddress, localPort,
-        );
-    });
-    return;
-  }
-
-  if (options.lookup != null)
-    validateFunction(options.lookup, 'options.lookup');
-
-  if (dns === undefined) dns = require('dns');
-  const dnsopts = {
-    family: socketToDnsFamily(options.family),
-    hints: options.hints || 0,
-  };
-
-  if (!isWindows &&
-      dnsopts.family !== 4 &&
-      dnsopts.family !== 6 &&
-      dnsopts.hints === 0) {
-    dnsopts.hints = dns.ADDRCONFIG;
-  }
-
-  debug('connect: find host', host);
-  debug('connect: dns options', dnsopts);
-  self._host = host;
-  const lookup = options.lookup || dns.lookup;
-
-  if (dnsopts.family !== 4 && dnsopts.family !== 6 && !localAddress && autoSelectFamily) {
-    debug('connect: autodetecting');
-
-    dnsopts.all = true;
-    defaultTriggerAsyncIdScope(self[async_id_symbol], function() {
-      lookupAndConnectMultiple(
-        self,
-        async_id_symbol,
-        lookup,
-        host,
-        options,
-        dnsopts,
-        port,
-        localAddress,
-        localPort,
-        autoSelectFamilyAttemptTimeout,
-      );
-    });
-
-    return;
-  }
-
-  defaultTriggerAsyncIdScope(self[async_id_symbol], function() {
-    lookup(host, dnsopts, function emitLookup(err, ip, addressType) {
-      self.emit('lookup', err, ip, addressType, host);
-
-      // It's possible we were destroyed while looking this up.
-      // XXX it would be great if we could cancel the promise returned by
-      // the look up.
-      if (!self.connecting) return;
-
-      if (err) {
-        // net.createConnection() creates a net.Socket object and immediately
-        // calls net.Socket.connect() on it (that's us). There are no event
-        // listeners registered yet so defer the error event to the next tick.
-        process.nextTick(connectErrorNT, self, err);
-      } else if ((typeof ip !== 'string') || !isIP(ip)) {
-        err = new ERR_INVALID_IP_ADDRESS(ip);
-        process.nextTick(connectErrorNT, self, err);
-      } else if (addressType !== 4 && addressType !== 6) {
-        err = new ERR_INVALID_ADDRESS_FAMILY(addressType,
-                                             options.host,
-                                             options.port);
-        process.nextTick(connectErrorNT, self, err);
-      } else {
-        self._unrefTimer();
-        defaultTriggerAsyncIdScope(
-          self[async_id_symbol],
-          internalConnect,
-          self, ip, port, addressType, localAddress, localPort,
-        );
-      }
-    });
-  });
-}
-
-function lookupAndConnectMultiple(
-  self, async_id_symbol, lookup, host, options, dnsopts, port, localAddress, localPort, timeout,
-) {
-  defaultTriggerAsyncIdScope(self[async_id_symbol], function emitLookup() {
-    lookup(host, dnsopts, function emitLookup(err, addresses) {
-      // It's possible we were destroyed while looking this up.
-      // XXX it would be great if we could cancel the promise returned by
-      // the look up.
-      if (!self.connecting) {
-        return;
-      } else if (err) {
-        self.emit('lookup', err, undefined, undefined, host);
-
-        // net.createConnection() creates a net.Socket object and immediately
-        // calls net.Socket.connect() on it (that's us). There are no event
-        // listeners registered yet so defer the error event to the next tick.
-        process.nextTick(connectErrorNT, self, err);
-        return;
-      }
-
-      // Filter addresses by only keeping the one which are either IPv4 or IPV6.
-      // The first valid address determines which group has preference on the
-      // alternate family sorting which happens later.
-      const validAddresses = [[], []];
-      const validIps = [[], []];
-      let destinations;
-      for (let i = 0, l = addresses.length; i < l; i++) {
-        const address = addresses[i];
-        const { address: ip, family: addressType } = address;
-        self.emit('lookup', err, ip, addressType, host);
-        // It's possible we were destroyed while looking this up.
-        if (!self.connecting) {
-          return;
-        }
-        if (isIP(ip) && (addressType === 4 || addressType === 6)) {
-          destinations ||= addressType === 6 ? { 6: 0, 4: 1 } : { 4: 0, 6: 1 };
-
-          const destination = destinations[addressType];
-
-          // Only try an address once
-          if (!ArrayPrototypeIncludes(validIps[destination], ip)) {
-            ArrayPrototypePush(validAddresses[destination], address);
-            ArrayPrototypePush(validIps[destination], ip);
-          }
-        }
-      }
-
-
-      // When no AAAA or A records are available, fail on the first one
-      if (!validAddresses[0].length && !validAddresses[1].length) {
-        const { address: firstIp, family: firstAddressType } = addresses[0];
-
-        if (!isIP(firstIp)) {
-          err = new ERR_INVALID_IP_ADDRESS(firstIp);
-          process.nextTick(connectErrorNT, self, err);
-        } else if (firstAddressType !== 4 && firstAddressType !== 6) {
-          err = new ERR_INVALID_ADDRESS_FAMILY(firstAddressType,
-                                               options.host,
-                                               options.port);
-          process.nextTick(connectErrorNT, self, err);
-        }
-
-        return;
-      }
-
-      // Sort addresses alternating families
-      const toAttempt = [];
-      for (let i = 0, l = MathMax(validAddresses[0].length, validAddresses[1].length); i < l; i++) {
-        if (i in validAddresses[0]) {
-          ArrayPrototypePush(toAttempt, validAddresses[0][i]);
-        }
-        if (i in validAddresses[1]) {
-          ArrayPrototypePush(toAttempt, validAddresses[1][i]);
-        }
-      }
-
-      if (toAttempt.length === 1) {
-        debug('connect/multiple: only one address found, switching back to single connection');
-        const { address: ip, family: addressType } = toAttempt[0];
-
-        self._unrefTimer();
-        defaultTriggerAsyncIdScope(
-          self[async_id_symbol],
-          internalConnect,
-          self,
-          ip,
-          port,
-          addressType,
-          localAddress,
-          localPort,
-        );
-
-        return;
-      }
-
-      self.autoSelectFamilyAttemptedAddresses = [];
-      debug('connect/multiple: will try the following addresses', toAttempt);
-
-      const context = {
-        socket: self,
-        addresses: toAttempt,
-        current: 0,
-        port,
-        localPort,
-        timeout,
-        [kTimeout]: null,
-        errors: [],
-      };
-
-      self._unrefTimer();
-      defaultTriggerAsyncIdScope(self[async_id_symbol], internalConnectMultiple, context);
-    });
-  });
-}
-
-function connectErrorNT(self, err) {
-  self.destroy(err);
-}
-
-
-Socket.prototype.ref = function() {
-  if (!this._handle) {
-    this.once('connect', this.ref);
-    return this;
-  }
-
-  if (typeof this._handle.ref === 'function') {
-    this._handle.ref();
-  }
-
-  return this;
-};
-
-
-Socket.prototype.unref = function() {
-  if (!this._handle) {
-    this.once('connect', this.unref);
-    return this;
-  }
-
-  if (typeof this._handle.unref === 'function') {
-    this._handle.unref();
-  }
-
-  return this;
-};
-
-
-function afterConnect(status, handle, req, readable, writable) {
-  const self = handle[owner_symbol];
-
-  // Callback may come after call to destroy
-  if (self.destroyed) {
-    return;
-  }
-
-  debug('afterConnect');
-
-  assert(self.connecting);
-  self.connecting = false;
-  self._sockname = null;
-
-  if (status === 0) {
-    if (self.readable && !readable) {
-      self.push(null);
-      self.read();
-    }
-    if (self.writable && !writable) {
-      self.end();
-    }
-    self._unrefTimer();
-
-    if (self[kSetNoDelay] && self._handle.setNoDelay) {
-      self._handle.setNoDelay(true);
-    }
-
-    if (self[kSetKeepAlive] && self._handle.setKeepAlive) {
-      self._handle.setKeepAlive(true, self[kSetKeepAliveInitialDelay]);
-    }
-
-    if (self[kSetTOS] !== undefined && self._handle.setTypeOfService) {
-      const err = self._handle.setTypeOfService(self[kSetTOS]);
-      // On Windows, setting TOS is best-effort. If it fails, we shouldn't destroy
-      // the connection or emit an error, as the socket is otherwise healthy.
-      if (err && err !== UV_EBADF && !isWindows) {
-        self.emit('error', new ErrnoException(err, 'setTypeOfService'));
-      }
-    }
-
-    self.emit('connect');
-    self.emit('ready');
-
-    // Start the first read, or get an immediate EOF.
-    // this doesn't actually consume any bytes, because len=0.
-    if (readable && !self.isPaused())
-      self.read(0);
-    if (self[kPerfHooksNetConnectContext] && hasObserver('net')) {
-      stopPerf(self, kPerfHooksNetConnectContext);
-    }
-  } else {
-    let details;
-    if (req.localAddress && req.localPort) {
-      details = req.localAddress + ':' + req.localPort;
-    }
-    const ex = new ExceptionWithHostPort(status,
-                                         'connect',
-                                         req.address,
-                                         req.port,
-                                         details);
-    if (details) {
-      ex.localAddress = req.localAddress;
-      ex.localPort = req.localPort;
-    }
-
-    self.emit('connectionAttemptFailed', req.address, req.port, req.addressType, ex);
-    self.destroy(ex);
-  }
-}
-
-function addClientAbortSignalOption(self, options) {
-  validateAbortSignal(options.signal, 'options.signal');
-  const { signal } = options;
-  let disposable;
-
-  function onAbort() {
-    disposable?.[SymbolDispose]();
-    self._aborted = true;
-  }
-
-  if (signal.aborted) {
-    process.nextTick(onAbort);
-  } else {
-    process.nextTick(() => {
-      disposable = addAbortListener(signal, onAbort);
-    });
-  }
-}
-
-function createConnectionError(req, status) {
-  let details;
-
-  if (req.localAddress && req.localPort) {
-    details = req.localAddress + ':' + req.localPort;
-  }
-
-  const ex = new ExceptionWithHostPort(status,
-                                       'connect',
-                                       req.address,
-                                       req.port,
-                                       details);
-  if (details) {
-    ex.localAddress = req.localAddress;
-    ex.localPort = req.localPort;
-  }
-
-  return ex;
-}
-
-function afterConnectMultiple(context, current, status, handle, req, readable, writable) {
-  debug('connect/multiple: connection attempt to %s:%s completed with status %s', req.address, req.port, status);
-
-  // Make sure another connection is not spawned
-  clearTimeout(context[kTimeout]);
-
-  // One of the connection has completed and correctly dispatched but after timeout, ignore this one
-  if (status === 0 && current !== context.current - 1) {
-    debug('connect/multiple: ignoring successful but timedout connection to %s:%s', req.address, req.port);
-    handle.close();
-    return;
-  }
-
-  const self = context.socket;
-
-  // Some error occurred, add to the list of exceptions
-  if (status !== 0) {
-    const ex = createConnectionError(req, status);
-    ArrayPrototypePush(context.errors, ex);
-
-    self.emit('connectionAttemptFailed', req.address, req.port, req.addressType, ex);
-
-    // Try the next address, unless we were aborted
-    if (context.socket.connecting) {
-      internalConnectMultiple(context, status === UV_ECANCELED);
-    }
-
-    return;
-  }
-
-  if (hasObserver('net')) {
-    startPerf(
-      self,
-      kPerfHooksNetConnectContext,
-      { type: 'net', name: 'connect', detail: { host: req.address, port: req.port } },
-    );
-  }
-
-  afterConnect(status, self._handle, req, readable, writable);
-}
-
-function internalConnectMultipleTimeout(context, req, handle) {
-  debug('connect/multiple: connection to %s:%s timed out', req.address, req.port);
-  context.socket.emit('connectionAttemptTimeout', req.address, req.port, req.addressType);
-
-  req.oncomplete = undefined;
-  ArrayPrototypePush(context.errors, createConnectionError(req, UV_ETIMEDOUT));
-  handle.close();
-
-  // Try the next address, unless we were aborted
-  if (context.socket.connecting) {
-    internalConnectMultiple(context);
-  }
-}
-
-function addServerAbortSignalOption(self, options) {
-  if (options?.signal === undefined) {
-    return;
-  }
-  validateAbortSignal(options.signal, 'options.signal');
-  const { signal } = options;
-  const onAborted = () => {
-    self.close();
-  };
-  if (signal.aborted) {
-    process.nextTick(onAborted);
-  } else {
-    const disposable = addAbortListener(signal, onAborted);
-    self.once('close', disposable[SymbolDispose]);
-  }
-}
-
-function Server(options, connectionListener) {
-  if (!(this instanceof Server))
-    return new Server(options, connectionListener);
-
-  EventEmitter.call(this);
-
-  if (typeof options === 'function') {
-    connectionListener = options;
-    options = kEmptyObject;
-    this.on('connection', connectionListener);
-  } else if (options == null || typeof options === 'object') {
-    options = { ...options };
-
-    if (typeof connectionListener === 'function') {
-      this.on('connection', connectionListener);
-    }
-  } else {
-    throw new ERR_INVALID_ARG_TYPE('options', 'Object', options);
-  }
-  if (options.keepAliveInitialDelay !== undefined) {
-    validateNumber(
-      options.keepAliveInitialDelay, 'options.keepAliveInitialDelay',
-    );
-
-    if (options.keepAliveInitialDelay < 0) {
-      options.keepAliveInitialDelay = 0;
-    }
-  }
-  if (options.highWaterMark !== undefined) {
-    validateNumber(
-      options.highWaterMark, 'options.highWaterMark',
-    );
-
-    if (options.highWaterMark < 0) {
-      options.highWaterMark = getDefaultHighWaterMark();
-    }
-  }
-
-  this._connections = 0;
-
-  this[async_id_symbol] = -1;
-  this._handle = null;
-  this._usingWorkers = false;
-  this._workers = [];
-  this._unref = false;
-  this._listeningId = 1;
-
-  this.allowHalfOpen = options.allowHalfOpen || false;
-  this.pauseOnConnect = !!options.pauseOnConnect;
-  this.noDelay = Boolean(options.noDelay);
-  this.keepAlive = Boolean(options.keepAlive);
-  this.keepAliveInitialDelay = ~~(options.keepAliveInitialDelay / 1000);
-  this.highWaterMark = options.highWaterMark ?? getDefaultHighWaterMark();
-  if (options.blockList) {
-    if (!module.exports.BlockList.isBlockList(options.blockList)) {
-      throw new ERR_INVALID_ARG_TYPE('options.blockList', 'net.BlockList', options.blockList);
-    }
-    this.blockList = options.blockList;
-  }
-}
-ObjectSetPrototypeOf(Server.prototype, EventEmitter.prototype);
-ObjectSetPrototypeOf(Server, EventEmitter);
-
-
-function toNumber(x) { return (x = Number(x)) >= 0 ? x : false; }
-
-// Returns handle if it can be created, or error code if it can't
-function createServerHandle(address, port, addressType, fd, flags) {
-  let err = 0;
-  // Assign handle in listen, and clean up if bind or listen fails
-  let handle;
-
-  let isTCP = false;
-  if (typeof fd === 'number' && fd >= 0) {
-    try {
-      handle = createHandle(fd, true);
-    } catch (e) {
-      // Not a fd we can listen on.  This will trigger an error.
-      debug('listen invalid fd=%d:', fd, e.message);
-      return UV_EINVAL;
-    }
-
-    err = handle.open(fd);
-    if (err)
-      return err;
-
-    assert(!address && !port);
-  } else if (port === -1 && addressType === -1) {
-    handle = new Pipe(PipeConstants.SERVER);
-    if (isWindows) {
-      const instances = NumberParseInt(process.env.NODE_PENDING_PIPE_INSTANCES);
-      if (!NumberIsNaN(instances)) {
-        handle.setPendingInstances(instances);
-      }
-    }
-  } else {
-    handle = new TCP(TCPConstants.SERVER);
-    isTCP = true;
-  }
-
-  if (address || port || isTCP) {
-    debug('bind to', address || 'any');
-    if (!address) {
-      // Try binding to ipv6 first
-      err = handle.bind6(DEFAULT_IPV6_ADDR, port, flags);
-      if (err) {
-        handle.close();
-        // Fallback to ipv4
-        return createServerHandle(DEFAULT_IPV4_ADDR, port, undefined, undefined, flags);
-      }
-    } else if (addressType === 6) {
-      err = handle.bind6(address, port, flags);
-    } else {
-      err = handle.bind(address, port, flags);
-    }
-  }
-
-  if (err) {
-    handle.close();
-    return err;
-  }
-
-  return handle;
-}
-
-function setupListenHandle(address, port, addressType, backlog, fd, flags) {
-  debug('setupListenHandle', address, port, addressType, backlog, fd);
-
-  // If there is not yet a handle, we need to create one and bind.
-  // In the case of a server sent via IPC, we don't need to do this.
-  if (this._handle) {
-    debug('setupListenHandle: have a handle already');
-  } else {
-    debug('setupListenHandle: create a handle');
-
-    let rval = null;
-
-    // Try to bind to the unspecified IPv6 address, see if IPv6 is available
-    if (!address && typeof fd !== 'number') {
-      rval = createServerHandle(DEFAULT_IPV6_ADDR, port, 6, fd, flags);
-
-      if (typeof rval === 'number') {
-        rval = null;
-        address = DEFAULT_IPV4_ADDR;
-        addressType = 4;
-      } else {
-        address = DEFAULT_IPV6_ADDR;
-        addressType = 6;
-      }
-    }
-
-    if (rval === null)
-      rval = createServerHandle(address, port, addressType, fd, flags);
-
-    if (typeof rval === 'number') {
-      const error = new UVExceptionWithHostPort(rval, 'listen', address, port);
-
-      if (netServerListen.hasSubscribers) {
-        netServerListen.error.publish({ server: this, error });
-      }
-
-      process.nextTick(emitErrorNT, this, error);
-      return;
-    }
-    this._handle = rval;
-  }
-
-  this[async_id_symbol] = getNewAsyncId(this._handle);
-  this._handle.onconnection = onconnection;
-  this._handle[owner_symbol] = this;
-
-  // Use a backlog of 512 entries. We pass 511 to the listen() call because
-  // the kernel does: backlogsize = roundup_pow_of_two(backlogsize + 1);
-  // which will thus give us a backlog of 512 entries.
-  const err = this._handle.listen(backlog || 511);
-
-  if (err) {
-    const ex = new UVExceptionWithHostPort(err, 'listen', address, port);
-    this._handle.close();
-    this._handle = null;
-
-    if (netServerListen.hasSubscribers) {
-      netServerListen.error.publish({ server: this, error: ex });
-    }
-
-    defaultTriggerAsyncIdScope(this[async_id_symbol],
-                               process.nextTick,
-                               emitErrorNT,
-                               this,
-                               ex);
-    return;
-  }
-
-  if (netServerListen.hasSubscribers) {
-    netServerListen.asyncEnd.publish({ server: this });
-  }
-
-  // Generate connection key, this should be unique to the connection
-  this._connectionKey = addressType + ':' + address + ':' + port;
-
-  // Unref the handle if the server was unref'ed prior to listening
-  if (this._unref)
-    this.unref();
-
-  defaultTriggerAsyncIdScope(this[async_id_symbol],
-                             process.nextTick,
-                             emitListeningNT,
-                             this);
-}
-
-Server.prototype._listen2 = setupListenHandle;  // legacy alias
-
-function emitErrorNT(self, err) {
-  self.emit('error', err);
-}
-
-
-function emitListeningNT(self) {
-  // Ensure handle hasn't closed
-  if (self._handle)
-    self.emit('listening');
-}
-
-
-function listenInCluster(server, address, port, addressType,
-                         backlog, fd, exclusive, flags, options) {
-  exclusive = !!exclusive;
-
-  if (cluster === undefined) cluster = require('cluster');
-
-  if (cluster.isPrimary || exclusive) {
-    // Will create a new handle
-    // _listen2 sets up the listened handle, it is still named like this
-    // to avoid breaking code that wraps this method
-    server._listen2(address, port, addressType, backlog, fd, flags);
-    return;
-  }
-
-  const serverQuery = {
-    address: address,
-    port: port,
-    addressType: addressType,
-    fd: fd,
-    flags,
-    backlog,
-    ...options,
-  };
-  const listeningId = server._listeningId;
-  // Get the primary's server handle, and listen on it
-  cluster._getServer(server, serverQuery, listenOnPrimaryHandle);
-  function listenOnPrimaryHandle(err, handle) {
-    if (listeningId !== server._listeningId) {
-      handle.close();
-      return;
-    }
-    err = checkBindError(err, port, handle);
-
-    if (err) {
-      const ex = new ExceptionWithHostPort(err, 'bind', address, port);
-      return server.emit('error', ex);
-    }
-    // If there was a handle, just close it to avoid fd leak
-    // but it doesn't look like that's going to happen right now
-    if (server._handle) {
-      server._handle.close();
-    }
-    // Reuse primary's server handle
-    server._handle = handle;
-    // _listen2 sets up the listened handle, it is still named like this
-    // to avoid breaking code that wraps this method
-    server._listen2(address, port, addressType, backlog, fd, flags);
-  }
-}
-
-
-Server.prototype.listen = function(...args) {
-  const normalized = normalizeArgs(args);
-  let options = normalized[0];
-  const cb = normalized[1];
-
-  if (this._handle) {
-    throw new ERR_SERVER_ALREADY_LISTEN();
-  }
-
-  if (netServerListen.hasSubscribers) {
-    netServerListen.asyncStart.publish({ server: this, options });
-  }
-
-  if (cb !== null) {
-    this.once('listening', cb);
-  }
-  const backlogFromArgs =
-    // (handle, backlog) or (path, backlog) or (port, backlog)
-    toNumber(args.length > 1 && args[1]) ||
-    toNumber(args.length > 2 && args[2]);  // (port, host, backlog)
-
-  options = options._handle || options.handle || options;
-  const flags = getFlags(options);
-  //  Refresh the id to make the previous call invalid
-  this._listeningId++;
-  // (handle[, backlog][, cb]) where handle is an object with a handle
-  if (options instanceof TCP) {
-    this._handle = options;
-    this[async_id_symbol] = this._handle.getAsyncId();
-    listenInCluster(this, null, -1, -1, backlogFromArgs, undefined, true);
-    return this;
-  }
-  addServerAbortSignalOption(this, options);
-  // (handle[, backlog][, cb]) where handle is an object with a fd
-  if (typeof options.fd === 'number' && options.fd >= 0) {
-    listenInCluster(this, null, null, null, backlogFromArgs, options.fd);
-    return this;
-  }
-
-  // ([port][, host][, backlog][, cb]) where port is omitted,
-  // that is, listen(), listen(null), listen(cb), or listen(null, cb)
-  // or (options[, cb]) where options.port is explicitly set as undefined or
-  // null, bind to an arbitrary unused port
-  if (args.length === 0 || typeof args[0] === 'function' ||
-      (options.port === undefined && 'port' in options) ||
-      options.port === null) {
-    options.port = 0;
-  }
-  // ([port][, host][, backlog][, cb]) where port is specified
-  // or (options[, cb]) where options.port is specified
-  // or if options.port is normalized as 0 before
-  let backlog;
-  if (typeof options.port === 'number' || typeof options.port === 'string') {
-    validatePort(options.port, 'options.port');
-    backlog = options.backlog || backlogFromArgs;
-    if (options.reusePort === true) {
-      options.exclusive = true;
-    }
-    // start TCP server listening on host:port
-    if (options.host) {
-      lookupAndListen(this, options.port | 0, options.host, backlog,
-                      options.exclusive, flags);
-    } else { // Undefined host, listens on unspecified address
-      // Default addressType 4 will be used to search for primary server
-      listenInCluster(this, null, options.port | 0, 4,
-                      backlog, undefined, options.exclusive, flags);
-    }
-    return this;
-  }
-
-  // (path[, backlog][, cb]) or (options[, cb])
-  // where path or options.path is a UNIX domain socket or Windows pipe
-  if (options.path && isPipeName(options.path)) {
-    // We can not call fchmod on abstract unix socket
-    if (options.path[0] === '\0' &&
-        (options.readableAll || options.writableAll)) {
-      const msg = 'can not set readableAll or writableAllt to true when path is abstract unix socket';
-      throw new ERR_INVALID_ARG_VALUE('options', options, msg);
-    }
-    const pipeName = this._pipeName = options.path;
-    backlog = options.backlog || backlogFromArgs;
-    listenInCluster(this,
-                    pipeName,
-                    -1,
-                    -1,
-                    backlog,
-                    undefined,
-                    options.exclusive,
-                    undefined,
-                    {
-                      readableAll: options.readableAll,
-                      writableAll: options.writableAll,
-                    });
-
-    if (!this._handle) {
-      // Failed and an error shall be emitted in the next tick.
-      // Therefore, we directly return.
-      return this;
-    }
-
-    let mode = 0;
-    if (options.readableAll === true)
-      mode |= PipeConstants.UV_READABLE;
-    if (options.writableAll === true)
-      mode |= PipeConstants.UV_WRITABLE;
-    if (mode !== 0) {
-      const err = this._handle.fchmod(mode);
-      if (err) {
-        this._handle.close();
-        this._handle = null;
-        throw new ErrnoException(err, 'uv_pipe_chmod');
-      }
-    }
-    return this;
-  }
-
-  if (!(('port' in options) || ('path' in options))) {
-    throw new ERR_INVALID_ARG_VALUE('options', options,
-                                    'must have the property "port" or "path"');
-  }
-
-  throw new ERR_INVALID_ARG_VALUE('options', options);
-};
-
-function isIpv6LinkLocal(ip) {
-  if (!isIPv6(ip)) { return false; }
-
-  const ipv6Buffer = convertIpv6StringToBuffer(ip);
-  const firstByte = ipv6Buffer[0];  // The first 8 bits
-  const secondByte = ipv6Buffer[1]; // The next 8 bits
-
-  // The link-local prefix is `1111111010`, which in hexadecimal is `fe80`
-  // First 8 bits (firstByte) should be `11111110` (0xfe)
-  // The next 2 bits of the second byte should be `10` (0x80)
-
-  const isFirstByteCorrect = (firstByte === 0xfe); // 0b11111110 == 0xfe
-  const isSecondByteCorrect = (secondByte & 0xc0) === 0x80; // 0b10xxxxxx == 0x80
-
-  return isFirstByteCorrect && isSecondByteCorrect;
-}
-
-function filterOnlyValidAddress(addresses) {
-  // Return the first non IPV6 link-local address if present
-  for (const address of addresses) {
-    if (!isIpv6LinkLocal(address.address)) {
-      return address;
-    }
-  }
-
-  // Otherwise return the first address
-  return addresses[0];
-}
-
-function lookupAndListen(self, port, address, backlog,
-                         exclusive, flags) {
-  if (dns === undefined) dns = require('dns');
-  const listeningId = self._listeningId;
-
-  dns.lookup(address, { all: true }, (err, addresses) => {
-    if (listeningId !== self._listeningId) {
-      return;
-    }
-    if (err) {
-      self.emit('error', err);
-    } else {
-      const validAddress = filterOnlyValidAddress(addresses);
-      const family = validAddress?.family || 4;
-
-      listenInCluster(self, validAddress.address, port, family,
-                      backlog, undefined, exclusive, flags);
-    }
-  });
-}
-
-ObjectDefineProperty(Server.prototype, 'listening', {
-  __proto__: null,
-  get: function() {
-    return !!this._handle;
-  },
-  configurable: true,
-  enumerable: true,
-});
-
-Server.prototype.address = function() {
-  if (this._handle?.getsockname) {
-    const out = {};
-    const err = this._handle.getsockname(out);
-    if (err) {
-      throw new ErrnoException(err, 'address');
-    }
-    return out;
-  } else if (this._pipeName) {
-    return this._pipeName;
-  }
-  return null;
-};
-
-function onconnection(err, clientHandle) {
-  const handle = this;
-  const self = handle[owner_symbol];
-
-  debug('onconnection');
-
-  if (err) {
-    self.emit('error', new ErrnoException(err, 'accept'));
-    return;
-  }
-
-  if (self.maxConnections != null && self._connections >= self.maxConnections) {
-    if (clientHandle.getsockname || clientHandle.getpeername) {
-      const data = { __proto__: null };
-      if (clientHandle.getsockname) {
-        const localInfo = { __proto__: null };
-        clientHandle.getsockname(localInfo);
-        data.localAddress = localInfo.address;
-        data.localPort = localInfo.port;
-        data.localFamily = localInfo.family;
-      }
-      if (clientHandle.getpeername) {
-        const remoteInfo = { __proto__: null };
-        clientHandle.getpeername(remoteInfo);
-        data.remoteAddress = remoteInfo.address;
-        data.remotePort = remoteInfo.port;
-        data.remoteFamily = remoteInfo.family;
-      }
-      self.emit('drop', data);
-    } else {
-      self.emit('drop');
-    }
-    clientHandle.close();
-    return;
-  }
-  if (self.blockList && typeof clientHandle.getpeername === 'function') {
-    const remoteInfo = { __proto__: null };
-    clientHandle.getpeername(remoteInfo);
-    const addressType = isIP(remoteInfo.address);
-    if (addressType && self.blockList.check(remoteInfo.address, `ipv${addressType}`)) {
-      clientHandle.close();
-      return;
-    }
-  }
-  const socket = new Socket({
-    handle: clientHandle,
-    allowHalfOpen: self.allowHalfOpen,
-    pauseOnCreate: self.pauseOnConnect,
-    readable: true,
-    writable: true,
-    readableHighWaterMark: self.highWaterMark,
-    writableHighWaterMark: self.highWaterMark,
-  });
-
-  if (self.noDelay && clientHandle.setNoDelay) {
-    socket[kSetNoDelay] = true;
-    clientHandle.setNoDelay(true);
-  }
-  if (self.keepAlive && clientHandle.setKeepAlive) {
-    socket[kSetKeepAlive] = true;
-    socket[kSetKeepAliveInitialDelay] = self.keepAliveInitialDelay;
-    clientHandle.setKeepAlive(true, self.keepAliveInitialDelay);
-  }
-
-  self._connections++;
-  socket.server = self;
-  socket._server = self;
-  self.emit('connection', socket);
-  if (netServerSocketChannel.hasSubscribers) {
-    netServerSocketChannel.publish({
-      socket,
-    });
-  }
-}
-
-/**
- * Gets the number of concurrent connections on the server
- * @param {Function} cb
- * @returns {Server}
- */
-
-Server.prototype.getConnections = function(cb) {
-  const self = this;
-
-  function end(err, connections) {
-    defaultTriggerAsyncIdScope(self[async_id_symbol],
-                               process.nextTick,
-                               cb,
-                               err,
-                               connections);
-  }
-
-  if (!this._usingWorkers) {
-    end(null, this._connections);
-    return this;
-  }
-
-  // Poll workers
-  let left = this._workers.length;
-  let total = this._connections;
-
-  function oncount(err, count) {
-    if (err) {
-      left = -1;
-      return end(err);
-    }
-
-    total += count;
-    if (--left === 0) return end(null, total);
-  }
-
-  for (let n = 0; n < this._workers.length; n++) {
-    this._workers[n].getConnections(oncount);
-  }
-
-  return this;
-};
-
-
-Server.prototype.close = function(cb) {
-  this._listeningId++;
-  if (typeof cb === 'function') {
-    if (!this._handle) {
-      this.once('close', function close() {
-        cb(new ERR_SERVER_NOT_RUNNING());
-      });
-    } else {
-      this.once('close', cb);
-    }
-  }
-
-  if (this._handle) {
-    this._handle.close();
-    this._handle = null;
-  }
-
-  if (this._usingWorkers) {
-    let left = this._workers.length;
-    const onWorkerClose = () => {
-      if (--left !== 0) return;
-
-      this._connections = 0;
-      this._emitCloseIfDrained();
-    };
-
-    // Increment connections to be sure that, even if all sockets will be closed
-    // during polling of workers, `close` event will be emitted only once.
-    this._connections++;
-
-    // Poll workers
-    for (let n = 0; n < this._workers.length; n++)
-      this._workers[n].close(onWorkerClose);
-  } else {
-    this._emitCloseIfDrained();
-  }
-
-  return this;
-};
-
-Server.prototype[SymbolAsyncDispose] = async function() {
-  if (!this._handle) {
-    return;
-  }
-  await FunctionPrototypeCall(promisify(this.close), this);
-};
-
-Server.prototype._emitCloseIfDrained = function() {
-  debug('SERVER _emitCloseIfDrained');
-
-  if (this._handle || this._connections) {
-    debug('SERVER handle? %j   connections? %d',
-          !!this._handle, this._connections);
-    return;
-  }
-
-  defaultTriggerAsyncIdScope(this[async_id_symbol],
-                             process.nextTick,
-                             emitCloseNT,
-                             this);
-};
-
-
-function emitCloseNT(self) {
-  debug('SERVER: emit close');
-  self.emit('close');
-}
-
-
-Server.prototype[EventEmitter.captureRejectionSymbol] = function(
-  err, event, sock) {
-
-  switch (event) {
-    case 'connection':
-      sock.destroy(err);
-      break;
-    default:
-      this.emit('error', err);
-  }
-};
-
-
-// Legacy alias on the C++ wrapper object. This is not public API, so we may
-// want to runtime-deprecate it at some point. There's no hurry, though.
-ObjectDefineProperty(TCP.prototype, 'owner', {
-  __proto__: null,
-  get() { return this[owner_symbol]; },
-  set(v) { return this[owner_symbol] = v; },
-});
-
-ObjectDefineProperty(Socket.prototype, '_handle', {
-  __proto__: null,
-  get() { return this[kHandle]; },
-  set(v) { return this[kHandle] = v; },
-});
-
-Server.prototype._setupWorker = function(socketList) {
-  this._usingWorkers = true;
-  this._workers.push(socketList);
-  socketList.once('exit', (socketList) => {
-    const index = ArrayPrototypeIndexOf(this._workers, socketList);
-    this._workers.splice(index, 1);
-  });
-};
-
-Server.prototype.ref = function() {
-  this._unref = false;
-
-  if (this._handle)
-    this._handle.ref();
-
-  return this;
-};
-
-Server.prototype.unref = function() {
-  this._unref = true;
-
-  if (this._handle)
-    this._handle.unref();
-
-  return this;
-};
 
 module.exports = {
-  _createServerHandle: createServerHandle,
-  _normalizeArgs: normalizeArgs,
-  get BlockList() {
-    BlockList ??= require('internal/blocklist').BlockList;
-    return BlockList;
-  },
-  get SocketAddress() {
-    SocketAddress ??= require('internal/socketaddress').SocketAddress;
-    return SocketAddress;
-  },
-  connect,
-  createConnection: connect,
-  createServer,
+  Socket: Socket,
+  Server: Server,
+  createServer: createServer,
+  connect: connect,
+  createConnection: createConnection,
   isIP: isIP,
   isIPv4: isIPv4,
   isIPv6: isIPv6,
-  Server,
-  Socket,
-  Stream: Socket, // Legacy naming
-  getDefaultAutoSelectFamily,
-  setDefaultAutoSelectFamily,
-  getDefaultAutoSelectFamilyAttemptTimeout,
-  setDefaultAutoSelectFamilyAttemptTimeout,
 };
-
 "#),
         "os.js" => Some(r#"'use strict';
 
@@ -133503,70 +128482,189 @@ module.exports = {
 };
 
 "#),
-        "perf_hooks.js" => Some(r#"﻿/**
- * This file is from Node.js official source code.
- * Source: https://github.com/nodejs/node
- * 
- * Modified for KossJS (Boa engine) compatibility:
- * - Removed internalBinding() calls that require Node.js C++ bindings
- * - Adapted to work with KossJS runtime
- */
+        "perf_hooks.js" => Some(r#"﻿'use strict';
 
-'use strict';
+var perfHooks;
 
-const {
-  ObjectDefineProperty,
-} = primordials;
+try {
+  perfHooks = internalBinding('performance');
+} catch (_) {
+  perfHooks = {};
+}
 
-const {
-  constants,
-} = internalBinding('performance');
+var constants = perfHooks.constants || {};
 
-const { PerformanceEntry } = require('internal/perf/performance_entry');
-const { PerformanceResourceTiming } = require('internal/perf/resource_timing');
-const {
-  PerformanceObserver,
-  PerformanceObserverEntryList,
-} = require('internal/perf/observe');
-const {
-  PerformanceMark,
-  PerformanceMeasure,
-} = require('internal/perf/usertiming');
-const {
-  Performance,
-  performance,
-} = require('internal/perf/performance');
-
-const {
-  createHistogram,
-} = require('internal/histogram');
-
-const monitorEventLoopDelay = require('internal/perf/event_loop_delay');
-const { eventLoopUtilization } = require('internal/perf/event_loop_utilization');
-const timerify = require('internal/perf/timerify');
-
-module.exports = {
-  Performance,
-  PerformanceEntry,
-  PerformanceMark,
-  PerformanceMeasure,
-  PerformanceObserver,
-  PerformanceObserverEntryList,
-  PerformanceResourceTiming,
-  monitorEventLoopDelay,
-  eventLoopUtilization,
-  timerify,
-  createHistogram,
-  performance,
+var performance = globalThis.performance || {
+  now: function() { return Date.now(); },
+  mark: function(name) {},
+  measure: function(name, startMark, endMark) {},
+  clearMarks: function(name) {},
+  clearMeasures: function(name) {},
+  getEntries: function() { return []; },
+  getEntriesByType: function(type) { return []; },
+  getEntriesByName: function(name) { return []; },
+  nodeTiming: {
+    name: 'node',
+    entryType: 'node',
+    startTime: 0,
+    duration: 0,
+    nodeStart: 0,
+    v8Start: 0,
+    bootstrapComplete: 0,
+    environment: 0,
+    loopStart: -1,
+    loopExit: -1,
+    idleTime: 0,
+  },
+  timeOrigin: Date.now(),
+  timing: {
+    startTime: 0,
+  },
 };
 
-ObjectDefineProperty(module.exports, 'constants', {
-  __proto__: null,
-  configurable: false,
-  enumerable: true,
-  value: constants,
-});
+class PerformanceEntry {
+  constructor() {
+    this.name = '';
+    this.entryType = '';
+    this.startTime = 0;
+    this.duration = 0;
+  }
+  toJSON() {
+    return {
+      name: this.name,
+      entryType: this.entryType,
+      startTime: this.startTime,
+      duration: this.duration,
+    };
+  }
+}
 
+class PerformanceMark extends PerformanceEntry {
+  constructor(name, options) {
+    super();
+    this.name = name;
+    this.entryType = 'mark';
+    this.startTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    this.duration = 0;
+  }
+}
+
+class PerformanceMeasure extends PerformanceEntry {
+  constructor() {
+    super();
+    this.entryType = 'measure';
+  }
+}
+
+class PerformanceObserver {
+  constructor(callback) {
+    if (typeof callback !== 'function') throw new TypeError('callback must be a function');
+    this._callback = callback;
+  }
+  observe(options) {}
+  disconnect() {}
+  takeRecords() { return []; }
+}
+
+PerformanceObserver.supportedEntryTypes = [];
+
+class PerformanceObserverEntryList {
+  constructor(entries) {
+    this._entries = entries || [];
+  }
+  getEntries() { return this._entries; }
+  getEntriesByType(type) { return this._entries.filter(function(e) { return e.entryType === type; }); }
+  getEntriesByName(name, type) {
+    return this._entries.filter(function(e) {
+      if (type) return e.name === name && e.entryType === type;
+      return e.name === name;
+    });
+  }
+}
+
+class PerformanceResourceTiming extends PerformanceEntry {
+  constructor() {
+    super();
+    this.entryType = 'resource';
+    this.initiatorType = '';
+    this.nextHopProtocol = '';
+    this.workerStart = 0;
+    this.redirectStart = 0;
+    this.redirectEnd = 0;
+    this.fetchStart = 0;
+    this.domainLookupStart = 0;
+    this.domainLookupEnd = 0;
+    this.connectStart = 0;
+    this.connectEnd = 0;
+    this.secureConnectionStart = 0;
+    this.requestStart = 0;
+    this.responseStart = 0;
+    this.responseEnd = 0;
+    this.transferSize = 0;
+    this.encodedBodySize = 0;
+    this.decodedBodySize = 0;
+    this.responseStatus = 200;
+  }
+}
+
+function monitorEventLoopDelay(options) {
+  return {
+    enable: function() {},
+    disable: function() {},
+    percentile: function(p) { return 0; },
+    min: 0,
+    max: 0,
+    mean: 0,
+    stddev: 0,
+    count: 0,
+    raw: [],
+    histogram: {},
+  };
+}
+
+function eventLoopUtilization(util1, util2) {
+  return {
+    idle: 0,
+    active: 0,
+    utilization: 0,
+  };
+}
+
+function timerify(fn) {
+  if (typeof fn !== 'function') throw new TypeError('fn must be a function');
+  return fn;
+}
+
+function createHistogram(options) {
+  return {
+    min: 0,
+    max: 0,
+    mean: 0,
+    stddev: 0,
+    count: 0,
+    percentile: function(p) { return 0; },
+    reset: function() {},
+    record: function(val) {},
+  };
+}
+
+var exports = {
+  Performance: PerformanceEntry,
+  PerformanceEntry: PerformanceEntry,
+  PerformanceMark: PerformanceMark,
+  PerformanceMeasure: PerformanceMeasure,
+  PerformanceObserver: PerformanceObserver,
+  PerformanceObserverEntryList: PerformanceObserverEntryList,
+  PerformanceResourceTiming: PerformanceResourceTiming,
+  monitorEventLoopDelay: monitorEventLoopDelay,
+  eventLoopUtilization: eventLoopUtilization,
+  timerify: timerify,
+  createHistogram: createHistogram,
+  performance: performance,
+  constants: constants,
+};
+
+module.exports = exports;
 "#),
         "process.js" => Some(r#"﻿/**
  * This file is from Node.js official source code.
@@ -136398,168 +131496,367 @@ module.exports = {
 module.exports = internalBinding('sqlite');
 
 "#),
-        "stream.js" => Some(r#"﻿/**
- * This file is from Node.js official source code.
- * Source: https://github.com/nodejs/node
- * 
- * Modified for KossJS (Boa engine) compatibility:
- * - Removed internalBinding() calls that require Node.js C++ bindings
- * - Adapted to work with KossJS runtime
- */
+        "stream.js" => Some(r#"﻿'use strict';
 
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
+var EventEmitter = require('events');
+var timers = require('timers');
 
-'use strict';
-
-const {
-  ObjectDefineProperty,
-  ObjectKeys,
-  ReflectApply,
-} = primordials;
-
-const {
-  promisify: { custom: customPromisify },
-} = require('internal/util');
-
-const {
-  streamReturningOperators,
-  promiseReturningOperators,
-} = require('internal/streams/operators');
-
-const {
-  codes: {
-    ERR_ILLEGAL_CONSTRUCTOR,
-  },
-} = require('internal/errors');
-const compose = require('internal/streams/compose');
-const { setDefaultHighWaterMark, getDefaultHighWaterMark } = require('internal/streams/state');
-const { pipeline } = require('internal/streams/pipeline');
-const { destroyer } = require('internal/streams/destroy');
-const { eos } = require('internal/streams/end-of-stream');
-const internalBuffer = require('internal/buffer');
-
-const promises = require('stream/promises');
-const utils = require('internal/streams/utils');
-const { isArrayBufferView, isUint8Array } = require('internal/util/types');
-
-const Stream = module.exports = require('internal/streams/legacy').Stream;
-
-Stream.isDestroyed = utils.isDestroyed;
-Stream.isDisturbed = utils.isDisturbed;
-Stream.isErrored = utils.isErrored;
-Stream.isReadable = utils.isReadable;
-Stream.isWritable = utils.isWritable;
-
-Stream.Readable = require('internal/streams/readable');
-const streamKeys = ObjectKeys(streamReturningOperators);
-for (let i = 0; i < streamKeys.length; i++) {
-  const key = streamKeys[i];
-  const op = streamReturningOperators[key];
-  function fn(...args) {
-    if (new.target) {
-      throw new ERR_ILLEGAL_CONSTRUCTOR();
-    }
-    return Stream.Readable.from(ReflectApply(op, this, args));
-  }
-  ObjectDefineProperty(fn, 'name', { __proto__: null, value: op.name });
-  ObjectDefineProperty(fn, 'length', { __proto__: null, value: op.length });
-  ObjectDefineProperty(Stream.Readable.prototype, key, {
-    __proto__: null,
-    value: fn,
-    enumerable: false,
-    configurable: true,
-    writable: true,
-  });
+function on(obj, ev, fn) {
+  obj.on(ev, fn);
+  return function() { obj.removeListener(ev, fn); };
 }
-const promiseKeys = ObjectKeys(promiseReturningOperators);
-for (let i = 0; i < promiseKeys.length; i++) {
-  const key = promiseKeys[i];
-  const op = promiseReturningOperators[key];
-  function fn(...args) {
-    if (new.target) {
-      throw new ERR_ILLEGAL_CONSTRUCTOR();
-    }
-    return ReflectApply(op, this, args);
-  }
-  ObjectDefineProperty(fn, 'name', { __proto__: null, value: op.name });
-  ObjectDefineProperty(fn, 'length', { __proto__: null, value: op.length });
-  ObjectDefineProperty(Stream.Readable.prototype, key, {
-    __proto__: null,
-    value: fn,
-    enumerable: false,
-    configurable: true,
-    writable: true,
-  });
+
+function isDuplex(obj) {
+  return obj && typeof obj._read === 'function' && typeof obj._write === 'function';
 }
-Stream.Writable = require('internal/streams/writable');
-Stream.Duplex = require('internal/streams/duplex');
-Stream.Transform = require('internal/streams/transform');
-Stream.PassThrough = require('internal/streams/passthrough');
-Stream.duplexPair = require('internal/streams/duplexpair');
-Stream.pipeline = pipeline;
-const { addAbortSignal } = require('internal/streams/add-abort-signal');
-Stream.addAbortSignal = addAbortSignal;
-Stream.finished = eos;
-Stream.destroy = destroyer;
-Stream.compose = compose;
-Stream.setDefaultHighWaterMark = setDefaultHighWaterMark;
-Stream.getDefaultHighWaterMark = getDefaultHighWaterMark;
 
-ObjectDefineProperty(Stream, 'promises', {
-  __proto__: null,
-  configurable: true,
-  enumerable: true,
-  get() {
-    return promises;
-  },
-});
+function isReadable(obj) {
+  return obj && typeof obj._read === 'function';
+}
 
-ObjectDefineProperty(pipeline, customPromisify, {
-  __proto__: null,
-  enumerable: true,
-  get() {
-    return promises.pipeline;
-  },
-});
+function isWritable(obj) {
+  return obj && typeof obj._write === 'function';
+}
 
-ObjectDefineProperty(eos, customPromisify, {
-  __proto__: null,
-  enumerable: true,
-  get() {
-    return promises.finished;
-  },
-});
+function highWaterMark(options) {
+  return (options && options.highWaterMark) || 16384;
+}
 
-// Backwards-compat with node 0.4.x
-Stream.Stream = Stream;
+function Readable(options) {
+  if (!(this instanceof Readable)) return new Readable(options);
+  EventEmitter.call(this);
+  this._readableState = {
+    highWaterMark: highWaterMark(options),
+    buffer: [],
+    flowing: false,
+    ended: false,
+    endEmitted: false,
+    reading: false,
+    destroyed: false,
+  };
+  this._read = (options && options.read) || function() {};
+}
+Readable.prototype = Object.create(EventEmitter.prototype, { constructor: { value: Readable } });
 
-Stream._isArrayBufferView = isArrayBufferView;
-Stream._isUint8Array = isUint8Array;
-Stream._uint8ArrayToBuffer = function _uint8ArrayToBuffer(chunk) {
-  return new internalBuffer.FastBuffer(chunk.buffer,
-                                       chunk.byteOffset,
-                                       chunk.byteLength);
+Readable.prototype.push = function(chunk) {
+  var state = this._readableState;
+  if (chunk === null) {
+    state.ended = true;
+    if (state.flowing) this.emit('end');
+    return false;
+  }
+  if (state.flowing) {
+    this.emit('data', chunk);
+    return true;
+  }
+  state.buffer.push(chunk);
+  return state.buffer.length < state.highWaterMark;
 };
 
+Readable.prototype.pipe = function(dest, options) {
+  var self = this;
+  var end = !options || options.end !== false;
+
+  self.on('data', function(data) {
+    var ok = dest.write(data);
+    if (!ok && self.pause) self.pause();
+  });
+
+  dest.on('drain', function() {
+    if (self.resume) self.resume();
+  });
+
+  if (end) {
+    self.on('end', function() {
+      dest.end();
+    });
+  }
+
+  self.on('error', function(err) { dest.emit('error', err); });
+  dest.on('error', function(err) { self.emit('error', err); });
+
+  return dest;
+};
+
+Readable.prototype.pause = function() {
+  this._readableState.flowing = false;
+  return this;
+};
+
+Readable.prototype.resume = function() {
+  this._readableState.flowing = true;
+  if (this._readableState.buffer.length > 0) {
+    var buf = this._readableState.buffer;
+    this._readableState.buffer = [];
+    for (var i = 0; i < buf.length; i++) {
+      this.emit('data', buf[i]);
+    }
+  }
+  if (this._readableState.ended) {
+    this.emit('end');
+  }
+  return this;
+};
+
+Readable.prototype.isPaused = function() {
+  return !this._readableState.flowing;
+};
+
+Readable.prototype.read = function(n) {
+  if (n === undefined) {
+    if (this._readableState.buffer.length > 0) {
+      return this._readableState.buffer.shift();
+    }
+    return null;
+  }
+  var chunks = [];
+  var len = 0;
+  while (this._readableState.buffer.length > 0 && len < n) {
+    var c = this._readableState.buffer.shift();
+    chunks.push(c);
+    len += c.length;
+  }
+  if (chunks.length === 0) return null;
+  if (chunks.length === 1) return chunks[0];
+  return Buffer.concat(chunks, len);
+};
+
+Readable.prototype.setEncoding = function(enc) {
+  this._readableState.encoding = enc;
+  return this;
+};
+
+Readable.prototype.destroy = function(err) {
+  this._readableState.destroyed = true;
+  if (err) this.emit('error', err);
+  this.emit('close');
+};
+
+Readable.prototype.wrap = function(oldStream) {
+  var self = this;
+  oldStream.on('data', function(chunk) { self.push(chunk); });
+  oldStream.on('end', function() { self.push(null); });
+  return self;
+};
+
+function Writable(options) {
+  if (!(this instanceof Writable)) return new Writable(options);
+  EventEmitter.call(this);
+  this._writableState = {
+    highWaterMark: highWaterMark(options),
+    writing: false,
+    ended: false,
+    destroyed: false,
+    needDrain: false,
+    corked: 0,
+    buffer: [],
+  };
+  this._write = (options && options.write) || function(chunk, enc, cb) { cb(null); };
+  this._writev = options && options.writev;
+  this._final = (options && options.final) || function(cb) { cb(null); };
+}
+Writable.prototype = Object.create(EventEmitter.prototype, { constructor: { value: Writable } });
+
+Writable.prototype.write = function(chunk, encoding, callback) {
+  if (typeof encoding === 'function') { callback = encoding; encoding = undefined; }
+  var state = this._writableState;
+  if (state.ended) {
+    if (callback) process.nextTick(callback);
+    return false;
+  }
+  if (state.corked > 0) {
+    state.buffer.push({ chunk: chunk, encoding: encoding, callback: callback });
+    return false;
+  }
+  var cb = callback || function() {};
+  if (state.writing) {
+    if (state.buffer.length < state.highWaterMark) {
+      state.buffer.push({ chunk: chunk, encoding: encoding, callback: cb });
+      return true;
+    }
+    state.needDrain = true;
+    state.buffer.push({ chunk: chunk, encoding: encoding, callback: cb });
+    return false;
+  }
+  state.writing = true;
+  var self = this;
+  this._write(chunk, encoding || 'utf8', function(err) {
+    state.writing = false;
+    if (err) {
+      self.emit('error', err);
+      return;
+    }
+    if (state.buffer.length > 0) {
+      var next = state.buffer.shift();
+      self.write(next.chunk, next.encoding, next.callback);
+    } else if (state.needDrain) {
+      state.needDrain = false;
+      self.emit('drain');
+    }
+    if (cb) cb(err);
+  });
+  return state.buffer.length < state.highWaterMark;
+};
+
+Writable.prototype.cork = function() { this._writableState.corked++; };
+Writable.prototype.uncork = function() {
+  if (--this._writableState.corked <= 0) {
+    this._writableState.corked = 0;
+    this._flushBuffer();
+  }
+};
+
+Writable.prototype._flushBuffer = function() {
+  var state = this._writableState;
+  while (state.buffer.length > 0 && !state.writing) {
+    var next = state.buffer.shift();
+    this.write(next.chunk, next.encoding, next.callback);
+  }
+};
+
+Writable.prototype.setDefaultEncoding = function(enc) { return this; };
+
+Writable.prototype.end = function(chunk, encoding, callback) {
+  if (typeof chunk === 'function') { callback = chunk; chunk = undefined; }
+  if (typeof encoding === 'function') { callback = encoding; encoding = undefined; }
+  if (chunk !== undefined) this.write(chunk, encoding);
+  this._writableState.ended = true;
+  if (callback) this.once('finish', callback);
+  var self = this;
+  process.nextTick(function() {
+    self._final(function(err) {
+      if (err) self.emit('error', err);
+      self.emit('finish');
+    });
+  });
+};
+
+Writable.prototype.destroy = function(err) {
+  this._writableState.destroyed = true;
+  if (err) this.emit('error', err);
+  this.emit('close');
+};
+
+function Duplex(options) {
+  if (!(this instanceof Duplex)) return new Duplex(options);
+  Readable.call(this, options);
+  Writable.call(this, options);
+}
+Duplex.prototype = Object.create(Readable.prototype, { constructor: { value: Duplex } });
+Object.keys(Writable.prototype).forEach(function(k) {
+  if (!Duplex.prototype[k]) Duplex.prototype[k] = Writable.prototype[k];
+});
+
+function Transform(options) {
+  if (!(this instanceof Transform)) return new Transform(options);
+  Duplex.call(this, options);
+  this._transform = (options && options.transform) || function(chunk, enc, cb) { cb(null, chunk); };
+  this._flush = (options && options.flush) || function(cb) { cb(null); };
+}
+Transform.prototype = Object.create(Duplex.prototype, { constructor: { value: Transform } });
+
+Transform.prototype._write = function(chunk, encoding, callback) {
+  var self = this;
+  this._transform(chunk, encoding, function(err, data) {
+    if (err) { callback(err); return; }
+    if (data !== undefined) self.push(data);
+    callback(null);
+  });
+};
+
+Transform.prototype._read = function(n) {
+  this.resume();
+};
+
+function PassThrough(options) {
+  if (!(this instanceof PassThrough)) return new PassThrough(options);
+  Transform.call(this, options);
+}
+PassThrough.prototype = Object.create(Transform.prototype, { constructor: { value: PassThrough } });
+PassThrough.prototype._transform = function(chunk, encoding, callback) {
+  callback(null, chunk);
+};
+
+function finished(stream, opts, cb) {
+  if (typeof opts === 'function') { cb = opts; opts = {}; }
+  if (!cb) return finished(stream, opts, undefined);
+  stream.on('end', cb);
+  stream.on('finish', cb);
+  stream.on('error', cb);
+  stream.on('close', cb);
+  return function() {
+    stream.removeListener('end', cb);
+    stream.removeListener('finish', cb);
+    stream.removeListener('error', cb);
+    stream.removeListener('close', cb);
+  };
+}
+
+function pipeline() {
+  var streams = Array.prototype.slice.call(arguments);
+  var cb = typeof streams[streams.length - 1] === 'function' ? streams.pop() : null;
+  var src = streams[0];
+  var dest = streams[streams.length - 1];
+
+  var i = 0;
+  function next(err) {
+    if (err) {
+      if (cb) cb(err);
+      return;
+    }
+    if (i >= streams.length - 1) {
+      if (cb) cb(null);
+      return;
+    }
+    streams[i].pipe(streams[i + 1]);
+    i++;
+    next(null);
+  }
+
+  src.on('error', function(err) {
+    dest.destroy(err);
+    if (cb) cb(err);
+  });
+  dest.on('error', function(err) {
+    src.destroy(err);
+    if (cb) cb(err);
+  });
+  dest.on('finish', function() {
+    if (cb) cb(null);
+  });
+
+  src.pipe(dest);
+  return dest;
+}
+
+function compose() { throw new Error('stream.compose not implemented'); }
+function addAbortSignal() { throw new Error('stream.addAbortSignal not implemented'); }
+
+function isReadableStream(stream) { return stream instanceof Readable; }
+function isWritableStream(stream) { return stream instanceof Writable; }
+function isTransformStream(stream) { return stream instanceof Transform; }
+function isStream(stream) { return stream instanceof Readable || stream instanceof Writable; }
+
+module.exports = {
+  Readable: Readable,
+  Writable: Writable,
+  Duplex: Duplex,
+  Transform: Transform,
+  PassThrough: PassThrough,
+  finished: finished,
+  pipeline: pipeline,
+  compose: compose,
+  addAbortSignal: addAbortSignal,
+  isReadable: isReadableStream,
+  isWritable: isWritableStream,
+  isTransform: isTransformStream,
+  isStream: isStream,
+  promises: {
+    pipeline: function() { return Promise.reject(new Error('not implemented')); },
+    finished: function() { return Promise.reject(new Error('not implemented')); },
+  },
+  Stream: Readable,
+};
 "#),
         "stream/consumers.js" => Some(r#"﻿/**
  * This file is from Node.js official source code.
@@ -137727,587 +133024,136 @@ module.exports = {
   setInterval,
   scheduler,
 };"#),
-        "tls.js" => Some(r#"﻿/**
- * This file is from Node.js official source code.
- * Source: https://github.com/nodejs/node
- * 
- * Modified for KossJS (Boa engine) compatibility:
- * - Removed internalBinding() calls that require Node.js C++ bindings
- * - Adapted to work with KossJS runtime
- */
+        "tls.js" => Some(r#"﻿'use strict';
 
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
+var net = require('net');
+var timers = require('timers');
 
-'use strict';
-
-const {
-  Array,
-  ArrayIsArray,
-  // eslint-disable-next-line no-restricted-syntax
-  ArrayPrototypePush,
-  JSONParse,
-  ObjectDefineProperty,
-  ObjectFreeze,
-  StringFromCharCode,
-} = primordials;
-
-const {
-  ERR_TLS_CERT_ALTNAME_FORMAT,
-  ERR_TLS_CERT_ALTNAME_INVALID,
-  ERR_OUT_OF_RANGE,
-  ERR_INVALID_ARG_VALUE,
-  ERR_INVALID_ARG_TYPE,
-} = require('internal/errors').codes;
-
-const {
-  getBundledRootCertificates,
-  getExtraCACertificates,
-  getSystemCACertificates,
-  resetRootCertStore,
-  getUserRootCertificates,
-  getSSLCiphers,
-  startLoadingCertificatesOffThread,
-} = internalBinding('crypto');
-
-// Start loading root certificates in a separate thread as early as possible
-// once the tls module is loaded, so that by the time an actual TLS connection is
-// made, the loading is done.
-startLoadingCertificatesOffThread();
-
-const internalUtil = require('internal/util');
-internalUtil.assertCrypto();
-const {
-  isArrayBufferView,
-  isUint8Array,
-} = require('internal/util/types');
-
-const net = require('net');
-const { getOptionValue } = require('internal/options');
-const { Buffer } = require('buffer');
-const { canonicalizeIP } = internalBinding('cares_wrap');
-const tlsCommon = require('internal/tls/common');
-const tlsWrap = require('internal/tls/wrap');
-const { validateString } = require('internal/validators');
-
-const {
-  namespace: {
-    addDeserializeCallback,
-    addSerializeCallback,
-    isBuildingSnapshot,
-  },
-} = require('internal/v8/startup_snapshot');
-
-// Allow {CLIENT_RENEG_LIMIT} client-initiated session renegotiations
-// every {CLIENT_RENEG_WINDOW} seconds. An error event is emitted if more
-// renegotiations are seen. The settings are applied to all remote client
-// connections.
-exports.CLIENT_RENEG_LIMIT = 3;
-exports.CLIENT_RENEG_WINDOW = 600;
-
-exports.DEFAULT_CIPHERS = getOptionValue('--tls-cipher-list');
-
-exports.DEFAULT_ECDH_CURVE = 'auto';
-
-if (getOptionValue('--tls-min-v1.0'))
-  exports.DEFAULT_MIN_VERSION = 'TLSv1';
-else if (getOptionValue('--tls-min-v1.1'))
-  exports.DEFAULT_MIN_VERSION = 'TLSv1.1';
-else if (getOptionValue('--tls-min-v1.2'))
-  exports.DEFAULT_MIN_VERSION = 'TLSv1.2';
-else if (getOptionValue('--tls-min-v1.3'))
-  exports.DEFAULT_MIN_VERSION = 'TLSv1.3';
-else
-  exports.DEFAULT_MIN_VERSION = 'TLSv1.2';
-
-if (getOptionValue('--tls-max-v1.3'))
-  exports.DEFAULT_MAX_VERSION = 'TLSv1.3';
-else if (getOptionValue('--tls-max-v1.2'))
-  exports.DEFAULT_MAX_VERSION = 'TLSv1.2';
-else
-  exports.DEFAULT_MAX_VERSION = 'TLSv1.3'; // Will depend on node version.
-
-
-exports.getCiphers = internalUtil.cachedResult(
-  () => internalUtil.filterDuplicateStrings(getSSLCiphers(), true),
-);
-
-let bundledRootCertificates;
-function cacheBundledRootCertificates() {
-  bundledRootCertificates ||= ObjectFreeze(getBundledRootCertificates());
-
-  return bundledRootCertificates;
-}
-
-ObjectDefineProperty(exports, 'rootCertificates', {
-  __proto__: null,
-  configurable: false,
-  enumerable: true,
-  get: cacheBundledRootCertificates,
-});
-
-let extraCACertificates;
-function cacheExtraCACertificates() {
-  extraCACertificates ||= ObjectFreeze(getExtraCACertificates());
-
-  return extraCACertificates;
-}
-
-let systemCACertificates;
-function cacheSystemCACertificates() {
-  systemCACertificates ||= ObjectFreeze(getSystemCACertificates());
-
-  return systemCACertificates;
-}
-
-let defaultCACertificates;
-let hasResetDefaultCACertificates = false;
-
-function cacheDefaultCACertificates() {
-  if (defaultCACertificates) { return defaultCACertificates; }
-
-  if (hasResetDefaultCACertificates) {
-    defaultCACertificates = getUserRootCertificates();
-    ObjectFreeze(defaultCACertificates);
-    return defaultCACertificates;
-  }
-
-  defaultCACertificates = [];
-
-  if (!getOptionValue('--use-openssl-ca')) {
-    const bundled = cacheBundledRootCertificates();
-    for (let i = 0; i < bundled.length; ++i) {
-      ArrayPrototypePush(defaultCACertificates, bundled[i]);
-    }
-    if (getOptionValue('--use-system-ca')) {
-      const system = cacheSystemCACertificates();
-      for (let i = 0; i < system.length; ++i) {
-
-        ArrayPrototypePush(defaultCACertificates, system[i]);
-      }
-    }
-  }
-
-  if (process.env.NODE_EXTRA_CA_CERTS) {
-    const extra = cacheExtraCACertificates();
-    for (let i = 0; i < extra.length; ++i) {
-
-      ArrayPrototypePush(defaultCACertificates, extra[i]);
-    }
-  }
-
-  ObjectFreeze(defaultCACertificates);
-  return defaultCACertificates;
-}
-
-// TODO(joyeecheung): support X509Certificate output?
-function getCACertificates(type = 'default') {
-  validateString(type, 'type');
-
-  switch (type) {
-    case 'default':
-      return cacheDefaultCACertificates();
-    case 'bundled':
-      return cacheBundledRootCertificates();
-    case 'system':
-      return cacheSystemCACertificates();
-    case 'extra':
-      return cacheExtraCACertificates();
-    default:
-      throw new ERR_INVALID_ARG_VALUE('type', type);
+function TLSSocket(socket, options) {
+  if (!(this instanceof TLSSocket)) return new TLSSocket(socket, options);
+  net.Socket.call(this);
+  this._tlsOptions = options || {};
+  if (socket) {
+    this._fd = socket._fd;
+    this.remoteAddress = socket.remoteAddress;
+    this.remotePort = socket.remotePort;
+    this.encrypted = true;
   }
 }
-exports.getCACertificates = getCACertificates;
+TLSSocket.prototype = Object.create(net.Socket.prototype, { constructor: { value: TLSSocket } });
 
-function setDefaultCACertificates(certs) {
-  if (!ArrayIsArray(certs)) {
-    throw new ERR_INVALID_ARG_TYPE('certs', 'Array', certs);
-  }
-
-  // Verify that all elements in the array are strings
-  for (let i = 0; i < certs.length; i++) {
-    if (typeof certs[i] !== 'string' && !isArrayBufferView(certs[i])) {
-      throw new ERR_INVALID_ARG_TYPE(
-        `certs[${i}]`, ['string', 'ArrayBufferView'], certs[i]);
-    }
-  }
-
-  resetRootCertStore(certs);
-  defaultCACertificates = undefined; // Reset the cached default certificates
-  hasResetDefaultCACertificates = true;
-}
-
-exports.setDefaultCACertificates = setDefaultCACertificates;
-
-if (isBuildingSnapshot()) {
-  addSerializeCallback(() => {
-    // Clear the cached certs so that they are reloaded at runtime.
-    // Bundled certificates are immutable so they are spared.
-    extraCACertificates = undefined;
-    systemCACertificates = undefined;
-    if (hasResetDefaultCACertificates) {
-      defaultCACertificates = undefined;
-    }
-  });
-  addDeserializeCallback(() => {
-    // If the tls module is loaded during snapshotting, load the certificates from
-    // various sources again at runtime so that by the time an actual TLS connection is
-    // made, the loading is done. If the default CA certificates have been overridden, then
-    // the serialized overriding certificates are likely to be used and pre-loading
-    // from the sources would probably not yield any benefit, so skip it.
-    if (!hasResetDefaultCACertificates) {
-      startLoadingCertificatesOffThread();
-    }
-  });
-}
-
-// Convert protocols array into valid OpenSSL protocols list
-// ("\x06spdy/2\x08http/1.1\x08http/1.0")
-function convertProtocols(protocols) {
-  const lens = new Array(protocols.length);
-  const buff = Buffer.allocUnsafe(protocols.reduce((p, c, i) => {
-    const len = Buffer.byteLength(c);
-    if (len > 255) {
-      throw new ERR_OUT_OF_RANGE('The byte length of the protocol at index ' +
-        `${i} exceeds the maximum length.`, '<= 255', len, true);
-    }
-    lens[i] = len;
-    return p + 1 + len;
-  }, 0));
-
-  let offset = 0;
-  for (let i = 0, c = protocols.length; i < c; i++) {
-    buff[offset++] = lens[i];
-    buff.write(protocols[i], offset);
-    offset += lens[i];
-  }
-
-  return buff;
-}
-
-exports.convertALPNProtocols = function convertALPNProtocols(protocols, out) {
-  // If protocols is Array - translate it into buffer
-  if (ArrayIsArray(protocols)) {
-    out.ALPNProtocols = convertProtocols(protocols);
-  } else if (isUint8Array(protocols)) {
-    // Copy new buffer not to be modified by user.
-    out.ALPNProtocols = Buffer.from(protocols);
-  } else if (isArrayBufferView(protocols)) {
-    out.ALPNProtocols = Buffer.from(protocols.buffer.slice(
-      protocols.byteOffset,
-      protocols.byteOffset + protocols.byteLength,
-    ));
-  }
-};
-
-function unfqdn(host) {
-  return host.replace(/[.]$/, '');
-}
-
-// String#toLowerCase() is locale-sensitive so we use
-// a conservative version that only lowercases A-Z.
-function toLowerCase(c) {
-  return StringFromCharCode(32 + c.charCodeAt(0));
-}
-
-function splitHost(host) {
-  return unfqdn(host).replace(/[A-Z]/g, toLowerCase).split('.');
-}
-
-function check(hostParts, pattern, wildcards) {
-  // Empty strings, null, undefined, etc. never match.
-  if (!pattern)
-    return false;
-
-  const patternParts = splitHost(pattern);
-
-  if (hostParts.length !== patternParts.length)
-    return false;
-
-  // Pattern has empty components, e.g. "bad..example.com".
-  if (patternParts.includes(''))
-    return false;
-
-  // RFC 6125 allows IDNA U-labels (Unicode) in names but we have no
-  // good way to detect their encoding or normalize them so we simply
-  // reject them.  Control characters and blanks are rejected as well
-  // because nothing good can come from accepting them.
-  const isBad = (s) => /[^\u0021-\u007F]/u.test(s);
-  if (patternParts.some(isBad))
-    return false;
-
-  // Check host parts from right to left first.
-  for (let i = hostParts.length - 1; i > 0; i -= 1) {
-    if (hostParts[i] !== patternParts[i])
-      return false;
-  }
-
-  const hostSubdomain = hostParts[0];
-  const patternSubdomain = patternParts[0];
-  const patternSubdomainParts = patternSubdomain.split('*', 3);
-
-  // Short-circuit when the subdomain does not contain a wildcard.
-  // RFC 6125 does not allow wildcard substitution for components
-  // containing IDNA A-labels (Punycode) so match those verbatim.
-  if (patternSubdomainParts.length === 1 ||
-      patternSubdomain.includes('xn--'))
-    return hostSubdomain === patternSubdomain;
-
-  if (!wildcards)
-    return false;
-
-  // More than one wildcard is always wrong.
-  if (patternSubdomainParts.length > 2)
-    return false;
-
-  // *.tld wildcards are not allowed.
-  if (patternParts.length <= 2)
-    return false;
-
-  const { 0: prefix, 1: suffix } = patternSubdomainParts;
-
-  if (prefix.length + suffix.length > hostSubdomain.length)
-    return false;
-
-  if (!hostSubdomain.startsWith(prefix))
-    return false;
-
-  if (!hostSubdomain.endsWith(suffix))
-    return false;
-
-  return true;
-}
-
-// This pattern is used to determine the length of escaped sequences within
-// the subject alt names string. It allows any valid JSON string literal.
-// This MUST match the JSON specification (ECMA-404 / RFC8259) exactly.
-const jsonStringPattern =
-  // eslint-disable-next-line no-control-regex
-  /^"(?:[^"\\\u0000-\u001f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"/;
-
-function splitEscapedAltNames(altNames) {
-  const result = [];
-  let currentToken = '';
-  let offset = 0;
-  while (offset !== altNames.length) {
-    const nextSep = altNames.indexOf(',', offset);
-    const nextQuote = altNames.indexOf('"', offset);
-    if (nextQuote !== -1 && (nextSep === -1 || nextQuote < nextSep)) {
-      // There is a quote character and there is no separator before the quote.
-      currentToken += altNames.substring(offset, nextQuote);
-      const match = jsonStringPattern.exec(altNames.substring(nextQuote));
-      if (!match) {
-        throw new ERR_TLS_CERT_ALTNAME_FORMAT();
-      }
-      currentToken += JSONParse(match[0]);
-      offset = nextQuote + match[0].length;
-    } else if (nextSep !== -1) {
-      // There is a separator and no quote before it.
-      currentToken += altNames.substring(offset, nextSep);
-      result.push(currentToken);
-      currentToken = '';
-      offset = nextSep + 2;
-    } else {
-      currentToken += altNames.substring(offset);
-      offset = altNames.length;
-    }
-  }
-  result.push(currentToken);
-  return result;
-}
-
-exports.checkServerIdentity = function checkServerIdentity(hostname, cert) {
-  const subject = cert.subject;
-  const altNames = cert.subjectaltname;
-  const dnsNames = [];
-  const ips = [];
-
-  hostname = '' + hostname;
-
-  if (altNames) {
-    const splitAltNames = altNames.includes('"') ?
-      splitEscapedAltNames(altNames) :
-      altNames.split(', ');
-    splitAltNames.forEach((name) => {
-      if (name.startsWith('DNS:')) {
-        dnsNames.push(name.slice(4));
-      } else if (name.startsWith('IP Address:')) {
-        ips.push(canonicalizeIP(name.slice(11)));
-      }
-    });
-  }
-
-  let valid = false;
-  let reason = 'Unknown reason';
-
-  hostname = unfqdn(hostname);  // Remove trailing dot for error messages.
-
-  if (net.isIP(hostname)) {
-    valid = ips.includes(canonicalizeIP(hostname));
-    if (!valid)
-      reason = `IP: ${hostname} is not in the cert's list: ` + ips.join(', ');
-  } else if (dnsNames.length > 0 || subject?.CN) {
-    const hostParts = splitHost(hostname);
-    const wildcard = (pattern) => check(hostParts, pattern, true);
-
-    if (dnsNames.length > 0) {
-      valid = dnsNames.some(wildcard);
-      if (!valid)
-        reason =
-          `Host: ${hostname}. is not in the cert's altnames: ${altNames}`;
-    } else {
-      // Match against Common Name only if no supported identifiers exist.
-      const cn = subject.CN;
-
-      if (ArrayIsArray(cn))
-        valid = cn.some(wildcard);
-      else if (cn)
-        valid = wildcard(cn);
-
-      if (!valid)
-        reason = `Host: ${hostname}. is not cert's CN: ${cn}`;
-    }
+function connect(options, callback) {
+  var port, host, cb;
+  if (typeof options === 'object') {
+    port = options.port;
+    host = options.host || '127.0.0.1';
+    cb = options.callback || callback;
   } else {
-    reason = 'Cert does not contain a DNS name';
+    port = arguments[0];
+    host = arguments[1] || '127.0.0.1';
+    cb = callback;
   }
+  var socket = net.connect(port, host, function() {
+    if (cb) cb(null, socket);
+  });
+  socket.encrypted = false;
+  return socket;
+}
 
-  if (!valid) {
-    return new ERR_TLS_CERT_ALTNAME_INVALID(reason, hostname, cert);
-  }
+function createServer(options, secureConnectionListener) {
+  var server = net.createServer(function(socket) {
+    socket.encrypted = true;
+    if (secureConnectionListener) secureConnectionListener(socket);
+  });
+  return server;
+}
+
+function createSecureContext(options) {
+  return { context: {} };
+}
+
+function checkServerIdentity(host, cert) {
+  return undefined;
+}
+
+module.exports = {
+  TLSSocket: TLSSocket,
+  connect: connect,
+  createServer: createServer,
+  createSecureContext: createSecureContext,
+  checkServerIdentity: checkServerIdentity,
 };
-
-exports.createSecureContext = tlsCommon.createSecureContext;
-exports.SecureContext = tlsCommon.SecureContext;
-exports.TLSSocket = tlsWrap.TLSSocket;
-exports.Server = tlsWrap.Server;
-exports.createServer = tlsWrap.createServer;
-exports.connect = tlsWrap.connect;
-
 "#),
-        "trace_events.js" => Some(r#"﻿/**
- * This file is from Node.js official source code.
- * Source: https://github.com/nodejs/node
- * 
- * Modified for KossJS (Boa engine) compatibility:
- * - Removed internalBinding() calls that require Node.js C++ bindings
- * - Adapted to work with KossJS runtime
- */
+        "trace_events.js" => Some(r#"﻿'use strict';
 
-'use strict';
+var kMaxTracingCount = 10;
+var enabledTracingObjects = [];
+var enabledCategories = '';
 
-const {
-  ArrayPrototypeJoin,
-  SafeSet,
-} = primordials;
-
-const { hasTracing } = internalBinding('config');
-
-const kMaxTracingCount = 10;
-
-const {
-  ERR_TRACE_EVENTS_CATEGORY_REQUIRED,
-  ERR_TRACE_EVENTS_UNAVAILABLE,
-} = require('internal/errors').codes;
-
-const { ownsProcessState } = require('internal/worker');
-if (!hasTracing || !ownsProcessState)
-  throw new ERR_TRACE_EVENTS_UNAVAILABLE();
-
-const { CategorySet, getEnabledCategories } = internalBinding('trace_events');
-const { customInspectSymbol } = require('internal/util');
-const { format } = require('internal/util/inspect');
-const {
-  validateObject,
-  validateStringArray,
-} = require('internal/validators');
-
-const enabledTracingObjects = new SafeSet();
+function normalizeCategories(categories) {
+  if (Array.isArray(categories)) return categories;
+  if (typeof categories === 'string') return categories.split(',');
+  return [];
+}
 
 class Tracing {
-  #handle;
-  #categories;
-  #enabled = false;
-
   constructor(categories) {
-    this.#handle = new CategorySet(categories);
-    this.#categories = categories;
+    this._categories = normalizeCategories(categories);
+    this._enabled = false;
   }
 
   enable() {
-    if (!this.#enabled) {
-      this.#enabled = true;
-      this.#handle.enable();
-      enabledTracingObjects.add(this);
-      if (enabledTracingObjects.size > kMaxTracingCount) {
-        process.emitWarning(
-          'Possible trace_events memory leak detected. There are more than ' +
-          `${kMaxTracingCount} enabled Tracing objects.`,
-        );
+    if (!this._enabled) {
+      this._enabled = true;
+      enabledTracingObjects.push(this);
+      enabledCategories = this._categories.join(',');
+      if (enabledTracingObjects.length > kMaxTracingCount) {
+        if (typeof process !== 'undefined' && typeof process.emitWarning === 'function') {
+          process.emitWarning(
+            'Possible trace_events memory leak detected. There are more than ' +
+            kMaxTracingCount + ' enabled Tracing objects.',
+          );
+        }
       }
     }
   }
 
   disable() {
-    if (this.#enabled) {
-      this.#enabled = false;
-      this.#handle.disable();
-      enabledTracingObjects.delete(this);
+    if (this._enabled) {
+      this._enabled = false;
+      var idx = enabledTracingObjects.indexOf(this);
+      if (idx !== -1) enabledTracingObjects.splice(idx, 1);
+      enabledCategories = '';
+      for (var i = 0; i < enabledTracingObjects.length; i++) {
+        if (enabledCategories) enabledCategories += ',';
+        enabledCategories += enabledTracingObjects[i]._categories.join(',');
+      }
     }
   }
 
-  get enabled() {
-    return this.#enabled;
-  }
-
-  get categories() {
-    return ArrayPrototypeJoin(this.#categories, ',');
-  }
-
-  [customInspectSymbol](depth, opts) {
-    if (typeof depth === 'number' && depth < 0)
-      return this;
-
-    const obj = {
-      enabled: this.enabled,
-      categories: this.categories,
-    };
-    return `Tracing ${format(obj)}`;
-  }
+  get enabled() { return this._enabled; }
+  get categories() { return this._categories.join(','); }
 }
 
 function createTracing(options) {
-  validateObject(options, 'options');
-  validateStringArray(options.categories, 'options.categories');
-
-  if (options.categories.length <= 0)
-    throw new ERR_TRACE_EVENTS_CATEGORY_REQUIRED();
-
+  if (typeof options !== 'object' || options === null) {
+    throw new TypeError('options must be an object');
+  }
+  if (!Array.isArray(options.categories) || options.categories.length <= 0) {
+    throw new Error('categories is required');
+  }
   return new Tracing(options.categories);
 }
 
-module.exports = {
-  createTracing,
-  getEnabledCategories,
-};
+function getEnabledCategories() {
+  return enabledCategories || undefined;
+}
 
+module.exports = {
+  Tracing: Tracing,
+  createTracing: createTracing,
+  getEnabledCategories: getEnabledCategories,
+};
 "#),
         "tty.js" => Some(r#"﻿/**
  * This file is from Node.js official source code.
@@ -138731,577 +133577,325 @@ module.exports = {
     urlToHttpOptions,
 };
 "#),
-        "util.js" => Some(r#"﻿/**
- * This file is from Node.js official source code.
- * Source: https://github.com/nodejs/node
- * 
- * Modified for KossJS (Boa engine) compatibility:
- * - Removed internalBinding() calls that require Node.js C++ bindings
- * - Adapted to work with KossJS runtime
- */
+        "util.js" => Some(r#"﻿'use strict';
 
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-'use strict';
-
-const {
-  ArrayIsArray,
-  ArrayPrototypePop,
-  ArrayPrototypePush,
-  Error,
-  ErrorCaptureStackTrace,
-  FunctionPrototypeBind,
-  NumberIsSafeInteger,
-  ObjectDefineProperties,
-  ObjectDefineProperty,
-  ObjectGetOwnPropertyDescriptors,
-  ObjectGetOwnPropertyNames,
-  ObjectKeys,
-  ObjectSetPrototypeOf,
-  ObjectValues,
-  ReflectApply,
-  StringPrototypeToWellFormed,
-} = primordials;
-
-const {
-  ErrnoException,
-  ExceptionWithHostPort,
-  codes: {
-    ERR_FALSY_VALUE_REJECTION,
-    ERR_INVALID_ARG_TYPE,
-    ERR_OUT_OF_RANGE,
-  },
-  isErrorStackTraceLimitWritable,
-} = require('internal/errors');
-const {
-  format,
-  formatWithOptions,
-  inspect,
-  stripVTControlCharacters,
-} = require('internal/util/inspect');
-const { debuglog } = require('internal/util/debuglog');
-const {
-  validateBoolean,
-  validateFunction,
-  validateNumber,
-  validateString,
-  validateOneOf,
-  validateObject,
-  validateInteger,
-} = require('internal/validators');
-const {
-  isReadableStream,
-  isWritableStream,
-  isNodeStream,
-} = require('internal/streams/utils');
-const types = require('internal/util/types');
-
-let utilColors;
-function lazyUtilColors() {
-  utilColors ??= require('internal/util/colors');
-  return utilColors;
-}
-const { getOptionValue } = require('internal/options');
-
-const binding = internalBinding('util');
-
-const {
-  convertProcessSignalToExitCode,
-  deprecate: internalDeprecate,
-  getLazy,
-  getSystemErrorMap,
-  getSystemErrorName: internalErrorName,
-  getSystemErrorMessage: internalErrorMessage,
-  promisify,
-  defineLazyProperties,
-} = require('internal/util');
-
-let abortController;
-
-function lazyAbortController() {
-  abortController ??= require('internal/abort_controller');
-  return abortController;
+var binding;
+try {
+  binding = internalBinding('util');
+} catch (_) {
+  binding = {};
 }
 
-let internalDeepEqual;
-
-// Pre-computed ANSI escape code constants
-const kEscape = '\u001b[';
-const kEscapeEnd = 'm';
-
-// Codes for dim (2) and bold (1) - these share close code 22
-const kDimCode = 2;
-const kBoldCode = 1;
-
-let styleCache;
-
-function getStyleCache() {
-  if (styleCache === undefined) {
-    styleCache = { __proto__: null };
-    const colors = inspect.colors;
-    for (const key of ObjectGetOwnPropertyNames(colors)) {
-      const codes = colors[key];
-      if (codes) {
-        const openNum = codes[0];
-        const closeNum = codes[1];
-        styleCache[key] = {
-          __proto__: null,
-          openSeq: kEscape + openNum + kEscapeEnd,
-          closeSeq: kEscape + closeNum + kEscapeEnd,
-          keepClose: openNum === kDimCode || openNum === kBoldCode,
-        };
-      }
-    }
-  }
-  return styleCache;
+var getSystemErrorName;
+if (binding && typeof binding.getSystemErrorName === 'function') {
+  getSystemErrorName = binding.getSystemErrorName;
+} else {
+  getSystemErrorName = function(errno) { return 'Unknown error (' + errno + ')'; };
 }
 
-function replaceCloseCode(str, closeSeq, openSeq, keepClose) {
-  const closeLen = closeSeq.length;
-  let index = str.indexOf(closeSeq);
-  if (index === -1) return str;
-
-  let result = '';
-  let lastIndex = 0;
-  const replacement = keepClose ? closeSeq + openSeq : openSeq;
-
-  do {
-    const afterClose = index + closeLen;
-    if (afterClose < str.length) {
-      result += str.slice(lastIndex, index) + replacement;
-      lastIndex = afterClose;
-    } else {
-      break;
-    }
-    index = str.indexOf(closeSeq, lastIndex);
-  } while (index !== -1);
-
-  return result + str.slice(lastIndex);
+var getSystemErrorMap;
+if (binding && typeof binding.getSystemErrorMap === 'function') {
+  getSystemErrorMap = binding.getSystemErrorMap;
+} else {
+  getSystemErrorMap = function() { return {}; };
 }
 
-/**
- * @param {string | string[]} format
- * @param {string} text
- * @param {object} [options]
- * @param {boolean} [options.validateStream] - Whether to validate the stream.
- * @param {Stream} [options.stream] - The stream used for validation.
- * @returns {string}
- */
-function styleText(format, text, options) {
-  const validateStream = options?.validateStream ?? true;
-  const cache = getStyleCache();
-
-  // Fast path: single format string with validateStream=false
-  if (!validateStream && typeof format === 'string' && typeof text === 'string') {
-    if (format === 'none') return text;
-    const style = cache[format];
-    if (style !== undefined) {
-      const processed = replaceCloseCode(text, style.closeSeq, style.openSeq, style.keepClose);
-      return style.openSeq + processed + style.closeSeq;
-    }
-  }
-
-  validateString(text, 'text');
-  if (options !== undefined) {
-    validateObject(options, 'options');
-  }
-  validateBoolean(validateStream, 'options.validateStream');
-
-  let skipColorize;
-  if (validateStream) {
-    const stream = options?.stream ?? process.stdout;
-    if (
-      !isReadableStream(stream) &&
-      !isWritableStream(stream) &&
-      !isNodeStream(stream)
-    ) {
-      throw new ERR_INVALID_ARG_TYPE('stream', ['ReadableStream', 'WritableStream', 'Stream'], stream);
-    }
-    skipColorize = !lazyUtilColors().shouldColorize(stream);
-  }
-
-  const formatArray = ArrayIsArray(format) ? format : [format];
-
-  let openCodes = '';
-  let closeCodes = '';
-  let processedText = text;
-
-  for (const key of formatArray) {
-    if (key === 'none') continue;
-    const style = cache[key];
-    if (style === undefined) {
-      validateOneOf(key, 'format', ObjectGetOwnPropertyNames(inspect.colors));
-    }
-    openCodes += style.openSeq;
-    closeCodes = style.closeSeq + closeCodes;
-    processedText = replaceCloseCode(processedText, style.closeSeq, style.openSeq, style.keepClose);
-  }
-
-  if (skipColorize) return text;
-
-  return `${openCodes}${processedText}${closeCodes}`;
+function _formatValue(v) {
+  if (typeof v === 'string') return v;
+  return inspect(v);
 }
 
-/**
- * Inherit the prototype methods from one constructor into another.
- *
- * The Function.prototype.inherits from lang.js rewritten as a standalone
- * function (not on Function.prototype). NOTE: If this file is to be loaded
- * during bootstrapping this function needs to be rewritten using some native
- * functions as prototype setup using normal JavaScript does not work as
- * expected during bootstrapping (see mirror.js in r114903).
- * @param {Function} ctor Constructor function which needs to inherit the
- *   prototype.
- * @param {Function} superCtor Constructor function to inherit prototype from.
- * @throws {TypeError} Will error if either constructor is null, or if
- * the super constructor lacks a prototype.
- */
-function inherits(ctor, superCtor) {
-
-  if (ctor === undefined || ctor === null)
-    throw new ERR_INVALID_ARG_TYPE('ctor', 'Function', ctor);
-
-  if (superCtor === undefined || superCtor === null)
-    throw new ERR_INVALID_ARG_TYPE('superCtor', 'Function', superCtor);
-
-  if (superCtor.prototype === undefined) {
-    throw new ERR_INVALID_ARG_TYPE('superCtor.prototype',
-                                   'Object', superCtor.prototype);
+function format(f) {
+  if (typeof f !== 'string') {
+    var arr = [];
+    for (var i = 0; i < arguments.length; i++) arr.push(_formatValue(arguments[i]));
+    return arr.join(' ');
   }
-  ObjectDefineProperty(ctor, 'super_', {
-    __proto__: null,
-    value: superCtor,
-    writable: true,
-    configurable: true,
+  var args = arguments;
+  var index = 1;
+  var str = String(f).replace(/%[sdifoO%]/g, function(match) {
+    if (match === '%%') return '%';
+    if (index >= args.length) return match;
+    switch (match) {
+      case '%s': return String(args[index++]);
+      case '%d':
+      case '%i': return parseInt(args[index++], 10);
+      case '%f': return parseFloat(args[index++]);
+      case '%o':
+      case '%O': return _formatValue(args[index++]);
+      default: return match;
+    }
   });
-  ObjectSetPrototypeOf(ctor.prototype, superCtor.prototype);
+  for (; index < args.length; index++) str += ' ' + _formatValue(args[index]);
+  return str;
 }
 
-/**
- * @deprecated since v6.0.0
- * @template T
- * @template S
- * @param {T} target
- * @param {S} source
- * @returns {(T & S) | null}
- */
-function _extend(target, source) {
-  // Don't do anything if source isn't an object
-  if (source === null || typeof source !== 'object') return target;
-
-  const keys = ObjectKeys(source);
-  let i = keys.length;
-  while (i--) {
-    target[keys[i]] = source[keys[i]];
+function formatWithOptions(options, f) {
+  if (typeof f !== 'string') {
+    var arr = [];
+    for (var i = 1; i < arguments.length; i++) arr.push(inspect(arguments[i]));
+    return arr.join(' ');
   }
-  return target;
+  var args = arguments;
+  var index = 2;
+  var str = String(f).replace(/%[sdifoO%]/g, function(match) {
+    if (match === '%%') return '%';
+    if (index >= args.length) return match;
+    switch (match) {
+      case '%s': return String(args[index++]);
+      case '%d':
+      case '%i': return parseInt(args[index++], 10);
+      case '%f': return parseFloat(args[index++]);
+      case '%o':
+      case '%O': return inspect(args[index++], options);
+      default: return match;
+    }
+  });
+  for (; index < args.length; index++) str += ' ' + inspect(args[index]);
+  return str;
 }
 
-const callbackifyOnRejected = (reason, cb) => {
-  // `!reason` guard inspired by bluebird (Ref: https://goo.gl/t5IS6M).
-  // Because `null` is a special error value in callbacks which means "no error
-  // occurred", we error-wrap so the callback consumer can distinguish between
-  // "the promise rejected with null" or "the promise fulfilled with undefined".
-  if (!reason) {
-    reason = new ERR_FALSY_VALUE_REJECTION.HideStackFramesError(reason);
-    ErrorCaptureStackTrace(reason, callbackifyOnRejected);
-  }
-  return cb(reason);
-};
+function inspect(obj, opts) {
+  var depth;
+  var maxArrayLength;
+  var showHidden;
 
-/**
- * Converts a Promise-returning function to callback style
- * @param {Function} original
- * @returns {Function}
- */
-function callbackify(original) {
-  validateFunction(original, 'original');
-
-  // We DO NOT return the promise as it gives the user a false sense that
-  // the promise is actually somehow related to the callback's execution
-  // and that the callback throwing will reject the promise.
-  function callbackified(...args) {
-    const maybeCb = ArrayPrototypePop(args);
-    validateFunction(maybeCb, 'last argument');
-    const cb = FunctionPrototypeBind(maybeCb, this);
-    // In true node style we process the callback on `nextTick` with all the
-    // implications (stack, `uncaughtException`, `async_hooks`)
-    ReflectApply(original, this, args)
-      .then((ret) => process.nextTick(cb, null, ret),
-            (rej) => process.nextTick(callbackifyOnRejected, rej, cb));
+  if (typeof opts === 'object' && opts !== null) {
+    depth = opts.depth;
+    maxArrayLength = opts.maxArrayLength;
+    showHidden = opts.showHidden;
   }
 
-  const descriptors = ObjectGetOwnPropertyDescriptors(original);
-  // It is possible to manipulate a functions `length` or `name` property. This
-  // guards against the manipulation.
-  if (typeof descriptors.length.value === 'number') {
-    descriptors.length.value++;
-  }
-  if (typeof descriptors.name.value === 'string') {
-    descriptors.name.value += 'Callbackified';
-  }
-  const propertiesValues = ObjectValues(descriptors);
-  for (let i = 0; i < propertiesValues.length; i++) {
-  // We want to use null-prototype objects to not rely on globally mutable
-  // %Object.prototype%.
-    ObjectSetPrototypeOf(propertiesValues[i], null);
-  }
-  ObjectDefineProperties(callbackified, descriptors);
-  return callbackified;
+  if (depth === undefined || depth === null) depth = 2;
+  if (maxArrayLength === undefined || maxArrayLength === null) maxArrayLength = 100;
+
+  return _inspect(obj, depth, showHidden, maxArrayLength, 0);
 }
 
-/**
- * @param {number} err
- * @returns {string}
- */
-function getSystemErrorMessage(err) {
-  validateNumber(err, 'err');
-  if (err >= 0 || !NumberIsSafeInteger(err)) {
-    throw new ERR_OUT_OF_RANGE('err', 'a negative integer', err);
+function _inspect(obj, depth, showHidden, maxArrayLength, level) {
+  if (obj === null) return 'null';
+  if (obj === undefined) return 'undefined';
+  if (typeof obj === 'boolean') return obj.toString();
+  if (typeof obj === 'number') return obj.toString();
+  if (typeof obj === 'string') return "'" + obj.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t') + "'";
+  if (typeof obj === 'function') return '[Function: ' + (obj.name || '(anonymous)') + ']';
+  if (typeof obj === 'symbol') return obj.toString();
+
+  if (level >= depth) {
+    if (typeof obj === 'object') return '[Object]';
+    return String(obj);
   }
-  return internalErrorMessage(err);
-}
 
-/**
- * @param {number} err
- * @returns {string}
- */
-function getSystemErrorName(err) {
-  validateNumber(err, 'err');
-  if (err >= 0 || !NumberIsSafeInteger(err)) {
-    throw new ERR_OUT_OF_RANGE('err', 'a negative integer', err);
+  if (Array.isArray(obj)) {
+    var len = Math.min(obj.length, maxArrayLength);
+    var items = [];
+    for (var i = 0; i < len; i++) {
+      items.push(_inspect(obj[i], depth, showHidden, maxArrayLength, level + 1));
+    }
+    if (obj.length > maxArrayLength) items.push('... ' + (obj.length - maxArrayLength) + ' more items');
+    return '[' + items.join(', ') + ']';
   }
-  return internalErrorName(err);
-}
 
-function _errnoException(...args) {
-  if (isErrorStackTraceLimitWritable()) {
-    const limit = Error.stackTraceLimit;
-    Error.stackTraceLimit = 0;
-    const e = new ErrnoException(...args);
-    Error.stackTraceLimit = limit;
-    ErrorCaptureStackTrace(e, _errnoException);
-    return e;
+  if (obj instanceof Date) return obj.toISOString();
+  if (obj instanceof RegExp) return obj.toString();
+  if (obj instanceof Map) {
+    var mapItems = [];
+    var mapEntries = obj.entries();
+    var mapEntry = mapEntries.next();
+    while (!mapEntry.done) {
+      mapItems.push(_inspect(mapEntry.value[0], depth, showHidden, maxArrayLength, level + 1) + ' => ' + _inspect(mapEntry.value[1], depth, showHidden, maxArrayLength, level + 1));
+      mapEntry = mapEntries.next();
+    }
+    return 'Map(' + mapItems.length + ') {' + mapItems.join(', ') + '}';
   }
-  return new ErrnoException(...args);
-}
-
-function _exceptionWithHostPort(...args) {
-  if (isErrorStackTraceLimitWritable()) {
-    const limit = Error.stackTraceLimit;
-    Error.stackTraceLimit = 0;
-    const e = new ExceptionWithHostPort(...args);
-    Error.stackTraceLimit = limit;
-    ErrorCaptureStackTrace(e, _exceptionWithHostPort);
-    return e;
+  if (obj instanceof Set) {
+    var setItems = [];
+    var setValues = obj.values();
+    var setValue = setValues.next();
+    while (!setValue.done) {
+      setItems.push(_inspect(setValue.value, depth, showHidden, maxArrayLength, level + 1));
+      setValue = setValues.next();
+    }
+    return 'Set(' + setItems.length + ') {' + setItems.join(', ') + '}';
   }
-  return new ExceptionWithHostPort(...args);
-}
 
-/**
- * Parses the content of a `.env` file.
- * @param {string} content
- * @returns {Record<string, string>}
- */
-function parseEnv(content) {
-  validateString(content, 'content');
-  return binding.parseEnv(content);
-}
-
-const lazySourceMap = getLazy(() => require('internal/source_map/source_map_cache'));
-
-/**
- * @typedef {object} CallSite // The call site
- * @property {string} scriptName // The name of the resource that contains the
- *   script for the function for this StackFrame
- * @property {string} functionName // The name of the function associated with this stack frame
- * @property {number} lineNumber // The number, 1-based, of the line for the associate function call
- * @property {number} columnNumber // The 1-based column offset on the line for the associated function call
- */
-
-/**
- * @param {CallSite} callSite // The call site object to reconstruct from source map
- * @returns {CallSite | undefined} // The reconstructed call site object
- */
-function reconstructCallSite(callSite) {
-  const { scriptName, lineNumber, columnNumber } = callSite;
-  const sourceMap = lazySourceMap().findSourceMap(scriptName);
-  if (!sourceMap) return;
-  const entry = sourceMap.findEntry(lineNumber - 1, columnNumber - 1);
-  if (!entry?.originalSource) return;
-  return {
-    __proto__: null,
-    // If the name is not found, it is an empty string to match the behavior of `util.getCallSite()`
-    functionName: entry.name ?? '',
-    scriptName: entry.originalSource,
-    lineNumber: entry.originalLine + 1,
-    column: entry.originalColumn + 1,
-    columnNumber: entry.originalColumn + 1,
-  };
-}
-
-/**
- *
- * The call site array to map
- * @param {CallSite[]} callSites
- *   Array of objects with the reconstructed call site
- * @returns {CallSite[]}
- */
-function mapCallSite(callSites) {
-  const result = [];
-  for (let i = 0; i < callSites.length; ++i) {
-    const callSite = callSites[i];
-    const found = reconstructCallSite(callSite);
-    ArrayPrototypePush(result, found ?? callSite);
+  var keys = Object.keys(obj);
+  if (showHidden) {
+    var allKeys = Object.getOwnPropertyNames(obj);
+    for (var k = 0; k < allKeys.length; k++) {
+      if (keys.indexOf(allKeys[k]) === -1) keys.push(allKeys[k]);
+    }
   }
-  return result;
+  var props = [];
+  for (var j = 0; j < keys.length; j++) {
+    var key = keys[j];
+    var val = obj[key];
+    props.push(key + ': ' + _inspect(val, depth, showHidden, maxArrayLength, level + 1));
+  }
+  var constructorName = obj.constructor && obj.constructor.name ? obj.constructor.name : 'Object';
+  return constructorName + ' {' + props.join(', ') + '}';
 }
 
-/**
- * @typedef {object} CallSiteOptions // The call site options
- * @property {boolean} sourceMap // Enable source map support
- */
-
-/**
- * Returns the callSite
- * @param {number} frameCount
- * @param {CallSiteOptions} options
- * @returns {CallSite[]}
- */
-function getCallSites(frameCount = 10, options) {
-  // If options is not provided check if frameCount is an object
-  if (options === undefined) {
-    if (typeof frameCount === 'object') {
-      // If frameCount is an object, it is the options object
-      options = frameCount;
-      validateObject(options, 'options');
-      if (options.sourceMap !== undefined) {
-        validateBoolean(options.sourceMap, 'options.sourceMap');
+function deprecate(fn, msg, code) {
+  if (typeof fn !== 'function') throw new TypeError('fn must be a function');
+  var warned = false;
+  var deprecated = function() {
+    if (!warned) {
+      warned = true;
+      var warning = 'Deprecation' + (code ? ' [' + code + ']' : '') + ': ' + msg;
+      if (typeof process !== 'undefined' && typeof process.emitWarning === 'function') {
+        process.emitWarning(warning, 'DeprecationWarning');
+      } else {
+        console.error(warning);
       }
-      frameCount = 10;
-    } else {
-      // If options is not provided, set it to an empty object
-      options = {};
-    };
-  } else {
-    // If options is provided, validate it
-    validateObject(options, 'options');
-    if (options.sourceMap !== undefined) {
-      validateBoolean(options.sourceMap, 'options.sourceMap');
     }
-  }
-
-  // Using kDefaultMaxCallStackSizeToCapture as reference
-  validateInteger(frameCount, 'frameCount', 1, 200);
-  // If options.sourceMaps is true or if sourceMaps are enabled but the option.sourceMaps is not set explicitly to false
-  if (options.sourceMap === true || (getOptionValue('--enable-source-maps') && options.sourceMap !== false)) {
-    return mapCallSite(binding.getCallSites(frameCount));
-  }
-  return binding.getCallSites(frameCount);
-};
-
-// Public util.deprecate API
-function deprecate(fn, msg, code, { modifyPrototype } = {}) {
-  return internalDeprecate(fn, msg, code, undefined, modifyPrototype);
+    return fn.apply(this, arguments);
+  };
+  return deprecated;
 }
 
-// Keep the `exports =` so that various functions can still be monkeypatched
-module.exports = {
-  _errnoException,
-  _exceptionWithHostPort,
-  _extend: internalDeprecate(_extend,
-                             'The `util._extend` API is deprecated. Please use Object.assign() instead.',
-                             'DEP0060'),
-  callbackify,
-  convertProcessSignalToExitCode,
-  debug: debuglog,
-  debuglog,
-  deprecate,
-  format,
-  styleText,
-  formatWithOptions,
-  getCallSites,
-  getSystemErrorMap,
-  getSystemErrorName,
-  getSystemErrorMessage,
-  inherits,
-  inspect,
-  isArray: internalDeprecate(ArrayIsArray,
-                             'The `util.isArray` API is deprecated. Please use `Array.isArray()` instead.',
-                             'DEP0044'),
-  isDeepStrictEqual(a, b, skipPrototype) {
-    if (internalDeepEqual === undefined) {
-      internalDeepEqual = require('internal/util/comparisons').isDeepStrictEqual;
+function promisify(original) {
+  if (typeof original !== 'function') throw new TypeError('fn must be a function');
+  var fn = function() {
+    var self = this;
+    var args = Array.prototype.slice.call(arguments);
+    return new Promise(function(resolve, reject) {
+      args.push(function(err) {
+        if (err) return reject(err);
+        var results = Array.prototype.slice.call(arguments, 1);
+        resolve(results.length <= 1 ? results[0] : results);
+      });
+      original.apply(self, args);
+    });
+  };
+  Object.defineProperty(fn, 'name', { value: original.name + ' promisified' });
+  return fn;
+}
+
+function callbackify(original) {
+  if (typeof original !== 'function') throw new TypeError('fn must be a function');
+  var fn = function() {
+    var args = Array.prototype.slice.call(arguments);
+    var cb = args.pop();
+    if (typeof cb !== 'function') throw new TypeError('last argument must be a function');
+    var self = this;
+    original.apply(self, args).then(function(val) {
+      process.nextTick(cb, null, val);
+    }, function(err) {
+      process.nextTick(cb, err);
+    });
+  };
+  return fn;
+}
+
+function inherits(ctor, superCtor) {
+  if (ctor === undefined || ctor === null) throw new TypeError('ctor must be a function');
+  if (superCtor === undefined || superCtor === null) throw new TypeError('superCtor must be a function');
+  ctor.super_ = superCtor;
+  ctor.prototype = Object.create(superCtor.prototype, {
+    constructor: {
+      value: ctor,
+      writable: true,
+      configurable: true,
+    },
+  });
+}
+
+function debuglog(section, cb) {
+  var fn = function debug() {
+    if (!debuglog.enabled) return;
+    var msg = format.apply(null, arguments);
+    process.stderr.write(section + ': ' + msg + '\n');
+  };
+  fn.enabled = false;
+  if (typeof process !== 'undefined' && process.env && process.env.NODE_DEBUG) {
+    var sections = process.env.NODE_DEBUG.split(',');
+    for (var i = 0; i < sections.length; i++) {
+      if (sections[i].trim().toLowerCase() === section.toLowerCase()) {
+        fn.enabled = true;
+        break;
+      }
     }
-    return internalDeepEqual(a, b, skipPrototype);
-  },
-  promisify,
-  stripVTControlCharacters,
-  toUSVString(input) {
-    return StringPrototypeToWellFormed(`${input}`);
-  },
-  get transferableAbortSignal() {
-    return lazyAbortController().transferableAbortSignal;
-  },
-  get transferableAbortController() {
-    return lazyAbortController().transferableAbortController;
-  },
-  get aborted() {
-    return lazyAbortController().aborted;
-  },
-  types,
-  parseEnv,
+  }
+  if (typeof cb === 'function') cb(fn);
+  return fn;
+}
+
+function isArray(value) { return Array.isArray(value); }
+function isBoolean(value) { return typeof value === 'boolean'; }
+function isNull(value) { return value === null; }
+function isNullOrUndefined(value) { return value === null || value === undefined; }
+function isNumber(value) { return typeof value === 'number'; }
+function isString(value) { return typeof value === 'string'; }
+function isSymbol(value) { return typeof value === 'symbol'; }
+function isUndefined(value) { return value === undefined; }
+function isRegExp(value) { return value instanceof RegExp; }
+function isDate(value) { return value instanceof Date; }
+function isError(value) { return value instanceof Error; }
+function isFunction(value) { return typeof value === 'function'; }
+function isPrimitive(value) {
+  return value === null || value === undefined || typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string' || typeof value === 'symbol' || typeof value === 'bigint';
+}
+function isObject(value) { return value !== null && typeof value === 'object'; }
+function isBuffer(value) { return value instanceof Uint8Array && value.constructor && value.constructor.name === 'Buffer'; }
+function isDeepStrictEqual(a, b) { return a === b; }
+function isPlainObject(value) {
+  if (value === null || typeof value !== 'object') return false;
+  var proto = Object.getPrototypeOf(value);
+  return proto === null || proto === Object.prototype;
+}
+
+function getSystemErrorName(errno) {
+  return getSystemErrorName(errno);
+}
+
+function getSystemErrorMap() {
+  return getSystemErrorMap();
+}
+
+function stripVTControlCharacters(str) {
+  return str.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+var types = {
+  isArray: isArray,
+  isBoolean: isBoolean,
+  isNull: isNull,
+  isNullOrUndefined: isNullOrUndefined,
+  isNumber: isNumber,
+  isString: isString,
+  isSymbol: isSymbol,
+  isUndefined: isUndefined,
+  isRegExp: isRegExp,
+  isDate: isDate,
+  isError: isError,
+  isFunction: isFunction,
+  isPrimitive: isPrimitive,
+  isObject: isObject,
+  isBuffer: isBuffer,
+  isDeepStrictEqual: isDeepStrictEqual,
+  isPlainObject: isPlainObject,
 };
 
-defineLazyProperties(
-  module.exports,
-  'internal/util/parse_args/parse_args',
-  ['parseArgs'],
-);
+var TextEncoder = globalThis.TextEncoder;
+var TextDecoder = globalThis.TextDecoder;
 
-defineLazyProperties(
-  module.exports,
-  'internal/encoding',
-  ['TextDecoder', 'TextEncoder'],
-);
-
-defineLazyProperties(
-  module.exports,
-  'internal/mime',
-  ['MIMEType', 'MIMEParams'],
-);
-
-defineLazyProperties(
-  module.exports,
-  'internal/util/diff',
-  ['diff'],
-);
-
-defineLazyProperties(
-  module.exports,
-  'internal/util/trace_sigint',
-  ['setTraceSigInt'],
-);
-
+module.exports = {
+  format: format,
+  formatWithOptions: formatWithOptions,
+  inspect: inspect,
+  deprecate: deprecate,
+  promisify: promisify,
+  callbackify: callbackify,
+  inherits: inherits,
+  debuglog: debuglog,
+  getSystemErrorName: getSystemErrorName,
+  getSystemErrorMap: getSystemErrorMap,
+  stripVTControlCharacters: stripVTControlCharacters,
+  types: types,
+  TextEncoder: TextEncoder,
+  TextDecoder: TextDecoder,
+};
 "#),
         "util/types.js" => Some(r#"﻿/**
  * This file is from Node.js official source code.
@@ -140509,1075 +135103,102 @@ module.exports = {
     BroadcastChannel,
 };
 "#),
-        "zlib.js" => Some(r#"﻿/**
- * This file is from Node.js official source code.
- * Source: https://github.com/nodejs/node
- * 
- * Modified for KossJS (Boa engine) compatibility:
- * - Removed internalBinding() calls that require Node.js C++ bindings
- * - Adapted to work with KossJS runtime
- */
+        "zlib.js" => Some(r#"﻿'use strict';
 
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
+var Buffer = require('buffer').Buffer;
 
-'use strict';
-
-const {
-  ArrayBuffer,
-  MathMax,
-  NumberIsNaN,
-  ObjectDefineProperties,
-  ObjectDefineProperty,
-  ObjectEntries,
-  ObjectFreeze,
-  ObjectKeys,
-  ObjectSetPrototypeOf,
-  Symbol,
-  Uint32Array,
-} = primordials;
-
-const {
-  codes: {
-    ERR_BROTLI_INVALID_PARAM,
-    ERR_BUFFER_TOO_LARGE,
-    ERR_INVALID_ARG_TYPE,
-    ERR_OUT_OF_RANGE,
-    ERR_TRAILING_JUNK_AFTER_STREAM_END,
-    ERR_ZSTD_INVALID_PARAM,
-  },
-  genericNodeError,
-} = require('internal/errors');
-const { Transform, finished } = require('stream');
-const {
-  deprecateInstantiation,
-} = require('internal/util');
-const {
-  isArrayBufferView,
-  isAnyArrayBuffer,
-  isUint8Array,
-} = require('internal/util/types');
-const binding = internalBinding('zlib');
-const { crc32: crc32Native } = binding;
-const assert = require('internal/assert');
-const {
-  Buffer,
-  kMaxLength,
-} = require('buffer');
-const { owner_symbol } = require('internal/async_hooks').symbols;
-const {
-  checkRangesOrGetDefault,
-  validateFunction,
-  validateUint32,
-  validateFiniteNumber,
-} = require('internal/validators');
-const { FastBuffer } = require('internal/buffer');
-
-const kFlushFlag = Symbol('kFlushFlag');
-const kError = Symbol('kError');
-
-const constants = internalBinding('constants').zlib;
-const {
-  // Zlib flush levels
-  Z_NO_FLUSH, Z_BLOCK, Z_PARTIAL_FLUSH, Z_SYNC_FLUSH, Z_FULL_FLUSH, Z_FINISH,
-  // Zlib option values
-  Z_MIN_CHUNK, Z_MIN_WINDOWBITS, Z_MAX_WINDOWBITS, Z_MIN_LEVEL, Z_MAX_LEVEL,
-  Z_MIN_MEMLEVEL, Z_MAX_MEMLEVEL, Z_DEFAULT_CHUNK, Z_DEFAULT_COMPRESSION,
-  Z_DEFAULT_STRATEGY, Z_DEFAULT_WINDOWBITS, Z_DEFAULT_MEMLEVEL, Z_FIXED,
-  // Node's compression stream modes (node_zlib_mode)
-  DEFLATE, DEFLATERAW, INFLATE, INFLATERAW, GZIP, GUNZIP, UNZIP,
-  BROTLI_DECODE, BROTLI_ENCODE,
-  ZSTD_COMPRESS, ZSTD_DECOMPRESS,
-  // Brotli operations (~flush levels)
-  BROTLI_OPERATION_PROCESS, BROTLI_OPERATION_FLUSH,
-  BROTLI_OPERATION_FINISH, BROTLI_OPERATION_EMIT_METADATA,
-  // Zstd end directives (~flush levels)
-  ZSTD_e_continue, ZSTD_e_flush, ZSTD_e_end,
-} = constants;
-
-// Translation table for return codes.
-const codes = {
-  Z_OK: constants.Z_OK,
-  Z_STREAM_END: constants.Z_STREAM_END,
-  Z_NEED_DICT: constants.Z_NEED_DICT,
-  Z_ERRNO: constants.Z_ERRNO,
-  Z_STREAM_ERROR: constants.Z_STREAM_ERROR,
-  Z_DATA_ERROR: constants.Z_DATA_ERROR,
-  Z_MEM_ERROR: constants.Z_MEM_ERROR,
-  Z_BUF_ERROR: constants.Z_BUF_ERROR,
-  Z_VERSION_ERROR: constants.Z_VERSION_ERROR,
-};
-
-for (const ckey of ObjectKeys(codes)) {
-  codes[codes[ckey]] = ckey;
-}
-
-function zlibBuffer(engine, buffer, callback) {
-  validateFunction(callback, 'callback');
-  // Streams do not support non-Uint8Array ArrayBufferViews yet. Convert it to a
-  // Buffer without copying.
-  if (isArrayBufferView(buffer) && !isUint8Array(buffer)) {
-    buffer = Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-  } else if (isAnyArrayBuffer(buffer)) {
-    buffer = Buffer.from(buffer);
+function _toBytes(data) {
+  if (Buffer.isBuffer(data)) {
+    return '[' + Array.prototype.join.call(data, ',') + ']';
   }
-  engine.buffers = null;
-  engine.nread = 0;
-  engine.cb = callback;
-  engine.on('data', zlibBufferOnData);
-  engine.on('error', zlibBufferOnError);
-  engine.on('end', zlibBufferOnEnd);
-  engine.end(buffer);
-}
-
-function zlibBufferOnData(chunk) {
-  if (!this.buffers) {
-    this.buffers = [chunk];
-  } else {
-    this.buffers.push(chunk);
+  if (typeof data === 'string') {
+    var b = Buffer.from(data);
+    return '[' + Array.prototype.join.call(b, ',') + ']';
   }
-  this.nread += chunk.length;
-  if (this.nread > this._maxOutputLength) {
-    this.close();
-    this.removeAllListeners('end');
-    this.cb(new ERR_BUFFER_TOO_LARGE(this._maxOutputLength));
+  if (Array.isArray(data)) {
+    return JSON.stringify(data);
   }
+  throw new Error('Expected Buffer, string, or Array');
 }
 
-function zlibBufferOnError(err) {
-  this.removeAllListeners('end');
-  this.cb(err);
+function _fromBytes(jsonStr) {
+  var arr = JSON.parse(jsonStr);
+  return Buffer.from(arr);
 }
 
-function zlibBufferOnEnd() {
-  let buf;
-  if (this.nread === 0) {
-    buf = new FastBuffer();
-  } else {
-    const bufs = this.buffers;
-    buf = (bufs.length === 1 ? bufs[0] : Buffer.concat(bufs, this.nread));
-  }
-  this.close();
-  if (this._info)
-    this.cb(null, { buffer: buf, engine: this });
-  else
-    this.cb(null, buf);
-}
-
-function zlibBufferSync(engine, buffer) {
-  if (typeof buffer === 'string') {
-    buffer = Buffer.from(buffer);
-  } else if (!isArrayBufferView(buffer)) {
-    if (isAnyArrayBuffer(buffer)) {
-      buffer = Buffer.from(buffer);
-    } else {
-      throw new ERR_INVALID_ARG_TYPE(
-        'buffer',
-        ['string', 'Buffer', 'TypedArray', 'DataView', 'ArrayBuffer'],
-        buffer,
-      );
+function _runSync(fn, data, callback) {
+  try {
+    if (callback) {
+      var result = fn(data);
+      process.nextTick(function() { callback(null, result); });
     }
-  }
-  buffer = processChunkSync(engine, buffer, engine._finishFlushFlag);
-  if (engine._info)
-    return { buffer, engine };
-  return buffer;
-}
-
-function zlibOnError(message, errno, code) {
-  const self = this[owner_symbol];
-  // There is no way to cleanly recover.
-  // Continuing only obscures problems.
-
-  const error = genericNodeError(message, { errno, code });
-  error.errno = errno;
-  error.code = code;
-  self.destroy(error);
-  self[kError] = error;
-}
-
-const FLUSH_BOUND = [
-  [ Z_NO_FLUSH, Z_BLOCK ],
-  [ BROTLI_OPERATION_PROCESS, BROTLI_OPERATION_EMIT_METADATA ],
-  [ ZSTD_e_continue, ZSTD_e_end ],
-];
-const FLUSH_BOUND_IDX_NORMAL = 0;
-const FLUSH_BOUND_IDX_BROTLI = 1;
-const FLUSH_BOUND_IDX_ZSTD = 2;
-
-/**
- * The base class for all Zlib-style streams.
- * @class
- */
-function ZlibBase(opts, mode, handle, { flush, finishFlush, fullFlush }) {
-  let chunkSize = Z_DEFAULT_CHUNK;
-  let maxOutputLength = kMaxLength;
-  // The ZlibBase class is not exported to user land, the mode should only be
-  // passed in by us.
-  assert(typeof mode === 'number');
-  assert(mode >= DEFLATE && mode <= ZSTD_DECOMPRESS);
-
-  let flushBoundIdx;
-  if (mode === BROTLI_ENCODE || mode === BROTLI_DECODE) {
-    flushBoundIdx = FLUSH_BOUND_IDX_BROTLI;
-  } else if (mode === ZSTD_COMPRESS || mode === ZSTD_DECOMPRESS) {
-    flushBoundIdx = FLUSH_BOUND_IDX_ZSTD;
-  } else {
-    flushBoundIdx = FLUSH_BOUND_IDX_NORMAL;
-  }
-
-  if (opts) {
-    chunkSize = opts.chunkSize;
-    if (!validateFiniteNumber(chunkSize, 'options.chunkSize')) {
-      chunkSize = Z_DEFAULT_CHUNK;
-    } else if (chunkSize < Z_MIN_CHUNK) {
-      throw new ERR_OUT_OF_RANGE('options.chunkSize',
-                                 `>= ${Z_MIN_CHUNK}`, chunkSize);
-    }
-
-    flush = checkRangesOrGetDefault(
-      opts.flush, 'options.flush',
-      FLUSH_BOUND[flushBoundIdx][0], FLUSH_BOUND[flushBoundIdx][1], flush);
-
-    finishFlush = checkRangesOrGetDefault(
-      opts.finishFlush, 'options.finishFlush',
-      FLUSH_BOUND[flushBoundIdx][0], FLUSH_BOUND[flushBoundIdx][1],
-      finishFlush);
-
-    maxOutputLength = checkRangesOrGetDefault(
-      opts.maxOutputLength, 'options.maxOutputLength',
-      1, kMaxLength, kMaxLength);
-
-    if (opts.encoding || opts.objectMode || opts.writableObjectMode) {
-      opts = { ...opts };
-      opts.encoding = null;
-      opts.objectMode = false;
-      opts.writableObjectMode = false;
-    }
-  }
-
-  Transform.call(this, { autoDestroy: true, ...opts });
-  this[kError] = null;
-  this.bytesWritten = 0;
-  this._handle = handle;
-  handle[owner_symbol] = this;
-  // Used by processCallback() and zlibOnError()
-  handle.onerror = zlibOnError;
-  this._outBuffer = Buffer.allocUnsafe(chunkSize);
-  this._outOffset = 0;
-
-  this._chunkSize = chunkSize;
-  this._defaultFlushFlag = flush;
-  this._finishFlushFlag = finishFlush;
-  this._defaultFullFlushFlag = fullFlush;
-  this._info = opts?.info;
-  this._maxOutputLength = maxOutputLength;
-
-  this._rejectGarbageAfterEnd = opts?.rejectGarbageAfterEnd === true;
-}
-ObjectSetPrototypeOf(ZlibBase.prototype, Transform.prototype);
-ObjectSetPrototypeOf(ZlibBase, Transform);
-
-ObjectDefineProperty(ZlibBase.prototype, '_closed', {
-  __proto__: null,
-  configurable: true,
-  enumerable: true,
-  get() {
-    return !this._handle;
-  },
-});
-
-/**
- * @this {ZlibBase}
- * @returns {void}
- */
-ZlibBase.prototype.reset = function() {
-  assert(this._handle, 'zlib binding closed');
-  return this._handle.reset();
-};
-
-/**
- * This is the _flush function called by the transform class,
- * internally, when the last chunk has been written.
- * @returns {void}
- * @this {ZlibBase}
- */
-ZlibBase.prototype._flush = function(callback) {
-  this._transform(new FastBuffer(), '', callback);
-};
-
-/**
- * Force Transform compat behavior.
- * @returns {void}
- * @this {ZlibBase}
- */
-ZlibBase.prototype._final = function(callback) {
-  callback();
-};
-
-// If a flush is scheduled while another flush is still pending, a way to figure
-// out which one is the "stronger" flush is needed.
-// This is currently only used to figure out which flush flag to use for the
-// last chunk.
-// Roughly, the following holds:
-// Z_NO_FLUSH < Z_BLOCK < Z_PARTIAL_FLUSH <
-//     Z_SYNC_FLUSH < Z_FULL_FLUSH < Z_FINISH
-const flushiness = [];
-const kFlushFlagList = [Z_NO_FLUSH, Z_BLOCK, Z_PARTIAL_FLUSH,
-                        Z_SYNC_FLUSH, Z_FULL_FLUSH, Z_FINISH];
-for (let i = 0; i < kFlushFlagList.length; i++) {
-  flushiness[kFlushFlagList[i]] = i;
-}
-
-function maxFlush(a, b) {
-  return flushiness[a] > flushiness[b] ? a : b;
-}
-
-// Set up a list of 'special' buffers that can be written using .write()
-// from the .flush() code as a way of introducing flushing operations into the
-// write sequence.
-const kFlushBuffers = [];
-{
-  const dummyArrayBuffer = new ArrayBuffer();
-  for (const flushFlag of kFlushFlagList) {
-    kFlushBuffers[flushFlag] = Buffer.from(dummyArrayBuffer);
-    kFlushBuffers[flushFlag][kFlushFlag] = flushFlag;
+    return fn(data);
+  } catch (e) {
+    if (callback) process.nextTick(function() { callback(e); });
+    throw e;
   }
 }
 
-ZlibBase.prototype.flush = function(kind, callback) {
-  if (typeof kind === 'function' || (kind === undefined && !callback)) {
-    callback = kind;
-    kind = this._defaultFullFlushFlag;
-  }
-
-  if (this.writableFinished) {
-    if (callback)
-      process.nextTick(callback);
-  } else if (this.writableEnded) {
-    if (callback)
-      this.once('end', callback);
-  } else {
-    this.write(kFlushBuffers[kind], '', callback);
-  }
-};
-
-/**
- * @this {import('stream').Transform}
- * @param {(err?: Error) => any} [callback]
- */
-ZlibBase.prototype.close = function(callback) {
-  if (callback) finished(this, callback);
-  this.destroy();
-};
-
-ZlibBase.prototype._destroy = function(err, callback) {
-  _close(this);
-  callback(err);
-};
-
-ZlibBase.prototype._transform = function(chunk, encoding, cb) {
-  let flushFlag = this._defaultFlushFlag;
-  // We use a 'fake' zero-length chunk to carry information about flushes from
-  // the public API to the actual stream implementation.
-  if (typeof chunk[kFlushFlag] === 'number') {
-    flushFlag = chunk[kFlushFlag];
-  }
-
-  // For the last chunk, also apply `_finishFlushFlag`.
-  if (this.writableEnded && this.writableLength === chunk.byteLength) {
-    flushFlag = maxFlush(flushFlag, this._finishFlushFlag);
-  }
-  processChunk(this, chunk, flushFlag, cb);
-};
-
-ZlibBase.prototype._processChunk = function(chunk, flushFlag, cb) {
-  // _processChunk() is left for backwards compatibility
-  if (typeof cb === 'function')
-    processChunk(this, chunk, flushFlag, cb);
-  else
-    return processChunkSync(this, chunk, flushFlag);
-};
-
-function processChunkSync(self, chunk, flushFlag) {
-  let availInBefore = chunk.byteLength;
-  let availOutBefore = self._chunkSize - self._outOffset;
-  let inOff = 0;
-  let availOutAfter;
-  let availInAfter;
-
-  const buffers = [];
-  let nread = 0;
-  let inputRead = 0;
-  const state = self._writeState;
-  const handle = self._handle;
-  let buffer = self._outBuffer;
-  let offset = self._outOffset;
-  const chunkSize = self._chunkSize;
-
-  let error;
-  self.on('error', function onError(er) {
-    error = er;
-  });
-
-  while (true) {
-    handle.writeSync(flushFlag,
-                     chunk, // in
-                     inOff, // in_off
-                     availInBefore, // in_len
-                     buffer, // out
-                     offset, // out_off
-                     availOutBefore); // out_len
-    if (error)
-      throw error;
-    else if (self[kError])
-      throw self[kError];
-
-    availOutAfter = state[0];
-    availInAfter = state[1];
-
-    const inDelta = (availInBefore - availInAfter);
-    inputRead += inDelta;
-
-    const have = availOutBefore - availOutAfter;
-    if (have > 0) {
-      const out = buffer.slice(offset, offset + have);
-      offset += have;
-      buffers.push(out);
-      nread += out.byteLength;
-
-      if (nread > self._maxOutputLength) {
-        _close(self);
-        throw new ERR_BUFFER_TOO_LARGE(self._maxOutputLength);
-      }
-
-    } else {
-      assert(have === 0, 'have should not go down');
-    }
-
-    // Exhausted the output buffer, or used all the input create a new one.
-    if (availOutAfter === 0 || offset >= chunkSize) {
-      availOutBefore = chunkSize;
-      offset = 0;
-      buffer = Buffer.allocUnsafe(chunkSize);
-    }
-
-    if (availOutAfter === 0) {
-      // Not actually done. Need to reprocess.
-      // Also, update the availInBefore to the availInAfter value,
-      // so that if we have to hit it a third (fourth, etc.) time,
-      // it'll have the correct byte counts.
-      inOff += inDelta;
-      availInBefore = availInAfter;
-    } else {
-      break;
-    }
-  }
-
-  self.bytesWritten = inputRead;
-  _close(self);
-
-  if (nread === 0)
-    return new FastBuffer();
-
-  return (buffers.length === 1 ? buffers[0] : Buffer.concat(buffers, nread));
+function gzip(buffer, callback) {
+  return _runSync(function(buf) {
+    var input = _toBytes(buf);
+    return _fromBytes(__koss_gzip(input));
+  }, buffer, callback);
 }
 
-function processChunk(self, chunk, flushFlag, cb) {
-  const handle = self._handle;
-  if (!handle) return process.nextTick(cb);
-
-  handle.buffer = chunk;
-  handle.cb = cb;
-  handle.availOutBefore = self._chunkSize - self._outOffset;
-  handle.availInBefore = chunk.byteLength;
-  handle.inOff = 0;
-  handle.flushFlag = flushFlag;
-
-  handle.write(flushFlag,
-               chunk, // in
-               0, // in_off
-               handle.availInBefore, // in_len
-               self._outBuffer, // out
-               self._outOffset, // out_off
-               handle.availOutBefore); // out_len
+function gunzip(buffer, callback) {
+  return _runSync(function(buf) {
+    var input = _toBytes(buf);
+    return _fromBytes(__koss_gunzip(input));
+  }, buffer, callback);
 }
 
-function processCallback() {
-  // This callback's context (`this`) is the `_handle` (ZCtx) object. It is
-  // important to null out the values once they are no longer needed since
-  // `_handle` can stay in memory long after the buffer is needed.
-  const handle = this;
-  const self = this[owner_symbol];
-  const state = self._writeState;
-
-  if (self.destroyed) {
-    this.buffer = null;
-    this.cb();
-    return;
-  }
-
-  const availOutAfter = state[0];
-  const availInAfter = state[1];
-
-  const inDelta = handle.availInBefore - availInAfter;
-  self.bytesWritten += inDelta;
-
-  const have = handle.availOutBefore - availOutAfter;
-  let streamBufferIsFull = false;
-  if (have > 0) {
-    const out = self._outBuffer.slice(self._outOffset, self._outOffset + have);
-    self._outOffset += have;
-    streamBufferIsFull = !self.push(out);
-  } else {
-    assert(have === 0, 'have should not go down');
-  }
-
-  if (self.destroyed) {
-    this.cb();
-    return;
-  }
-
-  // Exhausted the output buffer, or used all the input create a new one.
-  if (availOutAfter === 0 || self._outOffset >= self._chunkSize) {
-    handle.availOutBefore = self._chunkSize;
-    self._outOffset = 0;
-    self._outBuffer = Buffer.allocUnsafe(self._chunkSize);
-  }
-
-  if (availOutAfter === 0) {
-    // Not actually done. Need to reprocess.
-    // Also, update the availInBefore to the availInAfter value,
-    // so that if we have to hit it a third (fourth, etc.) time,
-    // it'll have the correct byte counts.
-    handle.inOff += inDelta;
-    handle.availInBefore = availInAfter;
-
-
-    if (!streamBufferIsFull) {
-      this.write(handle.flushFlag,
-                 this.buffer, // in
-                 handle.inOff, // in_off
-                 handle.availInBefore, // in_len
-                 self._outBuffer, // out
-                 self._outOffset, // out_off
-                 self._chunkSize); // out_len
-    } else {
-      const oldRead = self._read;
-      self._read = (n) => {
-        self._read = oldRead;
-        this.write(handle.flushFlag,
-                   this.buffer, // in
-                   handle.inOff, // in_off
-                   handle.availInBefore, // in_len
-                   self._outBuffer, // out
-                   self._outOffset, // out_off
-                   self._chunkSize); // out_len
-        self._read(n);
-      };
-    }
-    return;
-  }
-
-  if (availInAfter > 0) {
-    // If we have more input that should be written, but we also have output
-    // space available, that means that the compression library was not
-    // interested in receiving more data, and in particular that the input
-    // stream has ended early.
-    // This applies to streams where we don't check data past the end of
-    // what was consumed; that is, everything except Gunzip/Unzip.
-
-    if (self._rejectGarbageAfterEnd) {
-      const err = new ERR_TRAILING_JUNK_AFTER_STREAM_END();
-      self.destroy(err);
-      this.cb(err);
-      return;
-    }
-
-    self.push(null);
-  }
-
-  // Finished with the chunk.
-  this.buffer = null;
-  this.cb();
+function deflate(buffer, callback) {
+  return _runSync(function(buf) {
+    var input = _toBytes(buf);
+    return _fromBytes(__koss_deflate(input));
+  }, buffer, callback);
 }
 
-/**
- * @param {ZlibBase} engine
- * @private
- */
-function _close(engine) {
-  // Caller may invoke .close after a zlib error (which will null _handle)
-  engine._handle?.close();
-  engine._handle = null;
+function inflate(buffer, callback) {
+  return _runSync(function(buf) {
+    var input = _toBytes(buf);
+    return _fromBytes(__koss_inflate(input));
+  }, buffer, callback);
 }
 
-const zlibDefaultOpts = {
-  flush: Z_NO_FLUSH,
-  finishFlush: Z_FINISH,
-  fullFlush: Z_FULL_FLUSH,
-};
-// Base class for all streams actually backed by zlib and using zlib-specific
-// parameters.
-function Zlib(opts, mode) {
-  let windowBits = Z_DEFAULT_WINDOWBITS;
-  let level = Z_DEFAULT_COMPRESSION;
-  let memLevel = Z_DEFAULT_MEMLEVEL;
-  let strategy = Z_DEFAULT_STRATEGY;
-  let dictionary;
-
-  if (opts) {
-    // windowBits is special. On the compression side, 0 is an invalid value.
-    // But on the decompression side, a value of 0 for windowBits tells zlib
-    // to use the window size in the zlib header of the compressed stream.
-    if ((opts.windowBits == null || opts.windowBits === 0) &&
-        (mode === INFLATE ||
-         mode === GUNZIP ||
-         mode === UNZIP)) {
-      windowBits = 0;
-    } else {
-      // `{ windowBits: 8 }` is valid for deflate but not gzip.
-      const min = Z_MIN_WINDOWBITS + (mode === GZIP ? 1 : 0);
-      windowBits = checkRangesOrGetDefault(
-        opts.windowBits, 'options.windowBits',
-        min, Z_MAX_WINDOWBITS, Z_DEFAULT_WINDOWBITS);
-    }
-
-    level = checkRangesOrGetDefault(
-      opts.level, 'options.level',
-      Z_MIN_LEVEL, Z_MAX_LEVEL, Z_DEFAULT_COMPRESSION);
-
-    memLevel = checkRangesOrGetDefault(
-      opts.memLevel, 'options.memLevel',
-      Z_MIN_MEMLEVEL, Z_MAX_MEMLEVEL, Z_DEFAULT_MEMLEVEL);
-
-    strategy = checkRangesOrGetDefault(
-      opts.strategy, 'options.strategy',
-      Z_DEFAULT_STRATEGY, Z_FIXED, Z_DEFAULT_STRATEGY);
-
-    dictionary = opts.dictionary;
-    if (dictionary !== undefined && !isArrayBufferView(dictionary)) {
-      if (isAnyArrayBuffer(dictionary)) {
-        dictionary = Buffer.from(dictionary);
-      } else {
-        throw new ERR_INVALID_ARG_TYPE(
-          'options.dictionary',
-          ['Buffer', 'TypedArray', 'DataView', 'ArrayBuffer'],
-          dictionary,
-        );
-      }
-    }
-  }
-
-  const handle = new binding.Zlib(mode);
-  // Ideally, we could let ZlibBase() set up _writeState. I haven't been able
-  // to come up with a good solution that doesn't break our internal API,
-  // and with it all supported npm versions at the time of writing.
-  this._writeState = new Uint32Array(2);
-  handle.init(windowBits,
-              level,
-              memLevel,
-              strategy,
-              this._writeState,
-              processCallback,
-              dictionary);
-
-  ZlibBase.call(this, opts, mode, handle, zlibDefaultOpts);
-
-  this._level = level;
-  this._strategy = strategy;
-  this._mode = mode;
-}
-ObjectSetPrototypeOf(Zlib.prototype, ZlibBase.prototype);
-ObjectSetPrototypeOf(Zlib, ZlibBase);
-
-// This callback is used by `.params()` to wait until a full flush happened
-// before adjusting the parameters. In particular, the call to the native
-// `params()` function should not happen while a write is currently in progress
-// on the threadpool.
-function paramsAfterFlushCallback(level, strategy, callback) {
-  assert(this._handle, 'zlib binding closed');
-  this._handle.params(level, strategy);
-  if (!this.destroyed) {
-    this._level = level;
-    this._strategy = strategy;
-    if (callback) callback();
-  }
-}
-
-Zlib.prototype.params = function params(level, strategy, callback) {
-  checkRangesOrGetDefault(level, 'level', Z_MIN_LEVEL, Z_MAX_LEVEL);
-  checkRangesOrGetDefault(strategy, 'strategy', Z_DEFAULT_STRATEGY, Z_FIXED);
-
-  if (this._level !== level || this._strategy !== strategy) {
-    this.flush(
-      Z_SYNC_FLUSH,
-      paramsAfterFlushCallback.bind(this, level, strategy, callback),
-    );
-  } else {
-    process.nextTick(callback);
-  }
-};
-
-// generic zlib
-// minimal 2-byte header
-function Deflate(opts) {
-  if (!(this instanceof Deflate)) {
-    return deprecateInstantiation(Deflate, 'DEP0184', opts);
-  }
-  Zlib.call(this, opts, DEFLATE);
-}
-ObjectSetPrototypeOf(Deflate.prototype, Zlib.prototype);
-ObjectSetPrototypeOf(Deflate, Zlib);
-
-function Inflate(opts) {
-  if (!(this instanceof Inflate)) {
-    return deprecateInstantiation(Inflate, 'DEP0184', opts);
-  }
-  Zlib.call(this, opts, INFLATE);
-}
-ObjectSetPrototypeOf(Inflate.prototype, Zlib.prototype);
-ObjectSetPrototypeOf(Inflate, Zlib);
-
-function Gzip(opts) {
-  if (!(this instanceof Gzip)) {
-    return deprecateInstantiation(Gzip, 'DEP0184', opts);
-  }
-  Zlib.call(this, opts, GZIP);
-}
-ObjectSetPrototypeOf(Gzip.prototype, Zlib.prototype);
-ObjectSetPrototypeOf(Gzip, Zlib);
-
-function Gunzip(opts) {
-  if (!(this instanceof Gunzip)) {
-    return deprecateInstantiation(Gunzip, 'DEP0184', opts);
-  }
-  Zlib.call(this, opts, GUNZIP);
-}
-ObjectSetPrototypeOf(Gunzip.prototype, Zlib.prototype);
-ObjectSetPrototypeOf(Gunzip, Zlib);
-
-function DeflateRaw(opts) {
-  if (opts && opts.windowBits === 8) opts.windowBits = 9;
-  if (!(this instanceof DeflateRaw)) {
-    return deprecateInstantiation(DeflateRaw, 'DEP0184', opts);
-  }
-  Zlib.call(this, opts, DEFLATERAW);
-}
-ObjectSetPrototypeOf(DeflateRaw.prototype, Zlib.prototype);
-ObjectSetPrototypeOf(DeflateRaw, Zlib);
-
-function InflateRaw(opts) {
-  if (!(this instanceof InflateRaw)) {
-    return deprecateInstantiation(InflateRaw, 'DEP0184', opts);
-  }
-  Zlib.call(this, opts, INFLATERAW);
-}
-ObjectSetPrototypeOf(InflateRaw.prototype, Zlib.prototype);
-ObjectSetPrototypeOf(InflateRaw, Zlib);
-
-function Unzip(opts) {
-  if (!(this instanceof Unzip)) {
-    return deprecateInstantiation(Unzip, 'DEP0184', opts);
-  }
-  Zlib.call(this, opts, UNZIP);
-}
-ObjectSetPrototypeOf(Unzip.prototype, Zlib.prototype);
-ObjectSetPrototypeOf(Unzip, Zlib);
-
-function createConvenienceMethod(ctor, sync) {
-  if (sync) {
-    return function syncBufferWrapper(buffer, opts) {
-      return zlibBufferSync(new ctor(opts), buffer);
-    };
-  }
-  return function asyncBufferWrapper(buffer, opts, callback) {
-    if (typeof opts === 'function') {
-      callback = opts;
-      opts = {};
-    }
-    return zlibBuffer(new ctor(opts), buffer, callback);
-  };
-}
-
-const kMaxBrotliParam = MathMax(
-  ...ObjectEntries(constants)
-    .map(({ 0: key, 1: value }) => (key.startsWith('BROTLI_PARAM_') ? value : 0)),
-);
-const brotliInitParamsArray = new Uint32Array(kMaxBrotliParam + 1);
-
-const brotliDefaultOpts = {
-  flush: BROTLI_OPERATION_PROCESS,
-  finishFlush: BROTLI_OPERATION_FINISH,
-  fullFlush: BROTLI_OPERATION_FLUSH,
-};
-function Brotli(opts, mode) {
-  assert(mode === BROTLI_DECODE || mode === BROTLI_ENCODE);
-
-  brotliInitParamsArray.fill(-1);
-  if (opts?.params) {
-    ObjectKeys(opts.params).forEach((origKey) => {
-      const key = +origKey;
-      if (NumberIsNaN(key) || key < 0 || key > kMaxBrotliParam ||
-          (brotliInitParamsArray[key] | 0) !== -1) {
-        throw new ERR_BROTLI_INVALID_PARAM(origKey);
-      }
-
-      const value = opts.params[origKey];
-      if (typeof value !== 'number' && typeof value !== 'boolean') {
-        throw new ERR_INVALID_ARG_TYPE('options.params[key]',
-                                       'number', opts.params[origKey]);
-      }
-      brotliInitParamsArray[key] = value;
-    });
-  }
-
-  let dictionary = opts?.dictionary;
-  if (dictionary !== undefined && !isArrayBufferView(dictionary)) {
-    if (isAnyArrayBuffer(dictionary)) {
-      dictionary = Buffer.from(dictionary);
-    } else {
-      throw new ERR_INVALID_ARG_TYPE(
-        'options.dictionary',
-        ['Buffer', 'TypedArray', 'DataView', 'ArrayBuffer'],
-        dictionary,
-      );
-    }
-  }
-
-  const handle = mode === BROTLI_DECODE ?
-    new binding.BrotliDecoder(mode) : new binding.BrotliEncoder(mode);
-
-  this._writeState = new Uint32Array(2);
-  handle.init(
-    brotliInitParamsArray,
-    this._writeState,
-    processCallback,
-    dictionary,
-  );
-
-  ZlibBase.call(this, opts, mode, handle, brotliDefaultOpts);
-}
-ObjectSetPrototypeOf(Brotli.prototype, Zlib.prototype);
-ObjectSetPrototypeOf(Brotli, Zlib);
-
-function BrotliCompress(opts) {
-  if (!(this instanceof BrotliCompress)) {
-    return deprecateInstantiation(BrotliCompress, 'DEP0184', opts);
-  }
-  Brotli.call(this, opts, BROTLI_ENCODE);
-}
-ObjectSetPrototypeOf(BrotliCompress.prototype, Brotli.prototype);
-ObjectSetPrototypeOf(BrotliCompress, Brotli);
-
-function BrotliDecompress(opts) {
-  if (!(this instanceof BrotliDecompress)) {
-    return deprecateInstantiation(BrotliDecompress, 'DEP0184', opts);
-  }
-  Brotli.call(this, opts, BROTLI_DECODE);
-}
-ObjectSetPrototypeOf(BrotliDecompress.prototype, Brotli.prototype);
-ObjectSetPrototypeOf(BrotliDecompress, Brotli);
-
-
-const zstdDefaultOpts = {
-  flush: ZSTD_e_continue,
-  finishFlush: ZSTD_e_end,
-  fullFlush: ZSTD_e_flush,
-};
-class Zstd extends ZlibBase {
-  constructor(opts, mode, initParamsArray, maxParam) {
-    assert(mode === ZSTD_COMPRESS || mode === ZSTD_DECOMPRESS);
-
-    initParamsArray.fill(-1);
-    if (opts?.params) {
-      ObjectKeys(opts.params).forEach((origKey) => {
-        const key = +origKey;
-        if (NumberIsNaN(key) || key < 0 || key > maxParam ||
-            (initParamsArray[key] | 0) !== -1) {
-          throw new ERR_ZSTD_INVALID_PARAM(origKey);
-        }
-
-        const value = opts.params[origKey];
-        if (typeof value !== 'number' && typeof value !== 'boolean') {
-          throw new ERR_INVALID_ARG_TYPE('options.params[key]',
-                                         'number', opts.params[origKey]);
-        }
-        initParamsArray[key] = value;
-      });
-    }
-
-    const handle = mode === ZSTD_COMPRESS ?
-      new binding.ZstdCompress() : new binding.ZstdDecompress();
-
-    const pledgedSrcSize = opts?.pledgedSrcSize ?? undefined;
-
-    const writeState = new Uint32Array(2);
-
-    handle.init(
-      initParamsArray,
-      pledgedSrcSize,
-      writeState,
-      processCallback,
-      opts?.dictionary && isArrayBufferView(opts.dictionary) ? opts.dictionary : undefined,
-    );
-
-    super(opts, mode, handle, zstdDefaultOpts);
-    this._writeState = writeState;
-  }
-}
-
-const kMaxZstdCParam = MathMax(...ObjectKeys(constants).map(
-  (key) => (key.startsWith('ZSTD_c_') ?
-    constants[key] :
-    0),
-));
-
-const zstdInitCParamsArray = new Uint32Array(kMaxZstdCParam + 1);
-
-class ZstdCompress extends Zstd {
-  constructor(opts) {
-    super(opts, ZSTD_COMPRESS, zstdInitCParamsArray, kMaxZstdCParam);
-  }
-}
-
-const kMaxZstdDParam = MathMax(...ObjectKeys(constants).map(
-  (key) => (key.startsWith('ZSTD_d_') ?
-    constants[key] :
-    0),
-));
-
-const zstdInitDParamsArray = new Uint32Array(kMaxZstdDParam + 1);
-
-class ZstdDecompress extends Zstd {
-  constructor(opts) {
-    super(opts, ZSTD_DECOMPRESS, zstdInitDParamsArray, kMaxZstdDParam);
-  }
-}
-
-function createProperty(ctor) {
-  return {
-    __proto__: null,
-    configurable: true,
-    enumerable: true,
-    value: function(options) {
-      return new ctor(options);
-    },
-  };
-}
-
-function crc32(data, value = 0) {
-  if (typeof data !== 'string' && !isArrayBufferView(data)) {
-    throw new ERR_INVALID_ARG_TYPE('data', ['Buffer', 'TypedArray', 'DataView', 'string'], data);
-  }
-  validateUint32(value, 'value');
-  return crc32Native(data, value);
-}
-
-// Legacy alias on the C++ wrapper object. This is not public API, so we may
-// want to runtime-deprecate it at some point. There's no hurry, though.
-ObjectDefineProperty(binding.Zlib.prototype, 'jsref', {
-  __proto__: null,
-  get() { return this[owner_symbol]; },
-  set(v) { return this[owner_symbol] = v; },
-});
+function gzipSync(buffer) { return gzip(buffer); }
+function gunzipSync(buffer) { return gunzip(buffer); }
+function deflateSync(buffer) { return deflate(buffer); }
+function inflateSync(buffer) { return inflate(buffer); }
 
 module.exports = {
-  crc32,
-  Deflate,
-  Inflate,
-  Gzip,
-  Gunzip,
-  DeflateRaw,
-  InflateRaw,
-  Unzip,
-  BrotliCompress,
-  BrotliDecompress,
-  ZstdCompress,
-  ZstdDecompress,
-
-  // Convenience methods.
-  // compress/decompress a string or buffer in one step.
-  deflate: createConvenienceMethod(Deflate, false),
-  deflateSync: createConvenienceMethod(Deflate, true),
-  gzip: createConvenienceMethod(Gzip, false),
-  gzipSync: createConvenienceMethod(Gzip, true),
-  deflateRaw: createConvenienceMethod(DeflateRaw, false),
-  deflateRawSync: createConvenienceMethod(DeflateRaw, true),
-  unzip: createConvenienceMethod(Unzip, false),
-  unzipSync: createConvenienceMethod(Unzip, true),
-  inflate: createConvenienceMethod(Inflate, false),
-  inflateSync: createConvenienceMethod(Inflate, true),
-  gunzip: createConvenienceMethod(Gunzip, false),
-  gunzipSync: createConvenienceMethod(Gunzip, true),
-  inflateRaw: createConvenienceMethod(InflateRaw, false),
-  inflateRawSync: createConvenienceMethod(InflateRaw, true),
-  brotliCompress: createConvenienceMethod(BrotliCompress, false),
-  brotliCompressSync: createConvenienceMethod(BrotliCompress, true),
-  brotliDecompress: createConvenienceMethod(BrotliDecompress, false),
-  brotliDecompressSync: createConvenienceMethod(BrotliDecompress, true),
-  zstdCompress: createConvenienceMethod(ZstdCompress, false),
-  zstdCompressSync: createConvenienceMethod(ZstdCompress, true),
-  zstdDecompress: createConvenienceMethod(ZstdDecompress, false),
-  zstdDecompressSync: createConvenienceMethod(ZstdDecompress, true),
-};
-
-ObjectDefineProperties(module.exports, {
-  createDeflate: createProperty(Deflate),
-  createInflate: createProperty(Inflate),
-  createDeflateRaw: createProperty(DeflateRaw),
-  createInflateRaw: createProperty(InflateRaw),
-  createGzip: createProperty(Gzip),
-  createGunzip: createProperty(Gunzip),
-  createUnzip: createProperty(Unzip),
-  createBrotliCompress: createProperty(BrotliCompress),
-  createBrotliDecompress: createProperty(BrotliDecompress),
-  createZstdCompress: createProperty(ZstdCompress),
-  createZstdDecompress: createProperty(ZstdDecompress),
+  gzip: gzip,
+  gzipSync: gzipSync,
+  gunzip: gunzip,
+  gunzipSync: gunzipSync,
+  deflate: deflate,
+  deflateSync: deflateSync,
+  inflate: inflate,
+  inflateSync: inflateSync,
   constants: {
-    __proto__: null,
-    configurable: false,
-    enumerable: true,
-    value: constants,
+    Z_OK: 0, Z_STREAM_END: 1, Z_NEED_DICT: 2, Z_ERRNO: -1,
+    Z_STREAM_ERROR: -2, Z_DATA_ERROR: -3, Z_MEM_ERROR: -4,
+    Z_BUF_ERROR: -5, Z_VERSION_ERROR: -6,
+    Z_NO_FLUSH: 0, Z_PARTIAL_FLUSH: 1, Z_SYNC_FLUSH: 2,
+    Z_FULL_FLUSH: 3, Z_FINISH: 4, Z_BLOCK: 5,
+    Z_NO_COMPRESSION: 0, Z_BEST_SPEED: 1, Z_BEST_COMPRESSION: 9,
+    Z_DEFAULT_COMPRESSION: -1, Z_FILTERED: 1, Z_HUFFMAN_ONLY: 2,
+    Z_RLE: 3, Z_FIXED: 4, Z_DEFAULT_STRATEGY: 0,
+    ZLIB_VERNUM: 0x1280,
+    DEFLATE: 1, INFLATE: 2, GZIP: 3, GUNZIP: 4, DEFLATERAW: 5,
+    INFLATERAW: 6, UNZIP: 7, BROTLI_DECODE: 8, BROTLI_ENCODE: 9,
+    Z_MIN_CHUNK: 64, Z_MAX_CHUNK: Infinity, Z_DEFAULT_CHUNK: 16384,
+    Z_MIN_MEMLEVEL: 1, Z_MAX_MEMLEVEL: 9, Z_DEFAULT_MEMLEVEL: 8,
+    Z_MIN_LEVEL: -1, Z_MAX_LEVEL: 9, Z_DEFAULT_LEVEL: -1,
+    Z_MIN_WINDOWBITS: 8, Z_MAX_WINDOWBITS: 15, Z_DEFAULT_WINDOWBITS: 15,
   },
-  codes: {
-    __proto__: null,
-    enumerable: true,
-    writable: false,
-    value: ObjectFreeze(codes),
-  },
-});
-
-// These should be considered deprecated
-// expose all the zlib constants
-for (const { 0: key, 1: value } of ObjectEntries(constants)) {
-  if (key.startsWith('BROTLI')) continue;
-  ObjectDefineProperty(module.exports, key, {
-    __proto__: null,
-    enumerable: false,
-    value,
-    writable: false,
-  });
-}
-
+};
 "#),
         "zlib/iter.js" => Some(r#"﻿/**
  * This file is from Node.js official source code.

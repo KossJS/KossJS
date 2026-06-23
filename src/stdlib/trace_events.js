@@ -1,106 +1,70 @@
-﻿/**
- * This file is from Node.js official source code.
- * Source: https://github.com/nodejs/node
- * 
- * Modified for KossJS (Boa engine) compatibility:
- * - Removed internalBinding() calls that require Node.js C++ bindings
- * - Adapted to work with KossJS runtime
- */
+﻿'use strict';
 
-'use strict';
+var kMaxTracingCount = 10;
+var enabledTracingObjects = [];
+var enabledCategories = '';
 
-const {
-  ArrayPrototypeJoin,
-  SafeSet,
-} = primordials;
-
-const { hasTracing } = internalBinding('config');
-
-const kMaxTracingCount = 10;
-
-const {
-  ERR_TRACE_EVENTS_CATEGORY_REQUIRED,
-  ERR_TRACE_EVENTS_UNAVAILABLE,
-} = require('internal/errors').codes;
-
-const { ownsProcessState } = require('internal/worker');
-if (!hasTracing || !ownsProcessState)
-  throw new ERR_TRACE_EVENTS_UNAVAILABLE();
-
-const { CategorySet, getEnabledCategories } = internalBinding('trace_events');
-const { customInspectSymbol } = require('internal/util');
-const { format } = require('internal/util/inspect');
-const {
-  validateObject,
-  validateStringArray,
-} = require('internal/validators');
-
-const enabledTracingObjects = new SafeSet();
+function normalizeCategories(categories) {
+  if (Array.isArray(categories)) return categories;
+  if (typeof categories === 'string') return categories.split(',');
+  return [];
+}
 
 class Tracing {
-  #handle;
-  #categories;
-  #enabled = false;
-
   constructor(categories) {
-    this.#handle = new CategorySet(categories);
-    this.#categories = categories;
+    this._categories = normalizeCategories(categories);
+    this._enabled = false;
   }
 
   enable() {
-    if (!this.#enabled) {
-      this.#enabled = true;
-      this.#handle.enable();
-      enabledTracingObjects.add(this);
-      if (enabledTracingObjects.size > kMaxTracingCount) {
-        process.emitWarning(
-          'Possible trace_events memory leak detected. There are more than ' +
-          `${kMaxTracingCount} enabled Tracing objects.`,
-        );
+    if (!this._enabled) {
+      this._enabled = true;
+      enabledTracingObjects.push(this);
+      enabledCategories = this._categories.join(',');
+      if (enabledTracingObjects.length > kMaxTracingCount) {
+        if (typeof process !== 'undefined' && typeof process.emitWarning === 'function') {
+          process.emitWarning(
+            'Possible trace_events memory leak detected. There are more than ' +
+            kMaxTracingCount + ' enabled Tracing objects.',
+          );
+        }
       }
     }
   }
 
   disable() {
-    if (this.#enabled) {
-      this.#enabled = false;
-      this.#handle.disable();
-      enabledTracingObjects.delete(this);
+    if (this._enabled) {
+      this._enabled = false;
+      var idx = enabledTracingObjects.indexOf(this);
+      if (idx !== -1) enabledTracingObjects.splice(idx, 1);
+      enabledCategories = '';
+      for (var i = 0; i < enabledTracingObjects.length; i++) {
+        if (enabledCategories) enabledCategories += ',';
+        enabledCategories += enabledTracingObjects[i]._categories.join(',');
+      }
     }
   }
 
-  get enabled() {
-    return this.#enabled;
-  }
-
-  get categories() {
-    return ArrayPrototypeJoin(this.#categories, ',');
-  }
-
-  [customInspectSymbol](depth, opts) {
-    if (typeof depth === 'number' && depth < 0)
-      return this;
-
-    const obj = {
-      enabled: this.enabled,
-      categories: this.categories,
-    };
-    return `Tracing ${format(obj)}`;
-  }
+  get enabled() { return this._enabled; }
+  get categories() { return this._categories.join(','); }
 }
 
 function createTracing(options) {
-  validateObject(options, 'options');
-  validateStringArray(options.categories, 'options.categories');
-
-  if (options.categories.length <= 0)
-    throw new ERR_TRACE_EVENTS_CATEGORY_REQUIRED();
-
+  if (typeof options !== 'object' || options === null) {
+    throw new TypeError('options must be an object');
+  }
+  if (!Array.isArray(options.categories) || options.categories.length <= 0) {
+    throw new Error('categories is required');
+  }
   return new Tracing(options.categories);
 }
 
-module.exports = {
-  createTracing,
-  getEnabledCategories,
-};
+function getEnabledCategories() {
+  return enabledCategories || undefined;
+}
 
+module.exports = {
+  Tracing: Tracing,
+  createTracing: createTracing,
+  getEnabledCategories: getEnabledCategories,
+};

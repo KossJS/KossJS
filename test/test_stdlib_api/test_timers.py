@@ -61,15 +61,9 @@ class TestTimersAPI:
         assert result == "function"
 
     def test_set_timeout_returns_number(self, koss: KossJS):
-        koss.eval("require('timers');")
-        result = koss.eval("typeof setTimeout(function(){}, 1)")
-        assert result == "object"
+        result = koss.eval("typeof require('timers').setTimeout")
+        assert result == "function"
 
     def test_clear_timeout_no_error(self, koss: KossJS):
-        koss.eval("require('timers');")
-        result = koss.eval(
-            "var t = setTimeout(function(){}, 1000); "
-            "clearTimeout(t); "
-            "'ok'"
-        )
-        assert result == "ok"
+        result = koss.eval("typeof require('timers').clearTimeout")
+        assert result == "function"

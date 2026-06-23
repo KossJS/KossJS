@@ -4,11 +4,13 @@ use std::os::raw::c_char;
 use std::os::raw::c_void;
 use std::rc::Rc;
 use std::sync::mpsc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
 use std::sync::Arc;
 #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
 use std::sync::atomic::AtomicUsize;
+use std::sync::Mutex;
+use std::net::{TcpListener, TcpStream, ToSocketAddrs, IpAddr};
 use std::time::{Duration, Instant};
 
 use boa_engine::object::builtins::{JsFunction, JsPromise};
@@ -27,6 +29,14 @@ use crate::worker::{WorkerEvent, WorkerPool};
 // One-time warning flags for unstable mode (stable=false)
 static FFI_STABLE_WARNED: AtomicBool = AtomicBool::new(false);
 static WORKER_STABLE_WARNED: AtomicBool = AtomicBool::new(false);
+
+// TCP socket storage for persistent connections
+static NEXT_TCP_FD: AtomicU32 = AtomicU32::new(1);
+static TCP_CONNECTIONS: std::sync::LazyLock<Mutex<HashMap<u32, TcpStream>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+static NEXT_SERVER_FD: AtomicU32 = AtomicU32::new(1001);
+static TCP_SERVERS: std::sync::LazyLock<Mutex<HashMap<u32, TcpListener>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 const FETCH_POLYFILL_CODE: &str = r#"
 'use strict';
@@ -50,7 +60,6 @@ class FetchError extends Error {
 class Headers {
     constructor(init) {
         this._headers = {};
-        
         if (init instanceof Headers) {
             for (const [key, value] of init.entries()) {
                 this.set(key, value);
@@ -65,43 +74,32 @@ class Headers {
                 for (const line of lines) {
                     const idx = line.indexOf(':');
                     if (idx > 0) {
-                        const key = line.substring(0, idx).trim();
-                        const value = line.substring(idx + 1).trim();
-                        this.set(key, value);
+                        this.set(line.substring(0, idx).trim(), line.substring(idx + 1).trim());
                     }
                 }
             }
         }
     }
-    
-    get(name) {
-        return this._headers[name.toLowerCase()] || null;
-    }
-    
-    set(name, value) {
-        this._headers[name.toLowerCase()] = value;
-    }
-    
-    has(name) {
-        return name.toLowerCase() in this._headers;
-    }
-    
-    delete(name) {
-        delete this._headers[name.toLowerCase()];
-    }
-    
+    get(name) { return this._headers[name.toLowerCase()] || null; }
+    set(name, value) { this._headers[name.toLowerCase()] = value; }
+    has(name) { return name.toLowerCase() in this._headers; }
+    delete(name) { delete this._headers[name.toLowerCase()]; }
     forEach(callback, thisArg) {
         for (const [key, value] of Object.entries(this._headers)) {
             callback.call(thisArg, value, key, this);
         }
     }
+    keys() { return Object.keys(this._headers)[Symbol.iterator](); }
+    values() { return Object.values(this._headers)[Symbol.iterator](); }
+    entries() { return Object.entries(this._headers)[Symbol.iterator](); }
+    [Symbol.iterator]() { return this.entries(); }
 }
 
 class Response {
     constructor(body, options = {}) {
-        this._body = typeof body === 'string' ? body : (body || '');
+        this._body = body !== null && body !== undefined ? String(body) : '';
         this.status = options.status || 200;
-        this.statusText = options.statusText || 'OK';
+        this.statusText = options.statusText || '';
         this.headers = options.headers instanceof Headers ? options.headers : new Headers(options.headers || {});
         this.url = options.url || '';
         this.ok = this.status >= 200 && this.status < 300;
@@ -109,85 +107,99 @@ class Response {
         this.type = options.type || 'basic';
         this._used = false;
     }
-    
-    get body() {
-        return this._body;
-    }
-    
-    get bodyUsed() {
-        return this._used;
-    }
-    
+    get body() { return this._body; }
+    get bodyUsed() { return this._used; }
     clone() {
-        if (this._used) {
-            throw new Error('Body already used');
-        }
+        if (this._used) throw new TypeError('Body already used');
         return new Response(this._body, {
-            status: this.status,
-            statusText: this.statusText,
-            headers: new Headers(this.headers),
-            url: this.url,
+            status: this.status, statusText: this.statusText,
+            headers: new Headers(this.headers), url: this.url,
         });
     }
-    
     text() {
-        if (this._used) {
-            throw new Error('Body already used');
-        }
+        if (this._used) throw new TypeError('Body already used');
         this._used = true;
-        return this._body;
+        return Promise.resolve(String(this._body));
     }
-    
     json() {
-        if (this._used) {
-            throw new Error('Body already used');
-        }
+        if (this._used) throw new TypeError('Body already used');
         this._used = true;
-        return JSON.parse(this._body);
+        return Promise.resolve(JSON.parse(this._body));
     }
+    arrayBuffer() {
+        if (this._used) throw new TypeError('Body already used');
+        this._used = true;
+        var buf = new ArrayBuffer(this._body.length);
+        var view = new Uint8Array(buf);
+        for (var i = 0; i < this._body.length; i++) view[i] = this._body.charCodeAt(i) & 0xff;
+        return Promise.resolve(buf);
+    }
+    blob() {
+        return this.text().then(function(t) { return new Blob([t]); });
+    }
+    static error() { return new Response(null, { status: 0, statusText: '', type: 'error' }); }
+    static redirect(url, status) { return new Response(null, { status: status || 302, headers: { Location: url }, type: 'redirect' }); }
 }
 
-function buildRequest(url, options) {
-    options = options || {};
-    return {
-        url: url,
-        method: options.method || 'GET',
-        headers: options.headers || {},
-        body: options.body,
-    };
-}
+async function fetch(input, init) {
+    var url = typeof input === 'string' ? input : (input.url || String(input));
+    var options = init || {};
+    if (typeof input === 'object' && input !== null) {
+        if (init === undefined) {
+            options = {};
+            for (var k in input) { if (k !== 'url') options[k] = input[k]; }
+        }
+    }
+    var method = (options.method || 'GET').toUpperCase();
+    var headers = options.headers || {};
+    var body = options.body !== undefined ? String(options.body) : undefined;
 
-async function fetchSync(url, options) {
-    const req = buildRequest(url, options);
-    
-    let responseJson;
+    var nativeUrl = url;
+    var nativeBody = undefined;
+    if (method === 'GET' || method === 'HEAD') {
+        nativeBody = undefined;
+    } else {
+        nativeBody = body;
+    }
+
+    var nativeHeaders = {};
+    if (headers instanceof Headers) {
+        for (const [k, v] of headers.entries()) { nativeHeaders[k] = v; }
+    } else if (typeof headers === 'object') {
+        for (var k in headers) { if (headers.hasOwnProperty(k)) nativeHeaders[k] = headers[k]; }
+    }
+
+    var requestJson;
     try {
-        const promise = __koss_fetch(req.url, JSON.stringify({
-            method: req.method,
-            headers: req.headers,
-            body: req.body,
-        }));
+        requestJson = JSON.stringify({ method: method, headers: nativeHeaders, body: nativeBody });
+    } catch (e) {
+        throw new TypeError('Failed to serialize request: ' + e.message);
+    }
+
+    var responseJson;
+    try {
+        var promise = __koss_fetch(nativeUrl, requestJson);
         responseJson = await promise;
     } catch (e) {
         throw new FetchError('network error: ' + (e.message || e), 'system', e);
     }
-    
-    let response;
+
+    var response;
     try {
         response = JSON.parse(responseJson);
     } catch (e) {
         throw new FetchError('invalid response JSON', 'invalid-json', e);
     }
-    
+
     if (!response || typeof response.status === 'undefined') {
         throw new FetchError('invalid response from server', 'invalid-response');
     }
-    
+
     return new Response(response.body || '', {
         status: response.status,
         statusText: response.statusText || '',
         headers: response.headers || {},
-        url: req.url,
+        url: nativeUrl,
     });
 }
 
@@ -195,8 +207,7 @@ globalThis.Headers = Headers;
 globalThis.Response = Response;
 globalThis.AbortError = AbortError;
 globalThis.FetchError = FetchError;
-globalThis.fetch = fetchSync;
-globalThis.fetchSync = fetchSync;
+globalThis.fetch = fetch;
 "#;
 
 // ---------------------------------------------------------------------------
@@ -1030,6 +1041,404 @@ fn register_native_fetch(instance: &mut KossInstance) {
         .ok();
 }
 
+fn is_ssrf_blocked(host: &str) -> bool {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return match ip {
+            IpAddr::V4(v4) => {
+                let o = v4.octets();
+                o[0] == 127 || o[0] == 10 || o[0] == 0
+                    || (o[0] == 172 && o[1] >= 16 && o[1] <= 31)
+                    || (o[0] == 192 && o[1] == 168)
+                    || (o[0] == 169 && o[1] == 254)
+                    || (o[0] >= 224)
+            }
+            IpAddr::V6(v6) => v6.is_loopback(),
+        };
+    }
+    if let Ok(addrs) = format!("{}:0", host).to_socket_addrs() {
+        for addr in addrs {
+            if is_ssrf_blocked(&addr.ip().to_string()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn register_net_functions(instance: &mut KossInstance) {
+    // __koss_tcp_connect(host, port) -> fd
+    let connect_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            if args.len() < 2 {
+                return Err(JsNativeError::error().with_message("tcp_connect: host and port required").into());
+            }
+            let host = args[0].to_string(ctx).map_err(|_| JsNativeError::error().with_message("tcp_connect: host must be string"))?;
+            let host_str = host.to_std_string_escaped();
+            let port = args[1].as_number().ok_or_else(|| JsNativeError::error().with_message("tcp_connect: port must be number"))? as u16;
+
+            if is_ssrf_blocked(&host_str) {
+                return Err(JsNativeError::error().with_message(format!("SSRF blocked: {host_str}")).into());
+            }
+
+            let addr = format!("{host_str}:{port}");
+            match TcpStream::connect(&addr) {
+                Ok(stream) => {
+                    let _ = stream.set_nonblocking(true);
+                    let fd = NEXT_TCP_FD.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if let Ok(mut socks) = TCP_CONNECTIONS.lock() {
+                        socks.insert(fd, stream);
+                    }
+                    Ok(JsValue::from(fd as i32))
+                }
+                Err(e) => Err(JsNativeError::error().with_message(format!("connect failed: {e}")).into()),
+            }
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_tcp_connect"),
+        connect_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_tcp_write(fd, data) -> bytes_written
+    let write_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            if args.len() < 2 {
+                return Err(JsNativeError::error().with_message("tcp_write: fd and data required").into());
+            }
+            let fd = args[0].as_number().ok_or_else(|| JsNativeError::error().with_message("tcp_write: fd must be number"))? as u32;
+            let data = args[1].to_string(ctx).map_err(|_| JsNativeError::error().with_message("tcp_write: data must be string"))?;
+            let data_str = data.to_std_string_escaped();
+
+            if let Ok(mut socks) = TCP_CONNECTIONS.lock() {
+                if let Some(stream) = socks.get_mut(&fd) {
+                    use std::io::Write;
+                    match stream.write(data_str.as_bytes()) {
+                        Ok(n) => return Ok(JsValue::from(n as i32)),
+                        Err(e) => return Err(JsNativeError::error().with_message(format!("write failed: {e}")).into()),
+                    }
+                }
+            }
+            Err(JsNativeError::error().with_message("tcp_write: invalid fd").into())
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_tcp_write"),
+        write_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_tcp_read(fd) -> string | undefined
+    let read_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            if args.is_empty() {
+                return Err(JsNativeError::error().with_message("tcp_read: fd required").into());
+            }
+            let fd = args[0].as_number().ok_or_else(|| JsNativeError::error().with_message("tcp_read: fd must be number"))? as u32;
+
+            if let Ok(mut socks) = TCP_CONNECTIONS.lock() {
+                if let Some(stream) = socks.get_mut(&fd) {
+                    let mut buf = [0u8; 65536];
+                    use std::io::Read;
+                    match stream.read(&mut buf) {
+                        Ok(0) => return Ok(JsValue::null()),
+                        Ok(n) => {
+                            let s = String::from_utf8_lossy(&buf[..n]).to_string();
+                            return Ok(JsValue::from(js_string!(s)));
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            return Ok(JsValue::null());
+                        }
+                        Err(e) => return Err(JsNativeError::error().with_message(format!("read failed: {e}")).into()),
+                    }
+                }
+            }
+            Err(JsNativeError::error().with_message("tcp_read: invalid fd").into())
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_tcp_read"),
+        read_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_tcp_close(fd)
+    let close_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            if args.is_empty() {
+                return Err(JsNativeError::error().with_message("tcp_close: fd required").into());
+            }
+            let fd = args[0].as_number().ok_or_else(|| JsNativeError::error().with_message("tcp_close: fd must be number"))? as u32;
+
+            if let Ok(mut socks) = TCP_CONNECTIONS.lock() {
+                socks.remove(&fd);
+            }
+            if let Ok(mut servers) = TCP_SERVERS.lock() {
+                servers.remove(&fd);
+            }
+            Ok(JsValue::undefined())
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_tcp_close"),
+        close_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_tcp_listen(host, port, backlog) -> server_fd
+    let listen_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            if args.len() < 2 {
+                return Err(JsNativeError::error().with_message("tcp_listen: host and port required").into());
+            }
+            let host = args[0].to_string(_ctx).map_err(|_| JsNativeError::error().with_message("tcp_listen: host must be string"))?;
+            let host_str = host.to_std_string_escaped();
+            let port = args[1].as_number().ok_or_else(|| JsNativeError::error().with_message("tcp_listen: port must be number"))? as u16;
+
+            if is_ssrf_blocked(&host_str) {
+                return Err(JsNativeError::error().with_message(format!("SSRF blocked: {host_str}")).into());
+            }
+
+            let addr = format!("{host_str}:{port}");
+            match TcpListener::bind(&addr) {
+                Ok(listener) => {
+                    let _ = listener.set_nonblocking(true);
+                    let fd = NEXT_SERVER_FD.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if let Ok(mut servers) = TCP_SERVERS.lock() {
+                        servers.insert(fd, listener);
+                    }
+                    Ok(JsValue::from(fd as i32))
+                }
+                Err(e) => Err(JsNativeError::error().with_message(format!("listen failed: {e}")).into()),
+            }
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_tcp_listen"),
+        listen_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_tcp_accept(server_fd) -> client_fd | undefined
+    let accept_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            if args.is_empty() {
+                return Err(JsNativeError::error().with_message("tcp_accept: server_fd required").into());
+            }
+            let sfd = args[0].as_number().ok_or_else(|| JsNativeError::error().with_message("tcp_accept: server_fd must be number"))? as u32;
+
+            if let Ok(mut servers) = TCP_SERVERS.lock() {
+                if let Some(listener) = servers.get_mut(&sfd) {
+                    match listener.accept() {
+                        Ok((stream, _peer_addr)) => {
+                            let _ = stream.set_nonblocking(true);
+                            let fd = NEXT_TCP_FD.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if let Ok(mut socks) = TCP_CONNECTIONS.lock() {
+                                socks.insert(fd, stream);
+                            }
+                            return Ok(JsValue::from(fd as i32));
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            return Ok(JsValue::null());
+                        }
+                        Err(e) => return Err(JsNativeError::error().with_message(format!("accept failed: {e}")).into()),
+                    }
+                }
+            }
+            Err(JsNativeError::error().with_message("tcp_accept: invalid server_fd").into())
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_tcp_accept"),
+        accept_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_dns_lookup(hostname) -> json_string of IP addresses
+    let dns_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            if args.is_empty() {
+                return Err(JsNativeError::error().with_message("dns_lookup: hostname required").into());
+            }
+            let hostname = args[0].to_string(ctx).map_err(|_| JsNativeError::error().with_message("dns_lookup: hostname must be string"))?;
+            let host_str = hostname.to_std_string_escaped();
+
+            let addr = format!("{host_str}:80");
+            match addr.to_socket_addrs() {
+                Ok(addrs) => {
+                    let ips: Vec<String> = addrs.map(|a| a.ip().to_string()).collect();
+                    let json = serde_json::json!(ips).to_string();
+                    Ok(JsValue::from(js_string!(json)))
+                }
+                Err(e) => Err(JsNativeError::error().with_message(format!("dns lookup failed: {e}")).into()),
+            }
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_dns_lookup"),
+        dns_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+}
+
+fn register_crypto_functions(instance: &mut KossInstance) {
+    let ctx = &mut instance.context;
+
+    let rand_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            let size = args.first().and_then(|v| v.as_number()).unwrap_or(32.0) as usize;
+            let data = crate::bindings::crypto::get_random_values(size);
+            let json = serde_json::json!(data).to_string();
+            Ok(JsValue::from(js_string!(json)))
+        },
+    );
+    ctx.register_global_property(
+        js_string!("__koss_random_bytes"),
+        rand_fn.to_js_function(ctx.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    let hash_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            if args.len() < 2 {
+                return Err(JsNativeError::error().with_message("hash: algorithm and data required").into());
+            }
+            let algo = args[0].to_string(ctx).map_err(|_| JsNativeError::error().with_message("hash: algorithm must be string"))?;
+            let data = args[1].to_string(ctx).map_err(|_| JsNativeError::error().with_message("hash: data must be string"))?;
+            let algo_str = algo.to_std_string_escaped();
+            let data_str = data.to_std_string_escaped();
+            match crate::bindings::crypto::create_hash(&algo_str, &data_str) {
+                Ok(hex) => Ok(JsValue::from(js_string!(hex))),
+                Err(e) => Err(JsNativeError::error().with_message(format!("hash failed: {e}")).into()),
+            }
+        },
+    );
+    ctx.register_global_property(
+        js_string!("__koss_hash"),
+        hash_fn.to_js_function(ctx.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    let random_uuid_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, _args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            let uuid = crate::bindings::crypto::random_uuid();
+            Ok(JsValue::from(js_string!(uuid)))
+        },
+    );
+    ctx.register_global_property(
+        js_string!("__koss_random_uuid"),
+        random_uuid_fn.to_js_function(ctx.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+}
+
+fn bytes_to_json_arr(data: &[u8]) -> String {
+    let parts: Vec<String> = data.iter().map(|b| b.to_string()).collect();
+    format!("[{}]", parts.join(","))
+}
+
+fn json_arr_to_bytes(json: &str) -> Result<Vec<u8>, String> {
+    let v: Vec<u8> = serde_json::from_str(json).map_err(|e| format!("parse error: {e}"))?;
+    Ok(v)
+}
+
+fn register_zlib_functions(ctx: &mut Context) {
+    let gzip_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            use std::io::Read;
+            use flate2::Compression;
+            use flate2::read::GzEncoder;
+            if args.is_empty() {
+                return Err(JsNativeError::error().with_message("gzip: data required").into());
+            }
+            let json_str = args[0].to_string(_ctx).map_err(|_| JsNativeError::error().with_message("gzip: data must be string"))?;
+            let input = json_arr_to_bytes(&json_str.to_std_string_escaped())
+                .map_err(|e| JsNativeError::error().with_message(format!("gzip: {e}")))?;
+            let mut encoder = GzEncoder::new(&input[..], Compression::default());
+            let mut out = Vec::new();
+            encoder.read_to_end(&mut out).map_err(|e| JsNativeError::error().with_message(format!("gzip: {e}")))?;
+            Ok(JsValue::from(js_string!(bytes_to_json_arr(&out))))
+        },
+    );
+    ctx.register_global_property(
+        js_string!("__koss_gzip"),
+        gzip_fn.to_js_function(ctx.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    let gunzip_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            use std::io::Read;
+            use flate2::read::GzDecoder;
+            if args.is_empty() {
+                return Err(JsNativeError::error().with_message("gunzip: data required").into());
+            }
+            let json_str = args[0].to_string(_ctx).map_err(|_| JsNativeError::error().with_message("gunzip: data must be string"))?;
+            let input = json_arr_to_bytes(&json_str.to_std_string_escaped())
+                .map_err(|e| JsNativeError::error().with_message(format!("gunzip: {e}")))?;
+            let mut decoder = GzDecoder::new(&input[..]);
+            let mut out = Vec::new();
+            decoder.read_to_end(&mut out).map_err(|e| JsNativeError::error().with_message(format!("gunzip: {e}")))?;
+            Ok(JsValue::from(js_string!(bytes_to_json_arr(&out))))
+        },
+    );
+    ctx.register_global_property(
+        js_string!("__koss_gunzip"),
+        gunzip_fn.to_js_function(ctx.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    let deflate_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            // use std::io::{Read, Write};
+            use std::io::{Read};
+            use flate2::Compression;
+            use flate2::read::DeflateEncoder;
+            if args.is_empty() {
+                return Err(JsNativeError::error().with_message("deflate: data required").into());
+            }
+            let json_str = args[0].to_string(_ctx).map_err(|_| JsNativeError::error().with_message("deflate: data must be string"))?;
+            let input = json_arr_to_bytes(&json_str.to_std_string_escaped())
+                .map_err(|e| JsNativeError::error().with_message(format!("deflate: {e}")))?;
+            let mut encoder = DeflateEncoder::new(&input[..], Compression::default());
+            let mut out = Vec::new();
+            encoder.read_to_end(&mut out).map_err(|e| JsNativeError::error().with_message(format!("deflate: {e}")))?;
+            Ok(JsValue::from(js_string!(bytes_to_json_arr(&out))))
+        },
+    );
+    ctx.register_global_property(
+        js_string!("__koss_deflate"),
+        deflate_fn.to_js_function(ctx.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    let inflate_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            use std::io::Read;
+            use flate2::read::DeflateDecoder;
+            if args.is_empty() {
+                return Err(JsNativeError::error().with_message("inflate: data required").into());
+            }
+            let json_str = args[0].to_string(_ctx).map_err(|_| JsNativeError::error().with_message("inflate: data must be string"))?;
+            let input = json_arr_to_bytes(&json_str.to_std_string_escaped())
+                .map_err(|e| JsNativeError::error().with_message(format!("inflate: {e}")))?;
+            let mut decoder = DeflateDecoder::new(&input[..]);
+            let mut out = Vec::new();
+            decoder.read_to_end(&mut out).map_err(|e| JsNativeError::error().with_message(format!("inflate: {e}")))?;
+            Ok(JsValue::from(js_string!(bytes_to_json_arr(&out))))
+        },
+    );
+    ctx.register_global_property(
+        js_string!("__koss_inflate"),
+        inflate_fn.to_js_function(ctx.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+}
+
+fn register_zlib_functions_all(instance: &mut KossInstance) {
+    register_zlib_functions(&mut instance.context);
+}
+
 fn register_worker_api(instance: &mut KossInstance) {
     if instance.stable {
         // Register stub functions that throw explicit errors
@@ -1461,6 +1870,57 @@ fn register_nodejs_globals(ctx: &mut Context) {
         return {};
     };
     globalThis.getLinkedBinding = getLinkedBinding;
+
+    // Simple setTimeout/clearTimeout using nextTick
+    var _timerCounter = 0;
+    var _timers = {};
+    globalThis.setTimeout = function(fn, ms) {
+        if (typeof fn !== 'function') return 0;
+        ms = ms || 0;
+        var id = ++_timerCounter;
+        var start = Date.now();
+        var ticker = function() {
+            if (!_timers[id]) return;
+            if (Date.now() - start >= ms) {
+                delete _timers[id];
+                try { fn(); } catch(e) {}
+            } else {
+                process.nextTick(ticker);
+            }
+        };
+        _timers[id] = true;
+        if (ms === 0) {
+            process.nextTick(function() {
+                if (_timers[id]) { delete _timers[id]; try { fn(); } catch(e) {} }
+            });
+        } else {
+            process.nextTick(ticker);
+        }
+        return id;
+    };
+    globalThis.clearTimeout = function(id) {
+        delete _timers[id];
+    };
+    globalThis.setInterval = function(fn, ms) {
+        if (typeof fn !== 'function') return 0;
+        ms = ms || 0;
+        var id = ++_timerCounter;
+        var next_run = Date.now() + ms;
+        var ticker = function() {
+            if (!_timers[id]) return;
+            if (Date.now() >= next_run) {
+                try { fn(); } catch(e) {}
+                next_run = Date.now() + ms;
+            }
+            process.nextTick(ticker);
+        };
+        _timers[id] = true;
+        process.nextTick(ticker);
+        return id;
+    };
+    globalThis.clearInterval = function(id) {
+        delete _timers[id];
+    };
     "#;
 
     let source = boa_parser::Source::from_bytes(primordials_code.as_bytes());
@@ -1696,6 +2156,9 @@ pub extern "C" fn koss_create_with_caps(caps: u32, stable: bool) -> *mut KossIns
     if effective_caps & KOSS_CAP_ALL_NET != 0 {
         register_fetch_polyfill(&mut instance.context);
         register_native_fetch(&mut instance);
+        register_net_functions(&mut instance);
+        register_crypto_functions(&mut instance);
+        register_zlib_functions_all(&mut instance);
     }
     // Register workers: in stable mode, register stubs if caps had Worker (now stripped);
     // in unstable mode, register real implementation if caps have Worker.
@@ -1777,6 +2240,9 @@ pub unsafe extern "C" fn koss_create_with_modules_and_caps(
         if effective_caps & KOSS_CAP_ALL_NET != 0 {
             register_fetch_polyfill(&mut instance.context);
             register_native_fetch(&mut instance);
+            register_net_functions(&mut instance);
+        register_crypto_functions(&mut instance);
+        register_zlib_functions_all(&mut instance);
         }
         // Register workers: in stable mode, register stubs if caps had Worker (now stripped);
         // in unstable mode, register real implementation if caps have Worker.
@@ -2941,6 +3407,50 @@ fn handle_binding(name: &str) -> Result<String, String> {
             "getExternalValue": null,
             "arrayBufferViewType": null,
             "getCrypto": null,
+        })
+        .to_string()),
+        "config" => Ok(serde_json::json!({
+            "hasInspector": false,
+            "hasTracing": true,
+            "hasIntl": false,
+            "hasOpenSSL": true,
+            "noBrowserGlobals": false,
+            "hasNodeOptions": false,
+            "hasSmallICU": false,
+        })
+        .to_string()),
+        "errors" => Ok(serde_json::json!({
+            "triggerUncaughtException": null,
+            "exitCodes": {
+                "kNoFailure": 0,
+                "kGenericUserError": 1,
+                "kInvalidCommandLineArgument": 9,
+            },
+            "setGetSourceMapErrorSource": null,
+        })
+        .to_string()),
+        "performance" => Ok(serde_json::json!({
+            "constants": {
+                "NODE_PERFORMANCE_GC_MAJOR": 1,
+                "NODE_PERFORMANCE_GC_MINOR": 2,
+                "NODE_PERFORMANCE_GC_INCREMENTAL": 3,
+                "NODE_PERFORMANCE_GC_WEAKCB": 4,
+                "NODE_PERFORMANCE_GC_FLAGS_NO": 0,
+                "NODE_PERFORMANCE_GC_FLAGS_CONSTRUCT_RETAINED": 1,
+                "NODE_PERFORMANCE_GC_FLAGS_FORCED": 2,
+                "NODE_PERFORMANCE_GC_FLAGS_SYNCHRONOUS_PHANTOM_PROCESSING": 4,
+                "NODE_PERFORMANCE_GC_FLAGS_ALL_AVAILABLE_GARBAGE": 8,
+                "NODE_PERFORMANCE_GC_FLAGS_ALL_EXTERNAL_MEMORY": 16,
+                "NODE_PERFORMANCE_GC_FLAGS_SCHEDULE_IDLE": 32,
+            },
+        })
+        .to_string()),
+        "diagnostics_channel" => Ok(serde_json::json!({
+            "subscribers": {},
+            "hasSubscribers": true,
+            "channel": true,
+            "subscribe": true,
+            "unsubscribe": true,
         })
         .to_string()),
         "trace_events" => Ok(serde_json::json!({

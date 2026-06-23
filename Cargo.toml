@@ -33,6 +33,7 @@ sha2 = "0.11"
 md-5 = "0.11"
 hmac = "0.13"
 pbkdf2 = "0.13"
+flate2 = "1.1"
 
 # 动态加载动态库（跨平台，iOS 不支持动态调用动态库所以跳过，Android 和 HarmonyOS 有限制也跳过）
 # 注意: ohos 的 target_os="linux"、target_env="ohos"，必须显式排除
