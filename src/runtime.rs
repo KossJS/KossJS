@@ -755,7 +755,7 @@ fn register_console(ctx: &mut Context) {
     );
 }
 
-fn register_koss_global(ctx: &mut Context) {
+fn register_koss_global(ctx: &mut Context, stable: bool) {
     let version = match std::str::from_utf8(get_version()) {
         Ok(s) => s.trim_end_matches('\0').to_string(),
         Err(_) => "unknown".to_string(),
@@ -777,6 +777,13 @@ fn register_koss_global(ctx: &mut Context) {
             | boa_engine::property::Attribute::ENUMERABLE
             | boa_engine::property::Attribute::PERMANENT,
     );
+    obj.property(
+        boa_engine::js_string!("isStable"),
+        boa_engine::JsValue::from(stable),
+        boa_engine::property::Attribute::READONLY
+            | boa_engine::property::Attribute::ENUMERABLE
+            | boa_engine::property::Attribute::PERMANENT,
+    );
     let koss_obj = obj.build();
 
     // Rust 层注册到 globalThis（不设 PERMANENT，让 JS 层能替换并做最终保护）
@@ -793,6 +800,7 @@ fn register_koss_global(ctx: &mut Context) {
         var safe = Object.create(null);
         safe.version = globalThis.KossJS.version;
         safe.runtime = globalThis.KossJS.runtime;
+        safe.isStable = globalThis.KossJS.isStable;
         Object.freeze(safe);
         Object.defineProperty(globalThis, 'KossJS', {
             value: safe,
@@ -2137,7 +2145,7 @@ pub extern "C" fn koss_create_with_caps(caps: u32, stable: bool) -> *mut KossIns
     };
     let mut instance = Box::new(KossInstance::new(context, effective_caps, stable));
     register_console(&mut instance.context);
-    register_koss_global(&mut instance.context);
+    register_koss_global(&mut instance.context, stable);
     buffer::register_buffer_globals(&mut instance.context);
     register_dlopen_binding(&mut instance.context);
     register_native_bindings(&mut instance);
@@ -2223,7 +2231,7 @@ pub unsafe extern "C" fn koss_create_with_modules_and_caps(
         };
         let mut instance = Box::new(KossInstance::new(context, effective_caps, stable));
         register_console(&mut instance.context);
-        register_koss_global(&mut instance.context);
+        register_koss_global(&mut instance.context, stable);
         register_native_bindings(&mut instance);
         // Always register nodejs globals (internalBinding, primordials, process)
         register_nodejs_globals(&mut instance.context);
