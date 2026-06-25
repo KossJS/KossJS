@@ -94,10 +94,15 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install autoconf automake libtool make
 
+      - name: 安装 Visual Studio 2022 Build Tools
+        if: runner.os == 'Windows' && matrix.target == 'aarch64-pc-windows-msvc'
+        run: |
+          choco install visualstudio2022buildtools -y --params "--quiet --norestart"
+
       - name: 安装 ARM64 MSVC 工具链
         if: runner.os == 'Windows' && matrix.target == 'aarch64-pc-windows-msvc'
         run: |
-          choco install visualstudio2022-workload-vctools --package-parameters "--add Microsoft.VisualStudio.Component.VC.Tools.ARM64"
+          choco install visualstudio2022-workload-vctools --package-parameters "--add Microsoft.VisualStudio.Component.VC.Tools.ARM64 --quiet --norestart"
 
       - name: 📦 缓存 Cargo
         uses: actions/cache@v4
