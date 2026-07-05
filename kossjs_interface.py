@@ -78,12 +78,21 @@ class KossJS:
     KOSS_CAP_WORKER = 1 << 3
     KOSS_CAP_EXTERNAL_LOADER = MODULE_LOAD
 
+    # Builtin Flags — controls which koss:* modules are visible
+    KOSS_BUILTIN_NONE = 0
+    KOSS_BUILTIN_NODE = 1 << 0
+    KOSS_BUILTIN_BUN = 1 << 1
+    KOSS_BUILTIN_DENO = 1 << 2
+    KOSS_BUILTIN_KOSS = 1 << 3
+    KOSS_BUILTIN_ALL = 0xFFFFFFFF
+
     def __init__(
         self,
         lib_path: str | None = None,
         with_modules: bool = False,
         root_dir: str | None = None,
         capabilities: int | None = None,
+        builtins: int | None = None,
         stable: bool = True,
     ):
         """
@@ -104,6 +113,15 @@ class KossJS:
 
             # Development/debugging (unstable mode, FFI/Worker enabled)
             runtime = KossJS(stable=False)
+
+            # Only Node.js compat layer, no Bun/Deno
+            runtime = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE)
+
+            # Sandbox + Deno only
+            runtime = KossJS(
+                capabilities=KossJS.KOSS_CAP_SANDBOX,
+                builtins=KossJS.KOSS_BUILTIN_DENO,
+            )
         """
         self._ptr: ctypes.c_void_p | None = None
         if lib_path is None:
@@ -120,15 +138,17 @@ class KossJS:
         self._libc.malloc.restype = ctypes.c_void_p
         
         caps = capabilities if capabilities is not None else self.KOSS_CAP_ALL
+        bltins = builtins if builtins is not None else self.KOSS_BUILTIN_ALL
 
         # Use with_modules to enable module loading from stdlib
         if with_modules and root_dir:
-            self._ptr = self._lib.koss_create_with_modules_and_caps(
-                root_dir.encode("utf-8"), caps, stable
+            self._ptr = self._lib.koss_create_with_modules_and_builtins(
+                root_dir.encode("utf-8"), caps, bltins, stable
             )
         else:
-            # Still use with_modules but with current directory
-            self._ptr = self._lib.koss_create_with_modules_and_caps(b".", caps, stable)
+            self._ptr = self._lib.koss_create_with_builtins(
+                caps, bltins, stable
+            )
         
         if not self._ptr:
             raise RuntimeError("Failed to create KossJS instance")
@@ -153,14 +173,26 @@ class KossJS:
         lib.koss_create_with_caps.restype = ctypes.c_void_p
         lib.koss_create_with_caps.argtypes = [ctypes.c_uint32, ctypes.c_bool]
 
+        lib.koss_create_with_builtins.restype = ctypes.c_void_p
+        lib.koss_create_with_builtins.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_bool]
+
         lib.koss_create_with_modules_and_caps.restype = ctypes.c_void_p
         lib.koss_create_with_modules_and_caps.argtypes = [ctypes.c_char_p, ctypes.c_uint32, ctypes.c_bool]
+
+        lib.koss_create_with_modules_and_builtins.restype = ctypes.c_void_p
+        lib.koss_create_with_modules_and_builtins.argtypes = [ctypes.c_char_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_bool]
 
         lib.koss_is_stable.restype = ctypes.c_bool
         lib.koss_is_stable.argtypes = [ctypes.c_void_p]
 
         lib.koss_get_capabilities.restype = ctypes.c_uint32
         lib.koss_get_capabilities.argtypes = [ctypes.c_void_p]
+
+        lib.koss_get_builtins.restype = ctypes.c_uint32
+        lib.koss_get_builtins.argtypes = [ctypes.c_void_p]
+
+        lib.koss_is_builtin_enabled.restype = ctypes.c_bool
+        lib.koss_is_builtin_enabled.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
 
         lib.koss_set_audit_mask.restype = KossResult
         lib.koss_set_audit_mask.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
@@ -259,6 +291,14 @@ class KossJS:
     def get_capabilities(self) -> int:
         """Get the capability bitmask for this instance."""
         return self._lib.koss_get_capabilities(self._ptr)
+
+    def get_builtins(self) -> int:
+        """Get the builtin module flags bitmask for this instance."""
+        return self._lib.koss_get_builtins(self._ptr)
+
+    def is_builtin_enabled(self, flag: int) -> bool:
+        """Check if a specific builtin flag is enabled on this instance."""
+        return bool(self._lib.koss_is_builtin_enabled(self._ptr, flag))
 
     def _get_binding(self, name: str) -> dict[str, Any]:
         """Get internal binding info from Rust."""

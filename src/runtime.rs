@@ -618,6 +618,9 @@ pub struct KossInstance {
     pub sandbox: SandboxState,
     /// When true, FFI and Worker capabilities are disabled (stable mode).
     pub stable: bool,
+    /// Builtin module flags — controls which koss:* modules are visible.
+    /// See KOSS_BUILTIN_* constants in builtins.rs.
+    pub builtins: u32,
     /// Context MUST be the last field: Rust drops struct fields in declaration
     /// order, and other fields (event_loop.ffi_callback_fns) hold JsFunction
     /// handles that reference the Context. Dropping Context first causes
@@ -626,7 +629,7 @@ pub struct KossInstance {
 }
 
 impl KossInstance {
-    pub fn new(context: Context, caps: u32, stable: bool) -> Self {
+    pub fn new(context: Context, caps: u32, stable: bool, builtins: u32) -> Self {
         KossInstance {
             event_loop: KossEventLoop::new(),
             worker_pool: None,
@@ -634,6 +637,7 @@ impl KossInstance {
             capabilities: caps,
             sandbox: SandboxState::default(),
             stable,
+            builtins,
             context,
         }
     }
@@ -740,10 +744,23 @@ fn js_value_to_string(val: &JsValue, ctx: &mut Context) -> String {
 }
 
 fn js_error_to_string(err: &JsError, ctx: &mut Context) -> String {
-    match err.try_native(ctx) {
-        Ok(native) => native.message().to_string(),
-        Err(_) => format!("{:?}", err),
+    // Try native error first
+    if let Ok(native) = err.try_native(ctx) {
+        let msg = native.message().to_string();
+        if !msg.is_empty() {
+            return msg;
+        }
     }
+    // Try to convert the JsError value to string via JS toString()
+    let val = err.to_opaque(ctx);
+    if let Ok(s) = val.to_string(ctx) {
+        let str = s.to_std_string_escaped();
+        if !str.is_empty() && str != "[object Object]" {
+            return str;
+        }
+    }
+    // Fallback: debug format
+    format!("{:?}", err)
 }
 
 fn register_console(ctx: &mut Context) {
@@ -920,6 +937,20 @@ fn register_internal_module_loader(instance: &mut KossInstance) {
             }
         }
 
+        // 0. Try koss: protocol builtins (koss:node/*, koss:bun, koss:deno, koss:io, etc.)
+        if crate::builtins::is_koss_specifier(&name) {
+            let inst = unsafe { &*instance_ptr };
+            match crate::builtins::resolve_builtin_specifier(&name, inst.builtins) {
+                Ok((source, _is_internal)) => {
+                    let json = serde_json::json!({"type": "module", "code": source});
+                    return Ok(JsValue::from(boa_engine::js_string!(json.to_string())));
+                }
+                Err(e) => {
+                    return Err(JsError::from(JsNativeError::error().with_message(e)));
+                }
+            }
+        }
+
         // 1. Try embedded stdlib
         let direct_rel = format!("{}.js", module_name);
         if let Some(content) = crate::embedded_stdlib::get(&direct_rel) {
@@ -931,6 +962,19 @@ fn register_internal_module_loader(instance: &mut KossInstance) {
         if let Some(content) = crate::embedded_stdlib::get(&index_rel) {
             let json = serde_json::json!({"type": "module", "code": content});
             return Ok(JsValue::from(boa_engine::js_string!(json.to_string())));
+        }
+
+        // 1b. Try koss:node/{name} as fallback for bare module names
+        if !module_name.starts_with("koss:") {
+            let koss_node_name = format!("koss:node/{}", module_name);
+            let inst = unsafe { &*instance_ptr };
+            match crate::builtins::resolve_builtin_specifier(&koss_node_name, inst.builtins) {
+                Ok((source, _is_internal)) => {
+                    let json = serde_json::json!({"type": "module", "code": source});
+                    return Ok(JsValue::from(boa_engine::js_string!(json.to_string())));
+                }
+                Err(_) => {}
+            }
         }
 
         // 2. Fallback: try externally-registered module loader (if enabled)
@@ -1071,6 +1115,164 @@ fn is_ssrf_blocked(host: &str) -> bool {
         }
     }
     false
+}
+
+fn register_fs_functions(instance: &mut KossInstance) {
+    macro_rules! reg_fs {
+        ($name:expr, $closure:expr) => {{
+            let js_fn = NativeFunction::from_copy_closure($closure)
+                .to_js_function(instance.context.realm());
+            instance.context.register_global_property(
+                boa_engine::js_string!($name),
+                js_fn,
+                boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+            ).ok();
+        }};
+    }
+
+    // __koss_fs_exists(path) -> bool
+    reg_fs!("__koss_fs_exists", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+        let path = args.first().ok_or_else(|| JsNativeError::error().with_message("exists: path required"))?
+            .to_string(ctx).map_err(|_| JsNativeError::error().with_message("exists: path must be string"))?;
+        Ok(JsValue::from(crate::bindings::fs::exists_sync(&path.to_std_string_escaped())))
+    });
+
+    // __koss_fs_read(path) -> { code: 0, value: base64_string }
+    reg_fs!("__koss_fs_read", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+        let path = args.first().ok_or_else(|| JsNativeError::error().with_message("read: path required"))?
+            .to_string(ctx).map_err(|_| JsNativeError::error().with_message("read: path must be string"))?;
+        let path_str = path.to_std_string_escaped();
+        match std::fs::read(&path_str) {
+            Ok(data) => {
+                use base64::Engine;
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
+                Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":0,\"value\":\"{}\"}}", encoded))))
+            }
+            Err(e) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":1,\"value\":\"{}\"}}", e)))),
+        }
+    });
+
+    // __koss_fs_write(path, data) -> { code: 0 }
+    reg_fs!("__koss_fs_write", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+        if args.len() < 2 {
+            return Err(JsNativeError::error().with_message("write: path and data required").into());
+        }
+        let path = args[0].to_string(ctx).map_err(|_| JsNativeError::error().with_message("write: path must be string"))?;
+        let data_val = args[1].to_string(ctx).map_err(|_| JsNativeError::error().with_message("write: data must be string"))?;
+        let path_str = path.to_std_string_escaped();
+        let data_str = data_val.to_std_string_escaped();
+        let bytes = data_str.as_bytes();
+        match std::fs::write(&path_str, bytes) {
+            Ok(()) => Ok(JsValue::from(boa_engine::js_string!("{\"code\":0}"))),
+            Err(e) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":1,\"value\":\"{}\"}}", e)))),
+        }
+    });
+
+    // __koss_fs_stat(path) -> { code: 0, value: json_string }
+    reg_fs!("__koss_fs_stat", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+        let path = args.first().ok_or_else(|| JsNativeError::error().with_message("stat: path required"))?
+            .to_string(ctx).map_err(|_| JsNativeError::error().with_message("stat: path must be string"))?;
+        let path_str = path.to_std_string_escaped();
+        match std::fs::metadata(&path_str) {
+            Ok(meta) => {
+                let mtime = meta.modified().ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as i64).unwrap_or(0);
+                let ctime = meta.created().ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as i64).unwrap_or(0);
+                let json = format!(
+                    "{{\"size\":{},\"mtime\":{},\"ctime\":{},\"isFile\":{},\"isDirectory\":{},\"isSymlink\":{}}}",
+                    meta.len(), mtime, ctime, meta.is_file(), meta.is_dir(), meta.file_type().is_symlink()
+                );
+                Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":0,\"value\":{}}}", json))))
+            }
+            Err(e) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":1,\"value\":\"{}\"}}", e)))),
+        }
+    });
+
+    // __koss_fs_mkdir(path, recursive) -> { code: 0 }
+    reg_fs!("__koss_fs_mkdir", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+        let path = args.first().ok_or_else(|| JsNativeError::error().with_message("mkdir: path required"))?
+            .to_string(ctx).map_err(|_| JsNativeError::error().with_message("mkdir: path must be string"))?;
+        let recursive = args.get(1).and_then(|v| v.as_number()).map(|n| n != 0.0).unwrap_or(false);
+        let path_str = path.to_std_string_escaped();
+        let result = if recursive {
+            std::fs::create_dir_all(&path_str)
+        } else {
+            std::fs::create_dir(&path_str)
+        };
+        match result {
+            Ok(()) => Ok(JsValue::from(boa_engine::js_string!("{\"code\":0}"))),
+            Err(e) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":1,\"value\":\"{}\"}}", e)))),
+        }
+    });
+
+    // __koss_fs_readdir(path) -> { code: 0, value: json_array }
+    reg_fs!("__koss_fs_readdir", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+        let path = args.first().ok_or_else(|| JsNativeError::error().with_message("readdir: path required"))?
+            .to_string(ctx).map_err(|_| JsNativeError::error().with_message("readdir: path must be string"))?;
+        let path_str = path.to_std_string_escaped();
+        match std::fs::read_dir(&path_str) {
+            Ok(entries) => {
+                let names: Vec<String> = entries.filter_map(|e| e.ok())
+                    .filter_map(|e| e.file_name().to_str().map(|s| format!("\"{}\"", s.replace('\\', "\\\\"))))
+                    .collect();
+                let json = format!("[{}]", names.join(","));
+                Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":0,\"value\":{}}}", json))))
+            }
+            Err(e) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":1,\"value\":\"{}\"}}", e)))),
+        }
+    });
+
+    // __koss_fs_unlink(path) -> { code: 0 }
+    reg_fs!("__koss_fs_unlink", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+        let path = args.first().ok_or_else(|| JsNativeError::error().with_message("unlink: path required"))?
+            .to_string(ctx).map_err(|_| JsNativeError::error().with_message("unlink: path must be string"))?;
+        let path_str = path.to_std_string_escaped();
+        let result = std::fs::remove_file(&path_str).or_else(|_| std::fs::remove_dir(&path_str));
+        match result {
+            Ok(()) => Ok(JsValue::from(boa_engine::js_string!("{\"code\":0}"))),
+            Err(e) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":1,\"value\":\"{}\"}}", e)))),
+        }
+    });
+
+    // __koss_fs_rename(old, new) -> { code: 0 }
+    reg_fs!("__koss_fs_rename", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+        if args.len() < 2 {
+            return Err(JsNativeError::error().with_message("rename: old and new path required").into());
+        }
+        let old = args[0].to_string(ctx).map_err(|_| JsNativeError::error().with_message("rename: old path must be string"))?;
+        let new = args[1].to_string(ctx).map_err(|_| JsNativeError::error().with_message("rename: new path must be string"))?;
+        match std::fs::rename(&old.to_std_string_escaped(), &new.to_std_string_escaped()) {
+            Ok(()) => Ok(JsValue::from(boa_engine::js_string!("{\"code\":0}"))),
+            Err(e) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":1,\"value\":\"{}\"}}", e)))),
+        }
+    });
+
+    // __koss_fs_copy(src, dst) -> { code: 0 }
+    reg_fs!("__koss_fs_copy", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+        if args.len() < 2 {
+            return Err(JsNativeError::error().with_message("copy: src and dst required").into());
+        }
+        let src = args[0].to_string(ctx).map_err(|_| JsNativeError::error().with_message("copy: src must be string"))?;
+        let dst = args[1].to_string(ctx).map_err(|_| JsNativeError::error().with_message("copy: dst must be string"))?;
+        match std::fs::copy(&src.to_std_string_escaped(), &dst.to_std_string_escaped()) {
+            Ok(_) => Ok(JsValue::from(boa_engine::js_string!("{\"code\":0}"))),
+            Err(e) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":1,\"value\":\"{}\"}}", e)))),
+        }
+    });
+
+    // __koss_fs_realpath(path) -> path string
+    reg_fs!("__koss_fs_realpath", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+        let path = args.first().ok_or_else(|| JsNativeError::error().with_message("realpath: path required"))?
+            .to_string(ctx).map_err(|_| JsNativeError::error().with_message("realpath: path must be string"))?;
+        let path_str = path.to_std_string_escaped();
+        match std::fs::canonicalize(&path_str) {
+            Ok(p) => Ok(JsValue::from(boa_engine::js_string!(p.to_string_lossy().to_string()))),
+            Err(e) => Err(JsNativeError::error().with_message(format!("realpath failed: {e}")).into()),
+        }
+    });
 }
 
 fn register_net_functions(instance: &mut KossInstance) {
@@ -2055,33 +2257,34 @@ const process = {
             return Module._cache[normalizedPath].exports;
         }
         
-        const module = {
-            id: normalizedPath,
-            filename: normalizedPath,
-            loaded: false,
-            exports: {}
-        };
+        const module = Object.create(null);
+        module.id = normalizedPath;
+        module.filename = normalizedPath;
+        module.loaded = false;
+        module.exports = {};
         
         Module._cache[normalizedPath] = module;
         
         try {
-            let loadedViaLoader = false;
             if (typeof __koss_load_module === 'function') {
                 const result = __koss_load_module(normalizedPath);
                 if (result !== null && result !== undefined) {
-                    loadedViaLoader = true;
                     const parsed = JSON.parse(result);
                     if (parsed.type === 'module' && typeof parsed.code === 'string') {
-                        const fn = new Function('exports', 'require', 'module', '__filename', '__dirname', '"use strict";\n' + parsed.code);
-                        fn.call(module.exports, module.exports, require, module, normalizedPath, normalizedPath);
+                        const originalModule = globalThis.module;
+                        const originalExports = globalThis.exports;
+                        const originalBuffer = globalThis.Buffer;
+                        delete globalThis.Buffer;
+                        globalThis.module = module;
+                        globalThis.exports = module.exports;
+                        eval(parsed.code);
+                        globalThis.module = originalModule;
+                        globalThis.exports = originalExports;
+                        globalThis.Buffer = originalBuffer;
                     } else if (parsed.type === 'object') {
                         module.exports = parsed.value;
                     }
                 }
-            }
-            if (!loadedViaLoader && _exportsCustomized) {
-                module.exports = _customExports;
-                _exportsCustomized = false;
             }
             module.loaded = true;
         } catch (e) {
@@ -2113,12 +2316,14 @@ const process = {
 // C ABI — Instance lifecycle
 // ===========================================================================
 
-/// Create a new isolated JS instance with specific capabilities and stable mode.
-/// When `stable` is true, FFI and Worker capabilities are stripped from `caps`.
-/// Use KOSS_CAP_ALL for full access, KOSS_CAP_SANDBOX for pure computation.
-#[unsafe(no_mangle)]
-pub extern "C" fn koss_create_with_caps(caps: u32, stable: bool) -> *mut KossInstance {
-    output_license_once();
+/// Internal helper: create a fully initialized KossInstance from parts.
+fn create_instance_internal(
+    context: boa_engine::Context,
+    caps: u32,
+    builtins: u32,
+    stable: bool,
+    _root_dir: Option<&str>,
+) -> *mut KossInstance {
     let effective_caps = if stable {
         caps & !(crate::sandbox::KOSS_CAP_ALL_FFI | crate::sandbox::KOSS_CAP_WORKER)
     } else {
@@ -2136,30 +2341,65 @@ pub extern "C" fn koss_create_with_caps(caps: u32, stable: bool) -> *mut KossIns
         }
         caps
     };
-    let context = match boa_engine::context::ContextBuilder::default().build() {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            eprintln!("Warning: Failed to create Boa context: {e}");
-            return std::ptr::null_mut();
-        }
-    };
-    let mut instance = Box::new(KossInstance::new(context, effective_caps, stable));
+
+    let mut instance = Box::new(KossInstance::new(context, effective_caps, stable, builtins));
     register_console(&mut instance.context);
     register_koss_global(&mut instance.context, stable);
     buffer::register_buffer_globals(&mut instance.context);
     register_dlopen_binding(&mut instance.context);
     register_native_bindings(&mut instance);
-    // Always register nodejs globals (internalBinding, primordials, process)
+    register_fs_functions(&mut instance);
     register_nodejs_globals(&mut instance.context);
-    // Only register module loader if MODULE_LOAD capability is set
+    // Register TextEncoder/TextDecoder as globals if not already present
+    let te_code = r#"
+    (function() {
+        if (typeof TextEncoder === 'undefined') {
+            function TextEncoder() {
+                this.encode = function(str) {
+                    var bytes = [];
+                    for (var i = 0; i < str.length; i++) {
+                        var c = str.charCodeAt(i);
+                        if (c < 0x80) bytes.push(c);
+                        else if (c < 0x800) { bytes.push(0xc0|(c>>6)); bytes.push(0x80|(c&0x3f)); }
+                        else { bytes.push(0xe0|(c>>12)); bytes.push(0x80|((c>>6)&0x3f)); bytes.push(0x80|(c&0x3f)); }
+                    }
+                    return new Uint8Array(bytes);
+                };
+            }
+            globalThis.TextEncoder = TextEncoder;
+        }
+        if (typeof TextDecoder === 'undefined') {
+            function TextDecoder() {
+                this.decode = function(bytes) {
+                    if (!bytes || bytes.length === 0) return '';
+                    var chars = [], i = 0;
+                    while (i < bytes.length) {
+                        var b = bytes[i++];
+                        if (b < 0x80) chars.push(b);
+                        else if (b < 0xe0) { var b2=bytes[i++]&0x3f; chars.push(((b&0x1f)<<6)|b2); }
+                        else if (b < 0xf0) { var b2=bytes[i++]&0x3f; var b3=bytes[i++]&0x3f; chars.push(((b&0x0f)<<12)|(b2<<6)|b3); }
+                    }
+                    return String.fromCharCode.apply(null, chars);
+                };
+            }
+            globalThis.TextDecoder = TextDecoder;
+        }
+    })();
+    "#;
+    if let Err(e) = instance.context.eval(boa_parser::Source::from_bytes(te_code.as_bytes())) {
+        eprintln!("Warning: Failed to register TextEncoder/TextDecoder: {:?}", e);
+    }
     if effective_caps & crate::sandbox::MODULE_LOAD != 0 {
         register_internal_module_loader(&mut instance);
     }
-    // Register FFI: in stable mode, register stubs if caps had FFI (now stripped);
-    // in unstable mode, register real implementation if caps have FFI.
-    let has_ffi = caps & crate::sandbox::KOSS_CAP_ALL_FFI != 0;
-    if (stable && has_ffi) || (!stable && effective_caps & crate::sandbox::KOSS_CAP_ALL_FFI != 0) {
+    let has_ffi = effective_caps & crate::sandbox::KOSS_CAP_ALL_FFI != 0;
+    if has_ffi {
         register_senri_ffi_impl(&mut instance);
+    } else if stable && (caps & crate::sandbox::KOSS_CAP_ALL_FFI != 0) {
+        let ffi_stub_code = r#"globalThis._senri_ffi = { func: function() { throw new Error('FFI is disabled in stable mode'); } };"#;
+        if let Err(e) = instance.context.eval(boa_parser::Source::from_bytes(ffi_stub_code.as_bytes())) {
+            eprintln!("Warning: Failed to register FFI stub: {:?}", e);
+        }
     }
     if effective_caps & KOSS_CAP_ALL_NET != 0 {
         register_fetch_polyfill(&mut instance.context);
@@ -2168,57 +2408,67 @@ pub extern "C" fn koss_create_with_caps(caps: u32, stable: bool) -> *mut KossIns
         register_crypto_functions(&mut instance);
         register_zlib_functions_all(&mut instance);
     }
-    // Register workers: in stable mode, register stubs if caps had Worker (now stripped);
-    // in unstable mode, register real implementation if caps have Worker.
-    let has_worker = caps & KOSS_CAP_WORKER != 0;
-    if (stable && has_worker) || (!stable && effective_caps & KOSS_CAP_WORKER != 0) {
+    let has_worker = effective_caps & KOSS_CAP_WORKER != 0;
+    if has_worker {
         register_worker_api(&mut instance);
+    } else if stable && (caps & KOSS_CAP_WORKER != 0) {
+        let worker_stub_code = r#"globalThis.__koss_create_worker_pool = function() { throw new Error('Worker is disabled in stable mode'); };"#;
+        if let Err(e) = instance.context.eval(boa_parser::Source::from_bytes(worker_stub_code.as_bytes())) {
+            eprintln!("Warning: Failed to register Worker stub: {:?}", e);
+        }
     }
     Box::into_raw(instance)
 }
 
+/// Create a new isolated JS instance with specific capabilities, builtin flags, and stable mode.
+/// Builtin flags control which koss:* modules are visible to user code.
+#[unsafe(no_mangle)]
+pub extern "C" fn koss_create_with_builtins(
+    caps: u32,
+    builtins: u32,
+    stable: bool,
+) -> *mut KossInstance {
+    output_license_once();
+    let context = match boa_engine::context::ContextBuilder::default().build() {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            eprintln!("Warning: Failed to create Boa context: {e}");
+            return std::ptr::null_mut();
+        }
+    };
+    create_instance_internal(context, caps, builtins, stable, None)
+}
+
+/// Create a new isolated JS instance with specific capabilities and stable mode.
+/// Uses KOSS_BUILTIN_ALL for backward compatibility.
+/// When `stable` is true, FFI and Worker capabilities are stripped from `caps`.
+#[unsafe(no_mangle)]
+pub extern "C" fn koss_create_with_caps(caps: u32, stable: bool) -> *mut KossInstance {
+    koss_create_with_builtins(caps, crate::builtins::KOSS_BUILTIN_ALL, stable)
+}
+
 /// Create a new isolated JS instance with module resolution, specific capabilities,
-/// and stable mode. `root_dir` specifies the base directory for resolving
-/// bare module specifiers.
+/// builtin flags, and stable mode.
 ///
 /// # Safety
 /// - `root_dir` must be a valid null-terminated UTF-8 string
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn koss_create_with_modules_and_caps(
+pub unsafe extern "C" fn koss_create_with_modules_and_builtins(
     root_dir: *const c_char,
     caps: u32,
+    builtins: u32,
     stable: bool,
 ) -> *mut KossInstance {
     output_license_once();
     unsafe {
         if root_dir.is_null() {
-            return koss_create_with_caps(caps, stable);
+            return koss_create_with_builtins(caps, builtins, stable);
         }
-
         let root_str = match CStr::from_ptr(root_dir).to_str() {
             Ok(s) => s,
-            Err(_) => return koss_create_with_caps(caps, stable),
+            Err(_) => return koss_create_with_builtins(caps, builtins, stable),
         };
-
-        let effective_caps = if stable {
-            caps & !(crate::sandbox::KOSS_CAP_ALL_FFI | crate::sandbox::KOSS_CAP_WORKER)
-        } else {
-            if caps & crate::sandbox::KOSS_CAP_ALL_FFI != 0 {
-                if !FFI_STABLE_WARNED.swap(true, Ordering::Relaxed) {
-                    eprintln!("[KossJS WARNING] Unstable mode: FFI features are enabled.");
-                    eprintln!("[KossJS WARNING] FFI may have security implications in production.");
-                }
-            }
-            if caps & crate::sandbox::KOSS_CAP_WORKER != 0 {
-                if !WORKER_STABLE_WARNED.swap(true, Ordering::Relaxed) {
-                    eprintln!("[KossJS WARNING] Unstable mode: Worker threads are enabled.");
-                    eprintln!("[KossJS WARNING] Workers may have security implications in production.");
-                }
-            }
-            caps
-        };
-
-        let loader = Rc::new(KossModuleLoader::new(root_str));
+        let loader = Rc::new(KossModuleLoader::new_with_builtins(root_str, builtins));
         let context = match boa_engine::context::ContextBuilder::default()
             .module_loader(loader)
             .build()
@@ -2229,36 +2479,23 @@ pub unsafe extern "C" fn koss_create_with_modules_and_caps(
                 return std::ptr::null_mut();
             }
         };
-        let mut instance = Box::new(KossInstance::new(context, effective_caps, stable));
-        register_console(&mut instance.context);
-        register_koss_global(&mut instance.context, stable);
-        register_native_bindings(&mut instance);
-        // Always register nodejs globals (internalBinding, primordials, process)
-        register_nodejs_globals(&mut instance.context);
-        // Only register module loader if MODULE_LOAD capability is set
-        if effective_caps & crate::sandbox::MODULE_LOAD != 0 {
-            register_internal_module_loader(&mut instance);
-        }
-        // Register FFI: in stable mode, register stubs if caps had FFI (now stripped);
-        // in unstable mode, register real implementation if caps have FFI.
-        let has_ffi = caps & crate::sandbox::KOSS_CAP_ALL_FFI != 0;
-        if (stable && has_ffi) || (!stable && effective_caps & crate::sandbox::KOSS_CAP_ALL_FFI != 0) {
-            register_senri_ffi_impl(&mut instance);
-        }
-        if effective_caps & KOSS_CAP_ALL_NET != 0 {
-            register_fetch_polyfill(&mut instance.context);
-            register_native_fetch(&mut instance);
-            register_net_functions(&mut instance);
-        register_crypto_functions(&mut instance);
-        register_zlib_functions_all(&mut instance);
-        }
-        // Register workers: in stable mode, register stubs if caps had Worker (now stripped);
-        // in unstable mode, register real implementation if caps have Worker.
-        let has_worker = caps & KOSS_CAP_WORKER != 0;
-        if (stable && has_worker) || (!stable && effective_caps & KOSS_CAP_WORKER != 0) {
-            register_worker_api(&mut instance);
-        }
-        Box::into_raw(instance)
+        create_instance_internal(context, caps, builtins, stable, Some(root_str))
+    }
+}
+
+/// Create a new isolated JS instance with module resolution, specific capabilities,
+/// and stable mode. Uses KOSS_BUILTIN_ALL for backward compatibility.
+///
+/// # Safety
+/// - `root_dir` must be a valid null-terminated UTF-8 string
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_create_with_modules_and_caps(
+    root_dir: *const c_char,
+    caps: u32,
+    stable: bool,
+) -> *mut KossInstance {
+    unsafe {
+        koss_create_with_modules_and_builtins(root_dir, caps, crate::builtins::KOSS_BUILTIN_ALL, stable)
     }
 }
 
@@ -2857,6 +3094,32 @@ pub unsafe extern "C" fn koss_is_stable(ptr: *mut KossInstance) -> bool {
             return true;
         }
         (*ptr).stable
+    }
+}
+
+/// Query the builtin module flags for a KossJS instance.
+/// Returns the bitmask of enabled builtin flags.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_get_builtins(ptr: *mut KossInstance) -> u32 {
+    output_license_once();
+    unsafe {
+        if ptr.is_null() {
+            return 0;
+        }
+        (*ptr).builtins
+    }
+}
+
+/// Check if a specific builtin flag is enabled.
+/// `flag` is a single KOSS_BUILTIN_* value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_is_builtin_enabled(ptr: *mut KossInstance, flag: u32) -> bool {
+    output_license_once();
+    unsafe {
+        if ptr.is_null() {
+            return false;
+        }
+        (*ptr).builtins & flag != 0
     }
 }
 

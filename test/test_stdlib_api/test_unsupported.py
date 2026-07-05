@@ -32,4 +32,4 @@ UNSUPPORTED_MODULES = [
 def test_unsupported_module_fails(koss: KossJS, module_name: str):
     """These modules are not supported and should fail to load."""
     with pytest.raises(Exception):
-        koss.eval(f"require('{module_name}')")
+        koss.eval(f"require('koss:node/{module_name}')")

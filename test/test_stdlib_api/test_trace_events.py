@@ -5,18 +5,18 @@ from .conftest import KossJS
 
 
 def test_trace_events_create_tracing(koss: KossJS):
-    result = koss.eval("typeof require('trace_events').createTracing({categories: ['node']})")
+    result = koss.eval("typeof require('koss:node/trace_events').createTracing({categories: ['node']})")
     assert result == 'object'
 
 
 def test_trace_events_tracing_class(koss: KossJS):
-    result = koss.eval("typeof require('trace_events').Tracing")
+    result = koss.eval("typeof require('koss:node/trace_events').Tracing")
     assert result == 'function'
 
 
 def test_trace_events_tracing_enable(koss: KossJS):
     result = koss.eval("""
-        var tr = require('trace_events').createTracing({categories: ['node']});
+        var tr = require('koss:node/trace_events').createTracing({categories: ['node']});
         tr.enable();
         tr.enabled
     """)
@@ -25,7 +25,7 @@ def test_trace_events_tracing_enable(koss: KossJS):
 
 def test_trace_events_tracing_disable(koss: KossJS):
     result = koss.eval("""
-        var tr = require('trace_events').createTracing({categories: ['node']});
+        var tr = require('koss:node/trace_events').createTracing({categories: ['node']});
         tr.enable();
         tr.disable();
         tr.enabled
@@ -35,22 +35,22 @@ def test_trace_events_tracing_disable(koss: KossJS):
 
 def test_trace_events_tracing_categories(koss: KossJS):
     result = koss.eval("""
-        var tr = require('trace_events').createTracing({categories: ['node', 'http']});
+        var tr = require('koss:node/trace_events').createTracing({categories: ['node', 'http']});
         tr.categories
     """)
     assert result == 'node,http'
 
 
 def test_trace_events_get_enabled_categories(koss: KossJS):
-    result = koss.eval("typeof require('trace_events').getEnabledCategories")
+    result = koss.eval("typeof require('koss:node/trace_events').getEnabledCategories")
     assert result == 'function'
 
 
 def test_trace_events_enabled_categories_none(koss: KossJS):
-    result = koss.eval("require('trace_events').getEnabledCategories()")
+    result = koss.eval("require('koss:node/trace_events').getEnabledCategories()")
     assert result == 'undefined' or result == ''
 
 
 def test_trace_events_tracing_requires_categories(koss: KossJS):
     with pytest.raises(Exception):
-        koss.eval("require('trace_events').createTracing({categories: []})")
+        koss.eval("require('koss:node/trace_events').createTracing({categories: []})")

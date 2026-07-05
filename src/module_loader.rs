@@ -16,7 +16,8 @@ use rustc_hash::FxHashMap;
 use crate::resolver::ModuleResolver;
 
 /// A BOA-compatible module loader that uses [ModuleResolver] for Node.js-style
-/// module resolution (bare specifiers, node_modules lookup, extension completion).
+/// module resolution (bare specifiers, node_modules lookup, extension completion),
+/// and intercepts `koss:` protocol specifiers for builtin module resolution.
 pub struct KossModuleLoader {
     /// The base directory for resolving the initial entry point.
     root: PathBuf,
@@ -24,6 +25,8 @@ pub struct KossModuleLoader {
     resolver: ModuleResolver,
     /// Cache of already-parsed modules keyed by their canonical path.
     module_map: GcRefCell<FxHashMap<PathBuf, Module>>,
+    /// Builtin module flags (KOSS_BUILTIN_*) from the KossInstance.
+    builtins: u32,
 }
 
 impl KossModuleLoader {
@@ -33,7 +36,23 @@ impl KossModuleLoader {
             root: root.as_ref().to_path_buf(),
             resolver: ModuleResolver::new(),
             module_map: GcRefCell::default(),
+            builtins: crate::builtins::KOSS_BUILTIN_ALL,
         }
+    }
+
+    /// Create a new loader with specific builtin flags.
+    pub fn new_with_builtins<P: AsRef<Path>>(root: P, builtins: u32) -> Self {
+        Self {
+            root: root.as_ref().to_path_buf(),
+            resolver: ModuleResolver::new(),
+            module_map: GcRefCell::default(),
+            builtins,
+        }
+    }
+
+    /// Get current builtin flags.
+    pub fn builtins(&self) -> u32 {
+        self.builtins
     }
 
     /// Access the underlying resolver (e.g. for direct resolve calls from FFI).
@@ -69,6 +88,25 @@ impl ModuleLoader for KossModuleLoader {
     ) -> impl Future<Output = JsResult<Module>> {
         let result = (|| {
             let spec = specifier.to_std_string_escaped();
+
+            // ── koss: protocol interception ────────────────────────────
+            if crate::builtins::is_koss_specifier(&spec) {
+                let (source, _is_internal) =
+                    crate::builtins::resolve_builtin_specifier(&spec, self.builtins)
+                        .map_err(|msg| {
+                            JsError::from(JsNativeError::typ().with_message(msg))
+                        })?;
+                let src = Source::from_bytes(source.as_bytes());
+                let module = Module::parse(src, None, &mut context.borrow_mut()).map_err(|err| {
+                    JsError::from(
+                        JsNativeError::syntax()
+                            .with_message(format!("could not parse builtin module '{}'", spec))
+                            .with_cause(err),
+                    )
+                })?;
+                return Ok(module);
+            }
+
             let parent_path = self.referrer_file(&referrer);
 
             // Resolve the module path using our Node.js-style resolver

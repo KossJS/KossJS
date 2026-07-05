@@ -151,7 +151,7 @@ def test_sysinfo_os_module_exists():
     """os 模块应该在所有模式下存在（通过 internalBinding）"""
     js = KossJS(capabilities=KossJS.KOSS_CAP_ALL)
     try:
-        result = js.eval("typeof require('os')")
+        result = js.eval("typeof require('koss:node/os')")
         assert result == "object"
     finally:
         js.destroy()
@@ -162,7 +162,7 @@ def test_sysinfo_os_hostname_may_exist():
     js = KossJS(capabilities=KossJS.KOSS_CAP_ALL)
     try:
         try:
-            result = js.eval("typeof require('os').getHostname")
+            result = js.eval("typeof require('koss:node/os').getHostname")
             # getHostname 可能可用也可能不可用
             assert result in ["function", "undefined"]
         except JsError:
@@ -216,7 +216,7 @@ def test_dynamic_code_worker_threads():
     js = KossJS(capabilities=KossJS.DYNAMIC_CODE | KossJS.MODULE_LOAD)
     try:
         try:
-            result = js.eval("typeof require('worker_threads')")
+            result = js.eval("typeof require('koss:node/worker_threads')")
             # worker_threads 可能可用也可能不可用
             assert result in ["object", "undefined"]
         except JsError:

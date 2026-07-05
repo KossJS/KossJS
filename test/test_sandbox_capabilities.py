@@ -135,7 +135,7 @@ def test_fs_module_exists_with_fs_caps():
     """有文件系统能力时，fs 模块应该存在"""
     js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.MODULE_LOAD)
     try:
-        result = js.eval("typeof require('fs')")
+        result = js.eval("typeof require('koss:node/fs')")
         assert result == "object"
     finally:
         js.destroy()
@@ -145,7 +145,7 @@ def test_fs_module_exists_in_sandbox():
     js = KossJS(capabilities=KossJS.KOSS_CAP_SANDBOX)
     try:
         # fs 模块对象仍然存在（stub）
-        result = js.eval("typeof require('fs')")
+        result = js.eval("typeof require('koss:node/fs')")
         assert result == "object"
     finally:
         js.destroy()
@@ -162,7 +162,7 @@ def test_all_fs_capabilities():
     """KOSS_CAP_ALL_FS 应该启用 fs 模块"""
     js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.MODULE_LOAD)
     try:
-        assert js.eval("typeof require('fs')") == "object"
+        assert js.eval("typeof require('koss:node/fs')") == "object"
     finally:
         js.destroy()
 
@@ -171,7 +171,7 @@ def test_combined_capabilities():
     caps = KossJS.FS_READ | KossJS.NET_FETCH | KossJS.MODULE_LOAD
     js = KossJS(capabilities=caps)
     try:
-        assert js.eval("typeof require('fs')") == "object"
+        assert js.eval("typeof require('koss:node/fs')") == "object"
         assert js.eval("typeof fetch") == "function"
     finally:
         js.destroy()
@@ -183,7 +183,7 @@ def test_capability_is_static_at_creation():
         # fetch 不应该存在（没有 NET_FETCH）
         assert js.eval("typeof fetch") == "undefined"
         # fs 模块应该存在（有 FS_READ）
-        assert js.eval("typeof require('fs')") == "object"
+        assert js.eval("typeof require('koss:node/fs')") == "object"
     finally:
         js.destroy()
 
@@ -191,7 +191,7 @@ def test_fs_delete_capability():
     """FS_DELETE 能力位测试"""
     js = KossJS(capabilities=KossJS.FS_DELETE | KossJS.MODULE_LOAD)
     try:
-        result = js.eval("typeof require('fs').unlinkSync")
+        result = js.eval("typeof require('koss:node/fs').unlinkSync")
         assert result == "function"
     finally:
         js.destroy()
@@ -200,7 +200,7 @@ def test_fs_mkdir_capability():
     """FS_MKDIR 能力位测试"""
     js = KossJS(capabilities=KossJS.FS_MKDIR | KossJS.MODULE_LOAD)
     try:
-        result = js.eval("typeof require('fs').mkdirSync")
+        result = js.eval("typeof require('koss:node/fs').mkdirSync")
         assert result == "function"
     finally:
         js.destroy()
@@ -209,7 +209,7 @@ def test_fs_rename_capability():
     """FS_RENAME 能力位测试"""
     js = KossJS(capabilities=KossJS.FS_RENAME | KossJS.MODULE_LOAD)
     try:
-        result = js.eval("typeof require('fs').renameSync")
+        result = js.eval("typeof require('koss:node/fs').renameSync")
         assert result == "function"
     finally:
         js.destroy()
@@ -218,7 +218,7 @@ def test_fs_chmod_capability():
     """FS_CHMOD 能力位测试"""
     js = KossJS(capabilities=KossJS.FS_CHMOD | KossJS.MODULE_LOAD)
     try:
-        result = js.eval("typeof require('fs').chmodSync")
+        result = js.eval("typeof require('koss:node/fs').chmodSync")
         assert result == "function"
     finally:
         js.destroy()

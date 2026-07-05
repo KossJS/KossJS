@@ -2,6 +2,7 @@
 
 pub mod bindings;
 pub mod buffer;
+pub mod builtins;
 pub mod embedded_stdlib;
 pub mod module_loader;
 pub mod napi;

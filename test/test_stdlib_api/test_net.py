@@ -5,63 +5,63 @@ from .conftest import KossJS
 
 
 def test_net_socket(koss: KossJS):
-    result = koss.eval("typeof require('net').Socket")
+    result = koss.eval("typeof require('koss:node/net').Socket")
     assert result == 'function'
 
 
 def test_net_server(koss: KossJS):
-    result = koss.eval("typeof require('net').Server")
+    result = koss.eval("typeof require('koss:node/net').Server")
     assert result == 'function'
 
 
 def test_net_create_server(koss: KossJS):
-    result = koss.eval("typeof require('net').createServer")
+    result = koss.eval("typeof require('koss:node/net').createServer")
     assert result == 'function'
 
 
 def test_net_connect(koss: KossJS):
-    result = koss.eval("typeof require('net').connect")
+    result = koss.eval("typeof require('koss:node/net').connect")
     assert result == 'function'
 
 
 def test_net_create_connection(koss: KossJS):
-    result = koss.eval("typeof require('net').createConnection")
+    result = koss.eval("typeof require('koss:node/net').createConnection")
     assert result == 'function'
 
 
 def test_net_is_ip_v4(koss: KossJS):
-    result = koss.eval("require('net').isIP('127.0.0.1')")
+    result = koss.eval("require('koss:node/net').isIP('127.0.0.1')")
     assert result == '4'
 
 
 def test_net_is_ip_v6(koss: KossJS):
-    result = koss.eval("require('net').isIP('::1')")
+    result = koss.eval("require('koss:node/net').isIP('::1')")
     assert result == '6'
 
 
 def test_net_is_ip_invalid(koss: KossJS):
-    result = koss.eval("require('net').isIP('not-an-ip')")
+    result = koss.eval("require('koss:node/net').isIP('not-an-ip')")
     assert result == '0'
 
 
 def test_net_is_ipv4(koss: KossJS):
-    result = koss.eval("require('net').isIPv4('192.168.1.1')")
+    result = koss.eval("require('koss:node/net').isIPv4('192.168.1.1')")
     assert result == 'true'
 
 
 def test_net_is_ipv6(koss: KossJS):
-    result = koss.eval("require('net').isIPv6('::1')")
+    result = koss.eval("require('koss:node/net').isIPv6('::1')")
     assert result == 'true'
 
 
 def test_net_tcp_connect(koss: KossJS):
-    result = koss.eval("typeof require('net').connect")
+    result = koss.eval("typeof require('koss:node/net').connect")
     assert result == 'function'
 
 
 def test_net_server_listen(koss: KossJS):
     result = koss.eval("""
-        var net = require('net');
+        var net = require('koss:node/net');
         var server = net.createServer();
         typeof server.listen === 'function'
     """)
@@ -69,50 +69,50 @@ def test_net_server_listen(koss: KossJS):
 
 
 def test_stream_readable(koss: KossJS):
-    result = koss.eval("typeof require('stream').Readable")
+    result = koss.eval("typeof require('koss:node/stream').Readable")
     assert result == 'function'
 
 
 def test_stream_writable(koss: KossJS):
-    result = koss.eval("typeof require('stream').Writable")
+    result = koss.eval("typeof require('koss:node/stream').Writable")
     assert result == 'function'
 
 
 def test_stream_duplex(koss: KossJS):
-    result = koss.eval("typeof require('stream').Duplex")
+    result = koss.eval("typeof require('koss:node/stream').Duplex")
     assert result == 'function'
 
 
 def test_stream_transform(koss: KossJS):
-    result = koss.eval("typeof require('stream').Transform")
+    result = koss.eval("typeof require('koss:node/stream').Transform")
     assert result == 'function'
 
 
 def test_dns_lookup(koss: KossJS):
-    result = koss.eval("typeof require('dns').lookup")
+    result = koss.eval("typeof require('koss:node/dns').lookup")
     assert result == 'function'
 
 
 def test_dns_lookup_localhost(koss: KossJS):
-    result = koss.eval("typeof require('dns').lookup")
+    result = koss.eval("typeof require('koss:node/dns').lookup")
     assert result == 'function'
 
 
 def test_tls(koss: KossJS):
-    result = koss.eval("typeof require('tls').connect")
+    result = koss.eval("typeof require('koss:node/tls').connect")
     assert result == 'function'
 
 
 def test_tls_server(koss: KossJS):
-    result = koss.eval("typeof require('tls').createServer")
+    result = koss.eval("typeof require('koss:node/tls').createServer")
     assert result == 'function'
 
 
 def test_http_create_server(koss: KossJS):
-    result = koss.eval("typeof require('http').createServer")
+    result = koss.eval("typeof require('koss:node/http').createServer")
     assert result == 'function'
 
 
 def test_https_create_server(koss: KossJS):
-    result = koss.eval("typeof require('https').createServer")
+    result = koss.eval("typeof require('koss:node/https').createServer")
     assert result == 'function'

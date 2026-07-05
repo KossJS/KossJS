@@ -5,7 +5,7 @@ from .conftest import KossJS
 
 class TestProcessAPI:
     def test_require_process(self, koss: KossJS):
-        result = koss.eval("typeof require('process')")
+        result = koss.eval("typeof require('koss:node/process')")
         assert result == "object"
 
     def test_process_exists(self, koss: KossJS):

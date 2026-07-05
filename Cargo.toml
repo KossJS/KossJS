@@ -1,6 +1,6 @@
 [package]
 name = "kossjs"
-version = "0.1.0-dev.8"
+version = "0.1.0-dev.9"
 edition = "2024"
 description = "Embeddable JavaScript runtime as a dynamic library"
 license = "GNU Affero General Public License v3.0"
@@ -15,7 +15,7 @@ boa_engine = "0.21.1"
 boa_parser = "0.21.1"
 boa_runtime = "0.21.1"
 boa_gc = "0.21.1"
-rustc-hash = "2"
+rustc-hash = "2.1.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.150"
 once_cell = "1"
@@ -23,11 +23,11 @@ base64 = "0.22"
 num_cpus = "1"
 url = "2"
 reqwest = { version = "0.13", features = ["json", "rustls"], default-features = false }
-rustls = "0.23"
+rustls = "0.23.41"
 rustls-native-certs = "0.8"
 webpki-roots = "1"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "fs", "net", "time"] }
-rand = "0.10.1"
+rand = "0.10.2"
 sha1 = "0.11"
 sha2 = "0.11"
 md-5 = "0.11"
@@ -39,8 +39,8 @@ flate2 = "1.1"
 # 注意: ohos 的 target_os="linux"、target_env="ohos"，必须显式排除
 [target.'cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))'.dependencies]
 libloading = "0.9.0"
-libffi = "5.1.0"
-libffi-sys = "4.1.0"
+libffi = "5.1.1"
+libffi-sys = "4.2.0"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "processthreadsapi"] }
@@ -56,6 +56,12 @@ libc = "0.2.186"
 
 [target.'cfg(target_os = "ohos")'.dependencies]
 # HarmonyOS 无额外依赖，预留扩展
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
+opt-level = "z"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("ohos"))'] }

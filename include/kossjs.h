@@ -90,17 +90,31 @@ typedef enum {
 #define KOSS_CAP_WORKER          (1u << 3)
 #define KOSS_CAP_EXTERNAL_LOADER MODULE_LOAD
 
+/* ── Builtin module flags ──────────────────────────────────────────── */
+typedef enum {
+    KOSS_BUILTIN_NONE      = 0,
+    KOSS_BUILTIN_NODE      = 1 << 0,
+    KOSS_BUILTIN_BUN       = 1 << 1,
+    KOSS_BUILTIN_DENO      = 1 << 2,
+    KOSS_BUILTIN_KOSS      = 1 << 3,
+    KOSS_BUILTIN_ALL       = 0xFFFFFFFF,
+} KossBuiltin;
+
 /* ── Instance lifecycle ─────────────────────────────────────────────── */
 KossInstance *koss_create_with_caps(uint32_t caps, bool stable);
+KossInstance *koss_create_with_builtins(uint32_t caps, uint32_t builtins, bool stable);
 KossInstance *koss_create_with_modules_and_caps(const char *root_dir, uint32_t caps, bool stable);
+KossInstance *koss_create_with_modules_and_builtins(const char *root_dir, uint32_t caps, uint32_t builtins, bool stable);
 bool          koss_is_stable(KossInstance *inst);
+uint32_t      koss_get_builtins(KossInstance *inst);
+bool          koss_is_builtin_enabled(KossInstance *inst, uint32_t flag);
 
-/* Backward-compatible wrappers — default stable=true */
+/* Backward-compatible wrappers — default stable=true, builtins=ALL */
 static inline KossInstance *koss_create(void) {
-    return koss_create_with_caps(KOSS_CAP_ALL, true);
+    return koss_create_with_builtins(KOSS_CAP_ALL, KOSS_BUILTIN_ALL, true);
 }
 static inline KossInstance *koss_create_with_modules(const char *root_dir) {
-    return koss_create_with_modules_and_caps(root_dir, KOSS_CAP_ALL, true);
+    return koss_create_with_modules_and_builtins(root_dir, KOSS_CAP_ALL, KOSS_BUILTIN_ALL, true);
 }
 
 void koss_destroy(KossInstance *inst);

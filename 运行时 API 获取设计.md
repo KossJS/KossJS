@@ -6,6 +6,7 @@
 KossJS = {
     version: "0.1.0-dev.7", // 从 src/version.rs 中的 get_version 动态获取
     runtime: "KossJS",       // 固定值
+    isStable: true,          // 由 stable 参数决定：true=稳定模式(默认), false=不稳定模式
 }
 ```
 
@@ -36,7 +37,7 @@ KossJS = {
 #### 1. 添加 `register_koss_global` 函数
 
 ```rust
-fn register_koss_global(ctx: &mut Context) {
+fn register_koss_global(ctx: &mut Context, stable: bool) {
     let version = match std::str::from_utf8(get_version()) {
         Ok(s) => s.trim_end_matches('\0').to_string(),
         Err(_) => "unknown".to_string(),
@@ -54,6 +55,13 @@ fn register_koss_global(ctx: &mut Context) {
     obj.property(
         boa_engine::js_string!("runtime"),
         boa_engine::JsValue::from(boa_engine::js_string!("KossJS")),
+        boa_engine::property::Attribute::READONLY 
+            | boa_engine::property::Attribute::ENUMERABLE 
+            | boa_engine::property::Attribute::PERMANENT,
+    );
+    obj.property(
+        boa_engine::js_string!("isStable"),
+        boa_engine::JsValue::from(stable),
         boa_engine::property::Attribute::READONLY 
             | boa_engine::property::Attribute::ENUMERABLE 
             | boa_engine::property::Attribute::PERMANENT,

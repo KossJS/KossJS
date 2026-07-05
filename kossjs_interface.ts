@@ -81,6 +81,14 @@ const KOSS_CAP_CRYPTO = KOSS_CAP_ALL_CRYPTO;
 const KOSS_CAP_WORKER = 1 << 3;
 const KOSS_CAP_EXTERNAL_LOADER = MODULE_LOAD;
 
+// --- Builtin Flags (must match KossBuiltin in include/kossjs.h) ---
+const KOSS_BUILTIN_NONE = 0;
+const KOSS_BUILTIN_NODE = 1 << 0;
+const KOSS_BUILTIN_BUN  = 1 << 1;
+const KOSS_BUILTIN_DENO = 1 << 2;
+const KOSS_BUILTIN_KOSS = 1 << 3;
+const KOSS_BUILTIN_ALL  = 0xFFFFFFFF;
+
 function findLibrary(): string {
   let candidates: string[] = [];
   if (platform() === 'win32') {
@@ -161,6 +169,14 @@ export class KossJS {
   static readonly KOSS_CAP_WORKER = KOSS_CAP_WORKER;
   static readonly KOSS_CAP_EXTERNAL_LOADER = KOSS_CAP_EXTERNAL_LOADER;
 
+  // Builtin flags
+  static readonly KOSS_BUILTIN_NONE = KOSS_BUILTIN_NONE;
+  static readonly KOSS_BUILTIN_NODE = KOSS_BUILTIN_NODE;
+  static readonly KOSS_BUILTIN_BUN  = KOSS_BUILTIN_BUN;
+  static readonly KOSS_BUILTIN_DENO = KOSS_BUILTIN_DENO;
+  static readonly KOSS_BUILTIN_KOSS = KOSS_BUILTIN_KOSS;
+  static readonly KOSS_BUILTIN_ALL  = KOSS_BUILTIN_ALL;
+
   private _lib: any;
   private _ptr: any;
   private _msvcrt: any;
@@ -208,26 +224,30 @@ export class KossJS {
   /**
    * Create a KossJS instance.
    *
-   * @param libPath - Path to the kossjs shared library. Auto-detected if omitted.
-   * @param stable  - If true (default), disables FFI and Worker capabilities.
-   *                  If false, enables these experimental features and prints
-   *                  warnings to stderr. Production environments should keep
-   *                  the default.
+   * @param libPath  - Path to the kossjs shared library. Auto-detected if omitted.
+   * @param stable   - If true (default), disables FFI and Worker capabilities.
+   * @param caps     - Capability bitmask. Defaults to KOSS_CAP_ALL.
+   * @param builtins - Builtin module flags. Defaults to KOSS_BUILTIN_ALL.
    *
    * Examples:
    *   // Production (stable mode, FFI/Worker disabled)
-   *   const koss = new KossJS(undefined, true);
+   *   const koss = new KossJS();
    *
-   *   // Development/debugging (unstable mode, FFI/Worker enabled)
-   *   const koss = new KossJS(undefined, false);
+   *   // Only Node.js compat layer
+   *   const koss = new KossJS(undefined, true, KOSS_CAP_ALL, KOSS_BUILTIN_NODE);
+   *
+   *   // Sandbox + Deno only
+   *   const koss = new KossJS(undefined, true, KOSS_CAP_SANDBOX, KOSS_BUILTIN_DENO);
    */
-  constructor(libPath?: string, stable: boolean = true) {
+  constructor(libPath?: string, stable: boolean = true, caps?: number, builtins?: number) {
     const dllPath = libPath || findLibrary();
     this._lib = koffi.load(dllPath);
+    const effectiveCaps = caps ?? KOSS_CAP_ALL;
+    const effectiveBuiltins = builtins ?? KOSS_BUILTIN_ALL;
 
-    // 创建实例
-    const createFn = this._lib.func('koss_create_with_modules_and_caps', 'void *', ['string', 'uint32', 'bool']);
-    this._ptr = createFn('.', KOSS_CAP_ALL, stable);
+    // 创建实例 (with module support)
+    const createFn = this._lib.func('koss_create_with_modules_and_builtins', 'void *', ['string', 'uint32', 'uint32', 'bool']);
+    this._ptr = createFn('.', effectiveCaps, effectiveBuiltins, stable);
     if (!this._ptr) throw new Error('Failed to create KossJS instance');
 
     // CRT
@@ -325,6 +345,20 @@ export class KossJS {
   getCapabilities(): number {
     this._ensurePtr();
     return this._fnGetCapabilities(this._ptr);
+  }
+
+  /** Get the builtin module flags bitmask. */
+  getBuiltins(): number {
+    this._ensurePtr();
+    const fn = this._lib.func('koss_get_builtins', 'uint32', ['void *']);
+    return fn(this._ptr);
+  }
+
+  /** Check if a specific builtin flag is enabled. */
+  isBuiltinEnabled(flag: number): boolean {
+    this._ensurePtr();
+    const fn = this._lib.func('koss_is_builtin_enabled', 'bool', ['void *', 'uint32']);
+    return fn(this._ptr, flag);
   }
 
   destroy(): void {

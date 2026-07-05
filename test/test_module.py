@@ -4,12 +4,12 @@ from kossjs_interface import KossJS
 
 class TestModule:
     def test_require_fs_type(self, koss: KossJS):
-        r = koss.eval("typeof require('fs')")
+        r = koss.eval("typeof require('koss:node/fs')")
         assert r == "object"
 
     def test_fs_module_info(self, koss: KossJS):
         r = koss.eval("""
-        var m = require('fs');
+        var m = require('koss:node/fs');
         var info = {
             type: typeof m,
             isNull: m === null,
@@ -24,7 +24,7 @@ class TestModule:
 
     def test_path_module_info(self, koss: KossJS):
         r = koss.eval("""
-        var path = require('path');
+        var path = require('koss:node/path');
         var info = {
             keys: Object.keys(path),
             ownKeys: Object.getOwnPropertyNames(path),
