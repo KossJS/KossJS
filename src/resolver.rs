@@ -157,21 +157,28 @@ impl ModuleResolver {
 
         let stdlib_path = &self.stdlib_path;
 
-        // Direct file match
+        // 1. Direct file match: path.js
         let direct_rel = format!("{}.js", module_name);
         let direct_path = stdlib_path.join(module_name).with_extension("js");
         if Self::embedded_stdlib_exists(&direct_rel) {
             return Ok(direct_path);
         }
 
-        // Try as directory with index.js
+        // 2. node_shim/ prefix match: node_shim/path.js
+        let node_shim_rel = format!("node_shim/{}.js", module_name);
+        let node_shim_path = stdlib_path.join("node_shim").join(module_name).with_extension("js");
+        if Self::embedded_stdlib_exists(&node_shim_rel) {
+            return Ok(node_shim_path);
+        }
+
+        // 3. Try as directory with index.js
         let index_rel = format!("{}/index.js", module_name);
         let index_path = stdlib_path.join(module_name).join("index.js");
         if Self::embedded_stdlib_exists(&index_rel) {
             return Ok(index_path);
         }
 
-        // Handle internal modules (_http_client, etc.)
+        // 4. Handle internal modules (_http_client, etc.)
         let internal_rel = format!("{}.js", module_name);
         let internal_path = stdlib_path.join(format!("{}.js", module_name));
         if Self::embedded_stdlib_exists(&internal_rel) {
@@ -181,7 +188,7 @@ impl ModuleResolver {
         Err(ResolveError {
             specifier: specifier.to_string(),
             parent: "node:".to_string(),
-            searched: vec![direct_path, index_path, internal_path],
+            searched: vec![direct_path, node_shim_path, index_path, internal_path],
         })
     }
 
@@ -963,6 +970,31 @@ mod tests {
         let r = ModuleResolver::with_capacity(10);
         // "path" as bare specifier should be resolved from stdlib
         let result = r.resolve("path", Path::new("/dummy.js"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_resolve_node_builtin_from_node_shim() {
+        let r = ModuleResolver::with_capacity(10);
+        // node:fs should resolve via node_shim/fs.js
+        let result = r.resolve("node:fs", Path::new("/dummy.js"));
+        assert!(result.is_ok());
+        let p = result.unwrap();
+        assert!(p.to_string_lossy().contains("fs"));
+    }
+
+    #[test]
+    fn test_resolve_bare_fs_from_node_shim() {
+        let r = ModuleResolver::with_capacity(10);
+        // bare "fs" should fall back to node_shim/fs.js
+        let result = r.resolve("fs", Path::new("/dummy.js"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_resolve_bare_crypto_from_node_shim() {
+        let r = ModuleResolver::with_capacity(10);
+        let result = r.resolve("crypto", Path::new("/dummy.js"));
         assert!(result.is_ok());
     }
 

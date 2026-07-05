@@ -2429,7 +2429,14 @@ pub extern "C" fn koss_create_with_builtins(
     stable: bool,
 ) -> *mut KossInstance {
     output_license_once();
-    let context = match boa_engine::context::ContextBuilder::default().build() {
+    let root = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| ".".to_string());
+    let loader = Rc::new(KossModuleLoader::new_with_builtins(&root, builtins));
+    let context = match boa_engine::context::ContextBuilder::default()
+        .module_loader(loader)
+        .build()
+    {
         Ok(ctx) => ctx,
         Err(e) => {
             eprintln!("Warning: Failed to create Boa context: {e}");

@@ -325,3 +325,266 @@ pub fn resolve_builtin_specifier(
 
     Ok((source, module.is_internal))
 }
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Flag constants ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_builtin_flag_values() {
+        assert_eq!(KOSS_BUILTIN_NONE, 0);
+        assert_eq!(KOSS_BUILTIN_NODE, 1 << 0);
+        assert_eq!(KOSS_BUILTIN_BUN, 1 << 1);
+        assert_eq!(KOSS_BUILTIN_DENO, 1 << 2);
+        assert_eq!(KOSS_BUILTIN_KOSS, 1 << 3);
+        assert_eq!(KOSS_BUILTIN_ALL, 0xFFFFFFFF);
+    }
+
+    #[test]
+    fn test_builtin_flags_are_distinct() {
+        let flags = [KOSS_BUILTIN_NODE, KOSS_BUILTIN_BUN, KOSS_BUILTIN_DENO, KOSS_BUILTIN_KOSS];
+        for i in 0..flags.len() {
+            for j in (i + 1)..flags.len() {
+                assert_eq!(flags[i] & flags[j], 0, "flags {} and {} overlap", i, j);
+            }
+        }
+    }
+
+    // ── is_koss_specifier / strip_koss_prefix ──────────────────────────────
+
+    #[test]
+    fn test_is_koss_specifier() {
+        assert!(is_koss_specifier("koss:bun"));
+        assert!(is_koss_specifier("koss:deno"));
+        assert!(is_koss_specifier("koss:node/fs"));
+        assert!(is_koss_specifier("koss:io"));
+        assert!(is_koss_specifier("koss:crypto"));
+        assert!(!is_koss_specifier("node:fs"));
+        assert!(!is_koss_specifier("path"));
+        assert!(!is_koss_specifier("./local"));
+    }
+
+    #[test]
+    fn test_strip_koss_prefix() {
+        assert_eq!(strip_koss_prefix("koss:bun"), "bun");
+        assert_eq!(strip_koss_prefix("koss:node/fs"), "node/fs");
+        assert_eq!(strip_koss_prefix("koss:io"), "io");
+        assert_eq!(strip_koss_prefix("no-prefix"), "no-prefix");
+    }
+
+    // ── find_builtin ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_find_builtin_node_modules() {
+        let m = find_builtin("node/fs").unwrap();
+        assert_eq!(m.name, "node/fs");
+        assert_eq!(m.flag, KOSS_BUILTIN_NODE);
+        assert!(!m.is_internal);
+
+        let m = find_builtin("node/path").unwrap();
+        assert_eq!(m.name, "node/path");
+
+        let m = find_builtin("node/crypto").unwrap();
+        assert_eq!(m.name, "node/crypto");
+    }
+
+    #[test]
+    fn test_find_builtin_bun() {
+        let m = find_builtin("bun").unwrap();
+        assert_eq!(m.name, "bun");
+        assert_eq!(m.flag, KOSS_BUILTIN_BUN);
+        assert!(!m.is_internal);
+    }
+
+    #[test]
+    fn test_find_builtin_deno() {
+        let m = find_builtin("deno").unwrap();
+        assert_eq!(m.name, "deno");
+        assert_eq!(m.flag, KOSS_BUILTIN_DENO);
+        assert!(!m.is_internal);
+    }
+
+    #[test]
+    fn test_find_builtin_koss_modules() {
+        for name in &["io", "crypto", "system", "data", "ffi", "worker"] {
+            let m = find_builtin(name).unwrap();
+            assert_eq!(m.flag, KOSS_BUILTIN_KOSS);
+            assert!(!m.is_internal);
+        }
+    }
+
+    #[test]
+    fn test_find_builtin_internal_modules() {
+        for name in &["internal/fs", "internal/net", "internal/crypto", "internal/stream"] {
+            let m = find_builtin(name).unwrap();
+            assert_eq!(m.flag, KOSS_BUILTIN_NONE);
+            assert!(m.is_internal);
+        }
+    }
+
+    #[test]
+    fn test_find_builtin_nonexistent() {
+        assert!(find_builtin("lodash").is_none());
+        assert!(find_builtin("koss:unknown").is_none());
+        assert!(find_builtin("").is_none());
+    }
+
+    // ── resolve_builtin_specifier ──────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_node_module_with_flag() {
+        let result = resolve_builtin_specifier("koss:node/fs", KOSS_BUILTIN_NODE);
+        assert!(result.is_ok());
+        let (source, is_internal) = result.unwrap();
+        assert!(!source.is_empty());
+        assert!(!is_internal);
+    }
+
+    #[test]
+    fn test_resolve_node_module_without_flag() {
+        let result = resolve_builtin_specifier("koss:node/fs", KOSS_BUILTIN_NONE);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("KOSS_BUILTIN_NODE"));
+        assert!(err.contains("not enabled"));
+    }
+
+    #[test]
+    fn test_resolve_bun_module_with_flag() {
+        let result = resolve_builtin_specifier("koss:bun", KOSS_BUILTIN_BUN);
+        assert!(result.is_ok());
+        let (source, is_internal) = result.unwrap();
+        assert!(!source.is_empty());
+        assert!(!is_internal);
+    }
+
+    #[test]
+    fn test_resolve_bun_module_without_flag() {
+        let result = resolve_builtin_specifier("koss:bun", KOSS_BUILTIN_NONE);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("KOSS_BUILTIN_BUN"));
+    }
+
+    #[test]
+    fn test_resolve_deno_module_with_flag() {
+        let result = resolve_builtin_specifier("koss:deno", KOSS_BUILTIN_DENO);
+        assert!(result.is_ok());
+        let (source, is_internal) = result.unwrap();
+        assert!(!source.is_empty());
+        assert!(!is_internal);
+    }
+
+    #[test]
+    fn test_resolve_deno_module_without_flag() {
+        let result = resolve_builtin_specifier("koss:deno", KOSS_BUILTIN_NONE);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("KOSS_BUILTIN_DENO"));
+    }
+
+    #[test]
+    fn test_resolve_koss_module_with_flag() {
+        for name in &["koss:io", "koss:crypto", "koss:system", "koss:data", "koss:ffi", "koss:worker"] {
+            let result = resolve_builtin_specifier(name, KOSS_BUILTIN_KOSS);
+            assert!(result.is_ok(), "Failed to resolve {}", name);
+            let (source, _) = result.unwrap();
+            assert!(!source.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_resolve_koss_module_without_flag() {
+        let result = resolve_builtin_specifier("koss:io", KOSS_BUILTIN_NONE);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("KOSS_BUILTIN_KOSS"));
+    }
+
+    #[test]
+    fn test_resolve_with_all_flags() {
+        let result = resolve_builtin_specifier("koss:bun", KOSS_BUILTIN_ALL);
+        assert!(result.is_ok());
+        let result = resolve_builtin_specifier("koss:deno", KOSS_BUILTIN_ALL);
+        assert!(result.is_ok());
+        let result = resolve_builtin_specifier("koss:io", KOSS_BUILTIN_ALL);
+        assert!(result.is_ok());
+        let result = resolve_builtin_specifier("koss:node/fs", KOSS_BUILTIN_ALL);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_resolve_nonexistent_module() {
+        let result = resolve_builtin_specifier("koss:unknown", KOSS_BUILTIN_ALL);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("no such builtin module"));
+    }
+
+    // ── flag_to_name / flags_to_names ──────────────────────────────────────
+
+    #[test]
+    fn test_flag_to_name() {
+        assert_eq!(flag_to_name(KOSS_BUILTIN_NODE), "KOSS_BUILTIN_NODE");
+        assert_eq!(flag_to_name(KOSS_BUILTIN_BUN), "KOSS_BUILTIN_BUN");
+        assert_eq!(flag_to_name(KOSS_BUILTIN_DENO), "KOSS_BUILTIN_DENO");
+        assert_eq!(flag_to_name(KOSS_BUILTIN_KOSS), "KOSS_BUILTIN_KOSS");
+        assert_eq!(flag_to_name(KOSS_BUILTIN_ALL), "KOSS_BUILTIN_ALL");
+        assert_eq!(flag_to_name(0xDEAD), "UNKNOWN");
+    }
+
+    #[test]
+    fn test_flags_to_names_empty() {
+        assert_eq!(flags_to_names(KOSS_BUILTIN_NONE), "KOSS_BUILTIN_NONE");
+    }
+
+    #[test]
+    fn test_flags_to_names_single() {
+        assert_eq!(flags_to_names(KOSS_BUILTIN_NODE), "KOSS_BUILTIN_NODE");
+        assert_eq!(flags_to_names(KOSS_BUILTIN_BUN), "KOSS_BUILTIN_BUN");
+    }
+
+    #[test]
+    fn test_flags_to_names_multiple() {
+        let combined = KOSS_BUILTIN_NODE | KOSS_BUILTIN_BUN;
+        let result = flags_to_names(combined);
+        assert!(result.contains("KOSS_BUILTIN_NODE"));
+        assert!(result.contains("KOSS_BUILTIN_BUN"));
+        assert!(result.contains(" | "));
+    }
+
+    // ── builtin_disabled_error / internal_module_error ─────────────────────
+
+    #[test]
+    fn test_builtin_disabled_error_format() {
+        let err = builtin_disabled_error("koss:bun", KOSS_BUILTIN_BUN, KOSS_BUILTIN_NODE);
+        assert!(err.contains("koss:bun"));
+        assert!(err.contains("KOSS_BUILTIN_BUN"));
+        assert!(err.contains("not enabled"));
+        assert!(err.contains("builtins=KOSS_BUILTIN_BUN"));
+    }
+
+    #[test]
+    fn test_internal_module_error_format() {
+        let err = internal_module_error("fs");
+        assert!(err.contains("koss:internal/fs"));
+        assert!(err.contains("internal module"));
+    }
+
+    // ── builtin_module_names ───────────────────────────────────────────────
+
+    #[test]
+    fn test_builtin_module_names_not_empty() {
+        let names = builtin_module_names();
+        assert!(!names.is_empty());
+        assert!(names.contains(&"node/fs"));
+        assert!(names.contains(&"bun"));
+        assert!(names.contains(&"deno"));
+        assert!(names.contains(&"io"));
+        assert!(names.contains(&"internal/fs"));
+    }
+}

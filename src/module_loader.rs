@@ -96,7 +96,9 @@ impl ModuleLoader for KossModuleLoader {
                         .map_err(|msg| {
                             JsError::from(JsNativeError::typ().with_message(msg))
                         })?;
-                let src = Source::from_bytes(source.as_bytes());
+                // Wrap CJS source for ESM import compatibility
+                let wrapped = wrap_cjs_for_esm(&source);
+                let src = Source::from_bytes(wrapped.as_bytes());
                 let module = Module::parse(src, None, &mut context.borrow_mut()).map_err(|err| {
                     JsError::from(
                         JsNativeError::syntax()
@@ -190,7 +192,10 @@ impl ModuleLoader for KossModuleLoader {
                     ));
                 }
             };
-            let source = Source::from_bytes(&source_bytes);
+            // Wrap CJS source for ESM import compatibility
+            let source_str = String::from_utf8_lossy(&source_bytes).to_string();
+            let wrapped = wrap_cjs_for_esm(&source_str);
+            let source = Source::from_bytes(wrapped.as_bytes());
 
             let module = Module::parse(source, None, &mut context.borrow_mut()).map_err(|err| {
                 JsError::from(
@@ -207,4 +212,78 @@ impl ModuleLoader for KossModuleLoader {
 
         async { result }
     }
+}
+
+/// Check if a JS source string contains ESM export declarations.
+fn has_esm_exports(source: &str) -> bool {
+    // Simple heuristic: look for 'export' keyword at statement level
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("export ") || trimmed.starts_with("export{") || trimmed.starts_with("export\n") {
+            return true;
+        }
+    }
+    false
+}
+
+/// Extract named exports from CJS `module.exports = { a, b, c }` pattern.
+#[allow(unused)]
+fn extract_cjs_named_exports(source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        // Match: module.exports = { name1, name2, ... }
+        if let Some(idx) = trimmed.find("module.exports") {
+            let rest = &trimmed[idx..];
+            if let Some(brace_start) = rest.find('{') {
+                if let Some(brace_end) = rest[brace_start..].find('}') {
+                    let inner = &rest[brace_start + 1..brace_start + brace_end];
+                    for part in inner.split(',') {
+                        let name = part.trim();
+                        // Skip empty, destructuring, assignments
+                        if !name.is_empty()
+                            && !name.contains(':')
+                            && !name.contains('=')
+                            && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                        {
+                            names.push(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        // Match: exports.name = ...
+        if trimmed.starts_with("exports.") {
+            if let Some(eq_pos) = trimmed.find('=') {
+                let name_part = &trimmed[7..eq_pos].trim();
+                if !name_part.is_empty()
+                    && name_part
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_')
+                {
+                    names.push(name_part.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Wrap a CJS module source for ESM import compatibility.
+///
+/// Converts `module.exports`-based CJS code to ESM by prepending
+/// `module`/`exports` declarations and appending `export default`.
+fn wrap_cjs_for_esm(source: &str) -> String {
+    if has_esm_exports(source) {
+        return source.to_string();
+    }
+
+    let mut wrapped = String::with_capacity(source.len() + 256);
+    wrapped.push_str("var module = { exports: {} };\n");
+    wrapped.push_str("var exports = module.exports;\n");
+    wrapped.push_str(source);
+    wrapped.push_str("\nexport default module.exports;\n");
+    wrapped.push_str("globalThis.__koss_esm_result = module.exports;\n");
+
+    wrapped
 }
