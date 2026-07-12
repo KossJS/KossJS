@@ -722,7 +722,7 @@ For more information on this, and how to apply and follow the GNU AGPL, see
 - 进程间通信接口调用（IPC）；
 - 其他不会导致本软件源代码或二进制内容被合并、嵌入或作为其他模块内部组成部分的软件组合方式。
 
-本附加权限不要求使用者必须能够替换该二进制库。
+本附加权限不要求组合作品允许最终用户替换所使用的官方二进制库。
 
 ### “独立模块”
 
