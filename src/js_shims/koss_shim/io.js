@@ -1,3 +1,9 @@
+// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
 // koss:io — Koss 原生统一 I/O 模块
 // 文件操作 + 网络操作，全部同步 API
 

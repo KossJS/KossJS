@@ -1,1 +1,0 @@
-const myFunction = (target: string, args: (string | Record<string, unknown>)[], pwd: string | null) => {console.log(target, args, pwd); return 0;};

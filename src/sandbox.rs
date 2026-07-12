@@ -1,3 +1,9 @@
+// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
 // 文件系统（6 个细粒度操作）
 pub const FS_READ: u32 = 1 << 0;
 pub const FS_WRITE: u32 = 1 << 1;

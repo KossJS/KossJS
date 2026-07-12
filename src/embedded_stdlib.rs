@@ -6,7 +6,13 @@
 /// The JS source is directly embedded as string literals.
 pub fn get(path: &str) -> Option<&'static str> {
     match path {
-        "bun_shim.js" => Some(r#"// koss:bun - Bun 运行时兼容层 (L3)
+        "bun_shim.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:bun - Bun 运行时兼容层 (L3)
 // Bun v1.1.x API alignment
 
 var internalFs = require('koss:internal/fs');
@@ -149,7 +155,13 @@ module.exports = {
   build: buildFn,
 };
 "#),
-        "deno_shim.js" => Some(r#"// koss:deno - Deno 运行时兼容层 (L3)
+        "deno_shim.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:deno - Deno 运行时兼容层 (L3)
 // Deno v2.0.x API alignment
 
 var internalFs = require('koss:internal/fs');
@@ -360,7 +372,13 @@ module.exports = {
   signals: signals,
 };
 "#),
-        "internal/crypto.js" => Some(r#"// koss:internal/crypto - Internal cryptography layer (L2)
+        "internal/crypto.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:internal/crypto - Internal cryptography layer (L2)
 // Not directly accessible to user code. Used by L3 compatibility layers.
 
 var __koss_hash = globalThis.__koss_hash;
@@ -438,7 +456,13 @@ module.exports = {
   pbkdf2: pbkdf2,
 };
 "#),
-        "internal/fs.js" => Some(r#"// koss:internal/fs - Internal filesystem layer (L2)
+        "internal/fs.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:internal/fs - Internal filesystem layer (L2)
 // Not directly accessible to user code. Used by L3 compatibility layers.
 
 var __koss_fs_read = globalThis.__koss_fs_read;
@@ -657,7 +681,13 @@ module.exports = {
   chmodSync: chmodSync,
 };
 "#),
-        "internal/net.js" => Some(r#"// koss:internal/net - Internal network layer (L2)
+        "internal/net.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:internal/net - Internal network layer (L2)
 // Not directly accessible to user code. Used by L3 compatibility layers.
 
 var __koss_fetch = globalThis.__koss_fetch;
@@ -786,7 +816,13 @@ module.exports = {
   httpFetch: httpFetch,
 };
 "#),
-        "internal/stream.js" => Some(r#"// koss:internal/stream - Internal stream layer (L2)
+        "internal/stream.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:internal/stream - Internal stream layer (L2)
 // Not directly accessible to user code. Used by L3 compatibility layers.
 
 var Buffer = globalThis.Buffer;
@@ -915,7 +951,13 @@ module.exports = {
   pipeline: pipeline,
 };
 "#),
-        "koss_shim/crypto.js" => Some(r#"// koss:crypto — Koss 原生加密与安全模块
+        "koss_shim/crypto.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:crypto — Koss 原生加密与安全模块
 // 哈希、HMAC、随机数、签名等，全部一步完成
 
 var internalCrypto = require('koss:internal/crypto');
@@ -989,7 +1031,13 @@ module.exports = {
   sign: sign, verify: verify, encrypt: encrypt, decrypt: decrypt, algorithms: algorithms,
 };
 "#),
-        "koss_shim/data.js" => Some(r#"// koss:data — Koss 原生数据结构模块
+        "koss_shim/data.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:data — Koss 原生数据结构模块
 // 字节操作、编码工具（纯 Uint8Array 实现）
 
 function encode(text) {
@@ -1112,7 +1160,13 @@ module.exports = {
   toBase64: toBase64, fromBase64: fromBase64,
 };
 "#),
-        "koss_shim/ffi.js" => Some(r#"// koss:ffi — Koss 原生外部函数接口模块
+        "koss_shim/ffi.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:ffi — Koss 原生外部函数接口模块
 // 基于 _senri_ffi 全局对象
 
 var ffi = globalThis._senri_ffi;
@@ -1175,7 +1229,13 @@ module.exports = {
   createCallback: createCallback, strerror: strerror,
 };
 "#),
-        "koss_shim/io.js" => Some(r#"// koss:io — Koss 原生统一 I/O 模块
+        "koss_shim/io.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:io — Koss 原生统一 I/O 模块
 // 文件操作 + 网络操作，全部同步 API
 
 var internalFs = require('koss:internal/fs');
@@ -1348,7 +1408,13 @@ module.exports = {
   createReadStream: createReadStream, createWriteStream: createWriteStream, pipeline: pipeline,
 };
 "#),
-        "koss_shim/system.js" => Some(r#"// koss:system — Koss 原生系统与进程模块
+        "koss_shim/system.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:system — Koss 原生系统与进程模块
 // 架构、平台、内存、CPU、环境变量等
 
 var process = globalThis.process;
@@ -1455,7 +1521,13 @@ module.exports = {
   version: version, versions: versions, nextTick: nextTick,
 };
 "#),
-        "koss_shim/worker.js" => Some(r#"// koss:worker — Koss 原生工作线程模块
+        "koss_shim/worker.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:worker — Koss 原生工作线程模块
 // 基于 __koss_worker_* 全局绑定
 
 var __koss_create_worker_pool = globalThis.__koss_create_worker_pool;
@@ -1533,7 +1605,13 @@ module.exports = {
   createPool: createPool, post: post, receive: receive, terminate: terminate,
 };
 "#),
-        "node_shim/assert.js" => Some(r#"// koss:node/assert - Node.js assert module (L3)
+        "node_shim/assert.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/assert - Node.js assert module (L3)
 // Lightweight pure JS implementation
 
 function AssertionError(options) {
@@ -1726,7 +1804,13 @@ const strict = {
   match: assert.match,
 };
 module.exports.strict = strict;"#),
-        "node_shim/buffer.js" => Some(r#"// koss:node/buffer - Node.js buffer module (L3)
+        "node_shim/buffer.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/buffer - Node.js buffer module (L3)
 
 const __NativeBuffer = globalThis.Buffer;
 
@@ -2018,7 +2102,13 @@ module.exports = {
     kStringMaxLength,
 };
 "#),
-        "node_shim/constants.js" => Some(r#"// koss:node/constants - Node.js constants module (L3)
+        "node_shim/constants.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/constants - Node.js constants module (L3)
 
 module.exports = {
   O_RDONLY: 0,
@@ -2082,7 +2172,13 @@ const signals = { SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGTERM: 15, SIGSTOP: 17, S
 module.exports.fs = fs;
 module.exports.os = os;
 module.exports.signals = signals;"#),
-        "node_shim/crypto.js" => Some(r#"// koss:node/crypto - Node.js crypto module (L3)
+        "node_shim/crypto.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/crypto - Node.js crypto module (L3)
 
 const internalCrypto = require('koss:internal/crypto');
 const { Buffer } = require('koss:node/buffer');
@@ -2194,7 +2290,13 @@ const webcrypto = globalThis.crypto;
 const subtle = globalThis.crypto?.subtle;
 
 module.exports = { randomBytes, randomUUID, randomFillSync, randomFill, createHash, createHmac, pbkdf2, pbkdf2Sync, timingSafeEqual, getHashes, getCiphers, getCurves, webcrypto, subtle, randomFill: { bind: randomFill }, randomFillSync: { bind: randomFillSync } };"#),
-        "node_shim/dgram.js" => Some(r#"// koss:node/dgram - Node.js dgram module (L3)
+        "node_shim/dgram.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/dgram - Node.js dgram module (L3)
 // UDP over TCP bridge
 
 const _events = require('koss:node/events');
@@ -2272,7 +2374,13 @@ function createSocket(type, listener) {
 }
 
 module.exports = { createSocket, Socket };"#),
-        "node_shim/diagnostics_channel.js" => Some(r#"// koss:node/diagnostics_channel - Node.js diagnostics_channel module (L3)
+        "node_shim/diagnostics_channel.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/diagnostics_channel - Node.js diagnostics_channel module (L3)
 
 const channels = {};
 
@@ -2328,7 +2436,13 @@ function hasSubscribers(name) {
 
 module.exports = { channel, subscribe, unsubscribe, hasSubscribers, Channel };
 "#),
-        "node_shim/dns.js" => Some(r#"// koss:node/dns - Node.js dns module (L3)
+        "node_shim/dns.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/dns - Node.js dns module (L3)
 
 const internalNet = require('koss:internal/net');
 
@@ -2409,7 +2523,13 @@ const promises = {
 };
 
 module.exports = { lookup, resolve, resolve4, resolve6, lookupService, isIP, isIPv4, isIPv6, promises };"#),
-        "node_shim/events.js" => Some(r#"// koss:node/events - Node.js events module (L3)
+        "node_shim/events.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/events - Node.js events module (L3)
 // Pure JS implementation of EventEmitter
 
 var kMaxListeners = 16;
@@ -2651,7 +2771,13 @@ module.exports.EventEmitter = EventEmitter;
 module.exports.getEventListeners = getEventListeners;
 module.exports.triggerAsyncId = triggerAsyncId;
 module.exports.executionAsyncId = executionAsyncId;"#),
-        "node_shim/fs.js" => Some(r#"// koss:node/fs - Node.js fs module (L3)
+        "node_shim/fs.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/fs - Node.js fs module (L3)
 // Wraps koss:internal/fs with Node.js-compatible API
 
 const internalFs = require('koss:internal/fs');
@@ -2882,7 +3008,13 @@ function ftruncateSync() { throw new Error('fs.ftruncateSync is not implemented'
 function fsyncSync() { throw new Error('fs.fsyncSync is not implemented'); }
 
 module.exports = { readFileSync, writeFileSync, appendFileSync, existsSync, statSync, lstatSync, mkdirSync, rmdirSync, unlinkSync, readdirSync, renameSync, realpathSync, copyFileSync, chmodSync, accessSync, mkdtempSync, truncateSync, fstatSync, readFile, writeFile, appendFile, exists, stat, lstat, mkdir, rmdir, unlink, readdir, rename, realpath, copyFile, access, chmod, promises, constants, watch, watchFile, unwatchFile, createReadStream, createWriteStream, openSync, closeSync, readSync, writeSync, ftruncateSync, fsyncSync };"#),
-        "node_shim/http.js" => Some(r#"// koss:node/http - Node.js http module (L3)
+        "node_shim/http.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/http - Node.js http module (L3)
 
 const _events = require('koss:node/events');
 const EventEmitter = _events.EventEmitter;
@@ -3015,7 +3147,13 @@ const maxHeaderSize = 16384;
 const globalAgent = {};
 
 module.exports = { createServer, request, get, Server, IncomingMessage, ServerResponse, METHODS, STATUS_CODES, maxHeaderSize, globalAgent };"#),
-        "node_shim/https.js" => Some(r#"// koss:node/https - Node.js https module (L3)
+        "node_shim/https.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/https - Node.js https module (L3)
 
 const _http = require('koss:node/http');
 const HttpServer = _http.Server;
@@ -3055,7 +3193,13 @@ const globalAgent = { maxSockets: Infinity };
 
 module.exports = { createServer, request, get, Server, TLSSocket, globalAgent };
 "#),
-        "node_shim/net.js" => Some(r#"// koss:node/net - Node.js net module (L3)
+        "node_shim/net.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/net - Node.js net module (L3)
 
 const internalNet = require('koss:internal/net');
 const _events = require('koss:node/events');
@@ -3187,7 +3331,13 @@ function connect(...args) { var s = new Socket(); s.connect(...args); return s; 
 function createConnection(...args) { return connect(...args); }
 
 module.exports = { createServer, connect, createConnection, Socket, Server, isIP, isIPv4, isIPv6 };"#),
-        "node_shim/os.js" => Some(r#"// koss:node/os - Node.js os module (L3)
+        "node_shim/os.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/os - Node.js os module (L3)
 
 const { __koss_bindings, process } = globalThis;
 
@@ -3332,7 +3482,13 @@ const devNull = platform() === 'win32' ? '\\\\.\\nul' : '/dev/null';
 
 module.exports = { hostname, platform, type, release, arch, tmpdir, homedir, endianness, freemem, totalmem, uptime, loadavg, cpus, networkInterfaces, userInfo, EOL: EOL(), version, machine, constants, availableParallelism, devNull };
 "#),
-        "node_shim/path.js" => Some(r#"// koss:node/path - Node.js path module (L3)
+        "node_shim/path.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/path - Node.js path module (L3)
 // Pure JS implementation
 
 const CHAR_DOT = 46;
@@ -3706,7 +3862,13 @@ function parse(path) { return posix.parse(path); }
 
 module.exports = { sep, delimiter, resolve, normalize: normalizePath, isAbsolute, join, relative: relativePath, dirname, basename, extname, format, parse, win32, posix };
 "#),
-        "node_shim/perf_hooks.js" => Some(r#"// koss:node/perf_hooks - Node.js perf_hooks module (L3)
+        "node_shim/perf_hooks.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/perf_hooks - Node.js perf_hooks module (L3)
 
 const marks = {};
 const measures = {};
@@ -3822,12 +3984,24 @@ const constants = {
 
 module.exports = { performance, PerformanceObserver, createHistogram, monitorEventLoopDelay, timerify, PerformanceEntry, PerformanceMark, PerformanceMeasure, constants };
 "#),
-        "node_shim/process.js" => Some(r#"// koss:node/process - Node.js process module (L3)
+        "node_shim/process.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/process - Node.js process module (L3)
 
 const p = globalThis.process || {};
 
 module.exports = p;"#),
-        "node_shim/querystring.js" => Some(r#"// koss:node/querystring - Node.js querystring module (L3)
+        "node_shim/querystring.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/querystring - Node.js querystring module (L3)
 
 function stringifyPrimitive(v) {
   if (typeof v === 'string') return v;
@@ -3908,7 +4082,13 @@ function escape(str) {
 }
 
 module.exports = { stringify, parse, encode, decode, unescape, escape };"#),
-        "node_shim/stream.js" => Some(r#"// koss:node/stream - Node.js stream module (L3)
+        "node_shim/stream.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/stream - Node.js stream module (L3)
 
 const _events = require('koss:node/events');
 const EventEmitter = _events.EventEmitter;
@@ -4112,7 +4292,13 @@ function compose(...streams) { throw new Error('stream.compose not implemented')
 function addAbortSignal(signal, stream) { return stream; }
 
 module.exports = { Readable, Writable, Duplex, Transform, PassThrough, pipeline, finished, compose, addAbortSignal };"#),
-        "node_shim/string_decoder.js" => Some(r#"// koss:node/string_decoder - Node.js string_decoder module (L3)
+        "node_shim/string_decoder.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/string_decoder - Node.js string_decoder module (L3)
 
 function createTextDecoderPolyfill() {
   if (typeof TextDecoder !== 'undefined') return TextDecoder;
@@ -4175,7 +4361,13 @@ class StringDecoder {
 
 module.exports = { StringDecoder };
 "#),
-        "node_shim/timers.js" => Some(r#"// koss:node/timers - Node.js timers module (L3)
+        "node_shim/timers.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/timers - Node.js timers module (L3)
 // Wraps global setTimeout/setInterval
 
 function setTimeout(callback, delay, ...args) {
@@ -4250,7 +4442,13 @@ const promises = {
 
 module.exports = { setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate, active, enroll, unenroll, promises };
 "#),
-        "node_shim/tls.js" => Some(r#"// koss:node/tls - Node.js tls module (L3)
+        "node_shim/tls.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/tls - Node.js tls module (L3)
 
 const _net = require('koss:node/net');
 const Socket = _net.Socket;
@@ -4302,7 +4500,13 @@ function checkServerIdentity(hostname, cert) {
 const rootCertificates = [];
 
 module.exports = { TLSSocket, Server, connect, createServer, createSecureContext, checkServerIdentity, rootCertificates };"#),
-        "node_shim/trace_events.js" => Some(r#"// koss:node/trace_events - Node.js trace_events module (L3)
+        "node_shim/trace_events.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/trace_events - Node.js trace_events module (L3)
 
 const enabledCategories = new Set();
 
@@ -4328,7 +4532,13 @@ function getEnabledCategories() {
 
 module.exports = { createTracing, getEnabledCategories, Tracing };
 "#),
-        "node_shim/url.js" => Some(r#"// koss:node/url - Node.js url module (L3)
+        "node_shim/url.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/url - Node.js url module (L3)
 
 const globalURL = globalThis.URL;
 const globalURLSearchParams = globalThis.URLSearchParams;
@@ -4609,7 +4819,13 @@ function resolveObject(from, to) {
 
 module.exports = { URL, URLSearchParams, domainToASCII, domainToUnicode, fileURLToPath, pathToFileURL, urlToHttpOptions, format, parse, resolve, resolveObject };
 "#),
-        "node_shim/util.js" => Some(r#"// koss:node/util - Node.js util module (L3)
+        "node_shim/util.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/util - Node.js util module (L3)
 
 const { Buffer } = require('koss:node/buffer');
 
@@ -4790,7 +5006,13 @@ function toUSVString(str) {
 function getSystemErrorMap() { return new Map(); }
 
 module.exports = { format, inspect, deprecate, promisify, callbackify, inherits, debuglog, types, getSystemErrorName, stripVTControlCharacters, toUSVString, getSystemErrorMap };"#),
-        "node_shim/zlib.js" => Some(r#"// koss:node/zlib - Node.js zlib module (L3)
+        "node_shim/zlib.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:node/zlib - Node.js zlib module (L3)
 
 const { __koss_gzip, __koss_gunzip, __koss_deflate, __koss_inflate } = globalThis;
 const { Buffer } = require('koss:node/buffer');
