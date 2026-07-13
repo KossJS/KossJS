@@ -118,7 +118,7 @@ python -m pytest test/ -v
 
 ## 许可证
 
-**GNU Affero General Public License v3.0**，并附带 TT23XR Studio 第7节附加权限《非本软件模块的源代码公开义务例外》。
+**GNU Affero General Public License v3.0**，并附带 TT23XR Studio 第7节附加权限《独立模块闭源组合例外》。
 
 **闭源例外**：未经修改的官方预编译二进制库（`.dll`/`.so`/`.dylib`）可在注明出处的前提下链接到专有应用程序中。详见 [`LICENSE.md`](LICENSE.md)。
 
