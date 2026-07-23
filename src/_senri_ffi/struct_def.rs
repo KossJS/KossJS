@@ -21,6 +21,11 @@ use super::types::{self, compute_struct_layout, FfiType};
 struct StructInstance {
     #[unsafe_ignore_trace]
     buffer: Vec<u8>,
+    /// CString fields store a `char*` into `buffer`; the owning CString must
+    /// live as long as this instance, otherwise the stored pointer dangles
+    /// (use-after-free) when the struct is later passed to native code.
+    #[unsafe_ignore_trace]
+    cstrings: Vec<std::ffi::CString>,
 }
 
 fn read_from_buffer(buf: &[u8], offset: usize, type_info: &FfiType) -> JsValue {
@@ -94,7 +99,13 @@ fn read_from_buffer(buf: &[u8], offset: usize, type_info: &FfiType) -> JsValue {
     }
 }
 
-fn write_to_buffer(buf: &mut [u8], offset: usize, type_info: &FfiType, val: &JsValue) -> Result<(), JsError> {
+fn write_to_buffer(
+    buf: &mut [u8],
+    offset: usize,
+    type_info: &FfiType,
+    val: &JsValue,
+    keep: &mut Vec<std::ffi::CString>,
+) -> Result<(), JsError> {
     let end = offset + type_info.sizeof();
     if end > buf.len() {
         return Err(JsNativeError::error().with_message("buffer overflow").into());
@@ -196,6 +207,9 @@ fn write_to_buffer(buf: &mut [u8], offset: usize, type_info: &FfiType, val: &JsV
                 })?;
                 let ptr = cstr.as_ptr() as usize;
                 target.copy_from_slice(&ptr.to_le_bytes());
+                // Keep the CString alive for the lifetime of the owning buffer so
+                // the stored char* does not dangle once passed to native code.
+                keep.push(cstr);
             }
             Ok(())
         }
@@ -253,7 +267,11 @@ pub fn create_struct_constructor(
                     })?;
                     let default_val = JsValue::undefined();
                     let val = args.first().unwrap_or(&default_val);
-                    write_to_buffer(&mut inst.buffer, f_offset, &f_type2, val)?;
+                    // Split-borrow disjoint fields so the buffer and the CString
+                    // collector can be borrowed mutably at the same time.
+                    let inst_ref: &mut StructInstance = &mut inst;
+                    let StructInstance { buffer, cstrings } = inst_ref;
+                    write_to_buffer(buffer, f_offset, &f_type2, val, cstrings)?;
                     Ok(JsValue::undefined())
                 },
             )
@@ -307,6 +325,7 @@ pub fn create_struct_constructor(
         NativeFunction::from_closure(
             move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
                 let mut buffer = vec![0u8; total_size_for_ctor];
+                let mut cstrings: Vec<std::ffi::CString> = Vec::new();
 
                 if let Some(init_obj) = args.first().and_then(|v| v.as_object()) {
                     for field in &fields_for_ctor {
@@ -320,6 +339,7 @@ pub fn create_struct_constructor(
                                     field.offset,
                                     &field.type_info,
                                     val,
+                                    &mut cstrings,
                                 )?;
                             }
                         }
@@ -327,7 +347,7 @@ pub fn create_struct_constructor(
                 }
 
                 let buffer_ptr = buffer.as_ptr() as usize;
-                let instance = StructInstance { buffer };
+                let instance = StructInstance { buffer, cstrings };
                 let obj = JsObject::from_proto_and_data(
                     proto_for_ctor.clone(),
                     instance,
