@@ -23,6 +23,9 @@ thread_local! {
 
 struct CallbackEntry {
     _closure: middle::Closure<'static>,
+    // Raw owner of the CallbackData the closure references. Dropped *after* the
+    // closure in `free_callback` so the trampoline never touches freed data.
+    data_ptr: *mut CallbackData,
 }
 
 struct CallbackData {
@@ -54,14 +57,19 @@ pub fn create_callback(
         func: RefCell::new(Some(js_func)),
     });
 
-    let data_ref: &'static CallbackData = Box::leak(data);
+    // Keep ownership of the CallbackData so it can be reclaimed by
+    // `free_callback` rather than leaking permanently. The heap address is
+    // stable, so the &'static reference handed to the closure stays valid until
+    // the registry entry (and thus this allocation) is removed.
+    let data_ptr: *mut CallbackData = Box::into_raw(data);
+    let data_ref: &'static CallbackData = unsafe { &*data_ptr };
 
     let closure = middle::Closure::new(cif, trampoline::<CallResultBuf>, data_ref);
     let code = *closure.code_ptr() as *const c_void;
 
     let addr = code as usize;
     CALLBACK_REGISTRY.with(|reg| {
-        reg.borrow_mut().insert(addr, CallbackEntry { _closure: closure });
+        reg.borrow_mut().insert(addr, CallbackEntry { _closure: closure, data_ptr });
     });
 
     let ptr_obj = create_pointer_object(addr, 0, ctx);
@@ -69,11 +77,14 @@ pub fn create_callback(
     Ok(ptr_obj)
 }
 
-#[allow(dead_code)]
-fn free_callback(addr: usize) -> bool {
+pub fn free_callback(addr: usize) -> bool {
     CALLBACK_REGISTRY.with(|reg| {
         if let Some(entry) = reg.borrow_mut().remove(&addr) {
-            drop(entry);
+            let CallbackEntry { _closure, data_ptr } = entry;
+            // Drop the closure first so the trampoline can no longer run, then
+            // reclaim the CallbackData it referenced.
+            drop(_closure);
+            unsafe { drop(Box::from_raw(data_ptr)); }
             true
         } else {
             false

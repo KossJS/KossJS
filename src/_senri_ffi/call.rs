@@ -235,6 +235,10 @@ pub mod async_defs {
             middle::Cif::new_with_abi(middle_arg_types, middle_ret_type, abi)
         };
 
+        // `cb_datas` owns the ChannelCallbackData backing each proxy closure so
+        // it is freed when this function returns (previously it was leaked once
+        // per async call). Declared before `closures` so the closures drop first.
+        let mut cb_datas: Vec<Box<ChannelCallbackData>> = Vec::new();
         let mut closures: Vec<middle::Closure> = Vec::new();
         let mut adjusted_buffers: Vec<Vec<u8>> = Vec::with_capacity(arg_buffers.len());
 
@@ -249,9 +253,10 @@ pub mod async_defs {
                 let tx = callback_tx.clone();
                 let tid = task_id;
 
-                let proxy = create_channel_callback_closure(cb_args, *cb_ret, tx, tid, cb_index, callback_timeout_ms)?;
+                let (proxy, cb_data) = create_channel_callback_closure(cb_args, *cb_ret, tx, tid, cb_index, callback_timeout_ms)?;
                 let code_ptr = *proxy.code_ptr() as usize;
                 closures.push(proxy);
+                cb_datas.push(cb_data);
                 let addr_bytes = code_ptr.to_le_bytes().to_vec();
                 adjusted_buffers.push(addr_bytes);
             } else {
@@ -395,7 +400,7 @@ pub mod async_defs {
         task_id: u64,
         cb_index: usize,
         _timeout_ms: u64,
-    ) -> Result<middle::Closure<'static>, String> {
+    ) -> Result<(middle::Closure<'static>, Box<ChannelCallbackData>), String> {
         let middle_arg_types: Vec<middle::Type> = arg_types.iter().map(|t| t.to_middle_type()).collect();
         let middle_ret_type = ret_type.to_middle_type();
         let cif = middle::Cif::new(middle_arg_types, middle_ret_type);
@@ -411,9 +416,16 @@ pub mod async_defs {
             cb_index,
             ret_size,
         });
-        let data_ref: &'static ChannelCallbackData = Box::leak(data);
+        // Own the data (returned to the caller) rather than leaking it. The heap
+        // address is stable across the move, so the &'static reference handed to
+        // the closure stays valid for as long as the returned Box is kept alive.
+        let data_ptr: *const ChannelCallbackData = &*data;
+        let data_ref: &'static ChannelCallbackData = unsafe { &*data_ptr };
 
-        Ok(middle::Closure::new(cif, channel_cb_trampoline::<*mut std::ffi::c_void>, data_ref))
+        Ok((
+            middle::Closure::new(cif, channel_cb_trampoline::<*mut std::ffi::c_void>, data_ref),
+            data,
+        ))
     }
 }
 
