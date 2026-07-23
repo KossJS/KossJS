@@ -1124,10 +1124,25 @@ fn is_ssrf_blocked(host: &str) -> bool {
 }
 
 fn register_fs_functions(instance: &mut KossInstance) {
+    // Capability snapshot: the low-level __koss_fs_* globals are gated by the
+    // instance capability bitmask so sandboxed instances cannot bypass the
+    // sandbox via these globals (mirrors the NET_FETCH gate on __koss_fetch).
+    let caps = instance.capabilities;
     macro_rules! reg_fs {
-        ($name:expr, $closure:expr) => {{
-            let js_fn = NativeFunction::from_copy_closure($closure)
-                .to_js_function(instance.context.realm());
+        ($name:expr, $cap:expr, $closure:expr) => {{
+            let inner = $closure;
+            let required_cap: u32 = $cap;
+            let js_fn = NativeFunction::from_copy_closure(
+                move |this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+                    if !crate::sandbox::has_cap(caps, required_cap) {
+                        return Err(JsNativeError::error()
+                            .with_message(concat!($name, ": permission denied (missing required FS capability)"))
+                            .into());
+                    }
+                    inner(this, args, ctx)
+                },
+            )
+            .to_js_function(instance.context.realm());
             instance.context.register_global_property(
                 boa_engine::js_string!($name),
                 js_fn,
@@ -1137,14 +1152,14 @@ fn register_fs_functions(instance: &mut KossInstance) {
     }
 
     // __koss_fs_exists(path) -> bool
-    reg_fs!("__koss_fs_exists", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+    reg_fs!("__koss_fs_exists", crate::sandbox::FS_READ, |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
         let path = args.first().ok_or_else(|| JsNativeError::error().with_message("exists: path required"))?
             .to_string(ctx).map_err(|_| JsNativeError::error().with_message("exists: path must be string"))?;
         Ok(JsValue::from(crate::bindings::fs::exists_sync(&path.to_std_string_escaped())))
     });
 
     // __koss_fs_read(path) -> { code: 0, value: base64_string }
-    reg_fs!("__koss_fs_read", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+    reg_fs!("__koss_fs_read", crate::sandbox::FS_READ, |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
         let path = args.first().ok_or_else(|| JsNativeError::error().with_message("read: path required"))?
             .to_string(ctx).map_err(|_| JsNativeError::error().with_message("read: path must be string"))?;
         let path_str = path.to_std_string_escaped();
@@ -1158,24 +1173,36 @@ fn register_fs_functions(instance: &mut KossInstance) {
         }
     });
 
-    // __koss_fs_write(path, data) -> { code: 0 }
-    reg_fs!("__koss_fs_write", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+    // __koss_fs_write(path, data, is_base64) -> { code: 0 }
+    // When is_base64 is true, `data` is a base64 string that is decoded to raw
+    // bytes before writing. This keeps binary writes lossless (a latin1/utf8
+    // string round-trip would corrupt any byte >= 0x80).
+    reg_fs!("__koss_fs_write", crate::sandbox::FS_WRITE, |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
         if args.len() < 2 {
             return Err(JsNativeError::error().with_message("write: path and data required").into());
         }
         let path = args[0].to_string(ctx).map_err(|_| JsNativeError::error().with_message("write: path must be string"))?;
         let data_val = args[1].to_string(ctx).map_err(|_| JsNativeError::error().with_message("write: data must be string"))?;
+        let is_base64 = args.get(2).map(|v| v.to_boolean()).unwrap_or(false);
         let path_str = path.to_std_string_escaped();
         let data_str = data_val.to_std_string_escaped();
-        let bytes = data_str.as_bytes();
-        match std::fs::write(&path_str, bytes) {
+        let bytes: Vec<u8> = if is_base64 {
+            use base64::Engine;
+            match base64::engine::general_purpose::STANDARD.decode(data_str.as_bytes()) {
+                Ok(b) => b,
+                Err(_) => return Ok(JsValue::from(boa_engine::js_string!("{\"code\":1,\"value\":\"invalid base64 data\"}"))),
+            }
+        } else {
+            data_str.into_bytes()
+        };
+        match std::fs::write(&path_str, &bytes) {
             Ok(()) => Ok(JsValue::from(boa_engine::js_string!("{\"code\":0}"))),
             Err(e) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":1,\"value\":\"{}\"}}", e)))),
         }
     });
 
     // __koss_fs_stat(path) -> { code: 0, value: json_string }
-    reg_fs!("__koss_fs_stat", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+    reg_fs!("__koss_fs_stat", crate::sandbox::FS_READ, |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
         let path = args.first().ok_or_else(|| JsNativeError::error().with_message("stat: path required"))?
             .to_string(ctx).map_err(|_| JsNativeError::error().with_message("stat: path must be string"))?;
         let path_str = path.to_std_string_escaped();
@@ -1198,7 +1225,11 @@ fn register_fs_functions(instance: &mut KossInstance) {
     });
 
     // __koss_fs_mkdir(path, recursive) -> { code: 0 }
-    reg_fs!("__koss_fs_mkdir", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+    // NOTE: gated on FS_WRITE rather than FS_MKDIR because FS_MKDIR (1<<3)
+    // collides with the legacy KOSS_CAP_WORKER alias (also 1<<3), which stable
+    // mode strips — so FS_MKDIR is unusable there. Directory creation is a write
+    // operation, so FS_WRITE is the appropriate (and non-colliding) capability.
+    reg_fs!("__koss_fs_mkdir", crate::sandbox::FS_WRITE, |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
         let path = args.first().ok_or_else(|| JsNativeError::error().with_message("mkdir: path required"))?
             .to_string(ctx).map_err(|_| JsNativeError::error().with_message("mkdir: path must be string"))?;
         let recursive = args.get(1).and_then(|v| v.as_number()).map(|n| n != 0.0).unwrap_or(false);
@@ -1215,7 +1246,7 @@ fn register_fs_functions(instance: &mut KossInstance) {
     });
 
     // __koss_fs_readdir(path) -> { code: 0, value: json_array }
-    reg_fs!("__koss_fs_readdir", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+    reg_fs!("__koss_fs_readdir", crate::sandbox::FS_READ, |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
         let path = args.first().ok_or_else(|| JsNativeError::error().with_message("readdir: path required"))?
             .to_string(ctx).map_err(|_| JsNativeError::error().with_message("readdir: path must be string"))?;
         let path_str = path.to_std_string_escaped();
@@ -1232,7 +1263,7 @@ fn register_fs_functions(instance: &mut KossInstance) {
     });
 
     // __koss_fs_unlink(path) -> { code: 0 }
-    reg_fs!("__koss_fs_unlink", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+    reg_fs!("__koss_fs_unlink", crate::sandbox::FS_DELETE, |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
         let path = args.first().ok_or_else(|| JsNativeError::error().with_message("unlink: path required"))?
             .to_string(ctx).map_err(|_| JsNativeError::error().with_message("unlink: path must be string"))?;
         let path_str = path.to_std_string_escaped();
@@ -1244,7 +1275,7 @@ fn register_fs_functions(instance: &mut KossInstance) {
     });
 
     // __koss_fs_rename(old, new) -> { code: 0 }
-    reg_fs!("__koss_fs_rename", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+    reg_fs!("__koss_fs_rename", crate::sandbox::FS_RENAME, |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
         if args.len() < 2 {
             return Err(JsNativeError::error().with_message("rename: old and new path required").into());
         }
@@ -1257,7 +1288,7 @@ fn register_fs_functions(instance: &mut KossInstance) {
     });
 
     // __koss_fs_copy(src, dst) -> { code: 0 }
-    reg_fs!("__koss_fs_copy", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+    reg_fs!("__koss_fs_copy", crate::sandbox::FS_WRITE, |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
         if args.len() < 2 {
             return Err(JsNativeError::error().with_message("copy: src and dst required").into());
         }
@@ -1270,7 +1301,7 @@ fn register_fs_functions(instance: &mut KossInstance) {
     });
 
     // __koss_fs_realpath(path) -> path string
-    reg_fs!("__koss_fs_realpath", |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+    reg_fs!("__koss_fs_realpath", crate::sandbox::FS_READ, |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
         let path = args.first().ok_or_else(|| JsNativeError::error().with_message("realpath: path required"))?
             .to_string(ctx).map_err(|_| JsNativeError::error().with_message("realpath: path must be string"))?;
         let path_str = path.to_std_string_escaped();
