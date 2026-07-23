@@ -393,3 +393,49 @@ pub fn create_struct_constructor(
 fn js_function_to_object(f: boa_engine::object::builtins::JsFunction) -> JsObject {
     JsObject::from(f)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{write_to_buffer, FfiType};
+    use boa_engine::{js_string, JsValue};
+
+    /// C2 regression: a CString struct field stores a `char*` into the buffer.
+    /// The owning CString must be retained (in `keep`) so the pointer does not
+    /// dangle. Here we verify the pointer is non-null and, while the CString is
+    /// alive, points to the exact input bytes.
+    #[test]
+    fn test_cstring_field_pointer_kept_alive() {
+        let t = FfiType::CString;
+        let mut buf = vec![0u8; t.sizeof()];
+        let mut keep: Vec<std::ffi::CString> = Vec::new();
+        let val = JsValue::from(js_string!("hello"));
+
+        write_to_buffer(&mut buf, 0, &t, &val, &mut keep).unwrap();
+
+        // The CString must be retained rather than dropped at end of write.
+        assert_eq!(keep.len(), 1, "CString must be retained to avoid a dangling char*");
+
+        let ptr = usize::from_le_bytes(
+            buf[..std::mem::size_of::<usize>()].try_into().unwrap(),
+        );
+        assert_ne!(ptr, 0, "stored char* must be non-null");
+        let s = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::ffi::c_char) };
+        assert_eq!(s.to_str().unwrap(), "hello");
+    }
+
+    /// A null/undefined CString field writes a null pointer and retains nothing.
+    #[test]
+    fn test_cstring_field_null_is_zero() {
+        let t = FfiType::CString;
+        let mut buf = vec![0xFFu8; t.sizeof()];
+        let mut keep: Vec<std::ffi::CString> = Vec::new();
+
+        write_to_buffer(&mut buf, 0, &t, &JsValue::null(), &mut keep).unwrap();
+
+        assert_eq!(keep.len(), 0);
+        let ptr = usize::from_le_bytes(
+            buf[..std::mem::size_of::<usize>()].try_into().unwrap(),
+        );
+        assert_eq!(ptr, 0, "null CString field must write a null pointer");
+    }
+}
