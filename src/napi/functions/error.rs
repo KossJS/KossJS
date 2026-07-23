@@ -80,8 +80,9 @@ pub unsafe fn napi_get_and_clear_last_exception(
     let err = unsafe { (*env).take_error() };
     match err {
         Some((_, msg)) => {
-            let cstr = CString::new(msg).unwrap_or_default();
-            *result = cstr.into_raw() as NapiValue;
+            let cstr = CString::new(msg.clone())
+                .unwrap_or_else(|_| CString::new(msg.replace('\0', "")).unwrap_or_default());
+            *result = super::super::value::alloc_slot(super::super::value::NapiSlot::Str(cstr));
             NapiStatus::Ok
         }
         None => {

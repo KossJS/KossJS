@@ -45,23 +45,10 @@ pub unsafe fn napi_create_function(
                 let cb = CALLBACK_REGISTRY.with(|reg| reg.borrow().get(&cb_id).copied());
                 match cb {
                     Some(callback) => {
-                        let mut napi_args: Vec<NapiValue> = args.iter().map(|a| {
-                            if a.is_undefined() { std::ptr::null_mut() }
-                            else if a.is_null() { 1usize as NapiValue }
-                            else if let Some(b) = a.as_boolean() {
-                                if b { 2usize as NapiValue } else { 3usize as NapiValue }
-                            } else if let Some(n) = a.as_number() {
-                                let boxed = Box::new(n);
-                                Box::into_raw(boxed) as NapiValue
-                            } else if let Some(s) = a.as_string() {
-                                let cstr = std::ffi::CString::new(s.to_std_string_escaped()).unwrap_or_default();
-                                cstr.into_raw() as NapiValue
-                            } else if let Some(o) = a.as_object() {
-                                Box::into_raw(Box::new(o.clone())) as NapiValue
-                            } else {
-                                std::ptr::null_mut()
-                            }
-                        }).collect();
+                        let mut napi_args: Vec<NapiValue> = Vec::with_capacity(args.len());
+                        for a in args {
+                            napi_args.push(unsafe { super::super::value::js_to_napi(a, _ctx) });
+                        }
 
                         let cb_data = CALLBACK_DATA.with(|reg| reg.borrow().get(&cb_id).copied().unwrap_or(std::ptr::null_mut()));
 
@@ -74,12 +61,16 @@ pub unsafe fn napi_create_function(
                             data: cb_data,
                         };
 
-                        let ret = callback(env, &info as *const NapiCallbackInfo as *mut NapiCallbackInfo);
-                        if ret.is_null() {
-                            Ok(JsValue::undefined())
-                        } else {
-                            Ok(value_to_js(ret, _ctx))
+                        let ret = unsafe { callback(env, &info as *const NapiCallbackInfo as *mut NapiCallbackInfo) };
+                        let js_ret = value_to_js(ret, _ctx);
+                        // Callback-scoped argument slots are valid only for the
+                        // duration of the call; free them now to avoid a per-call
+                        // leak. Persisting a value requires napi_create_reference,
+                        // which stores an independent copy.
+                        for a in &napi_args {
+                            unsafe { super::super::value::free_value(*a) };
                         }
+                        Ok(js_ret)
                     }
                     None => Err(JsNativeError::error().with_message("callback not found").into()),
                 }
@@ -87,9 +78,7 @@ pub unsafe fn napi_create_function(
         )
     };
     let js_func = closure.to_js_function(ctx.realm());
-    let obj = JsObject::from(js_func);
-    let boxed = Box::new(obj);
-    *result = Box::into_raw(boxed) as NapiValue;
+    *result = super::super::value::alloc_slot(super::super::value::NapiSlot::Object(JsObject::from(js_func)));
     NapiStatus::Ok
 }
 
@@ -188,8 +177,21 @@ pub unsafe fn napi_new_instance(
         let val = unsafe { *argv.add(i) };
         args.push(value_to_js(val, ctx));
     }
-    let new_obj = JsObject::with_object_proto(ctx.intrinsics());
-    let boxed = Box::new(new_obj);
-    *result = Box::into_raw(boxed) as NapiValue;
-    NapiStatus::Ok
+    // Actually invoke the constructor (previously the constructor and its
+    // arguments were ignored and an empty object was returned). Call it with a
+    // fresh receiver and return its result object, falling back to the receiver.
+    let ctor = match boa_engine::object::builtins::JsFunction::from_object(obj.clone()) {
+        Some(f) => f,
+        None => return NapiStatus::FunctionExpected,
+    };
+    let this_obj = JsObject::with_object_proto(ctx.intrinsics());
+    let this_val = JsValue::from(this_obj.clone());
+    match ctor.call(&this_val, &args, ctx) {
+        Ok(ret) => {
+            let instance = ret.as_object().unwrap_or(this_obj);
+            *result = super::super::value::alloc_slot(super::super::value::NapiSlot::Object(instance));
+            NapiStatus::Ok
+        }
+        Err(_) => NapiStatus::GenericFailure,
+    }
 }

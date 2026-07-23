@@ -4,20 +4,19 @@
 // with the TT23XR Studio Additional Permission:
 // "非本软件模块的源代码公开义务例外"
 
-use std::ffi::c_void;
-
-use boa_engine::{js_string, Context, JsObject, JsValue};
-
 use super::super::env::{NapiEnv, NapiValue};
 use super::super::status::NapiStatus;
+use super::super::value::{
+    alloc_slot, as_slot, get_napi_value_type, napi_bool, napi_null, napi_undefined, NapiSlot,
+    NAPI_FALSE, NAPI_TRUE,
+};
 
 pub unsafe fn napi_create_number(
     _env: *mut NapiEnv,
     value: f64,
     result: *mut NapiValue,
 ) -> NapiStatus {
-    let boxed = Box::new(value);
-    *result = Box::into_raw(boxed) as NapiValue;
+    *result = alloc_slot(NapiSlot::Number(value));
     NapiStatus::Ok
 }
 
@@ -58,7 +57,7 @@ pub unsafe fn napi_create_bool(
     value: bool,
     result: *mut NapiValue,
 ) -> NapiStatus {
-    *result = if value { 2usize as NapiValue } else { 3usize as NapiValue };
+    *result = napi_bool(value);
     NapiStatus::Ok
 }
 
@@ -66,7 +65,7 @@ pub unsafe fn napi_create_null(
     _env: *mut NapiEnv,
     result: *mut NapiValue,
 ) -> NapiStatus {
-    *result = 1usize as NapiValue;
+    *result = napi_null();
     NapiStatus::Ok
 }
 
@@ -74,7 +73,7 @@ pub unsafe fn napi_create_undefined(
     _env: *mut NapiEnv,
     result: *mut NapiValue,
 ) -> NapiStatus {
-    *result = std::ptr::null_mut::<c_void>();
+    *result = napi_undefined();
     NapiStatus::Ok
 }
 
@@ -83,12 +82,13 @@ pub unsafe fn napi_get_value_int32(
     value: NapiValue,
     result: *mut i32,
 ) -> NapiStatus {
-    if value.is_null() || (value as usize) < 4096 {
-        return NapiStatus::NumberExpected;
+    match unsafe { as_slot(value) } {
+        Some(NapiSlot::Number(n)) => {
+            *result = *n as i32;
+            NapiStatus::Ok
+        }
+        _ => NapiStatus::NumberExpected,
     }
-    let n: f64 = unsafe { *(value as *const f64) };
-    *result = n as i32;
-    NapiStatus::Ok
 }
 
 pub unsafe fn napi_get_value_int64(
@@ -96,12 +96,13 @@ pub unsafe fn napi_get_value_int64(
     value: NapiValue,
     result: *mut i64,
 ) -> NapiStatus {
-    if value.is_null() || (value as usize) < 4096 {
-        return NapiStatus::NumberExpected;
+    match unsafe { as_slot(value) } {
+        Some(NapiSlot::Number(n)) => {
+            *result = *n as i64;
+            NapiStatus::Ok
+        }
+        _ => NapiStatus::NumberExpected,
     }
-    let n: f64 = unsafe { *(value as *const f64) };
-    *result = n as i64;
-    NapiStatus::Ok
 }
 
 pub unsafe fn napi_get_value_double(
@@ -109,11 +110,13 @@ pub unsafe fn napi_get_value_double(
     value: NapiValue,
     result: *mut f64,
 ) -> NapiStatus {
-    if value.is_null() || (value as usize) < 4096 {
-        return NapiStatus::NumberExpected;
+    match unsafe { as_slot(value) } {
+        Some(NapiSlot::Number(n)) => {
+            *result = *n;
+            NapiStatus::Ok
+        }
+        _ => NapiStatus::NumberExpected,
     }
-    *result = unsafe { *(value as *const f64) };
-    NapiStatus::Ok
 }
 
 pub unsafe fn napi_get_value_bool(
@@ -122,10 +125,10 @@ pub unsafe fn napi_get_value_bool(
     result: *mut bool,
 ) -> NapiStatus {
     let addr = value as usize;
-    if addr == 2 {
+    if addr == NAPI_TRUE {
         *result = true;
         NapiStatus::Ok
-    } else if addr == 3 {
+    } else if addr == NAPI_FALSE {
         *result = false;
         NapiStatus::Ok
     } else {
@@ -138,18 +141,7 @@ pub unsafe fn napi_typeof(
     value: NapiValue,
     result: *mut i32,
 ) -> NapiStatus {
-    let addr = value as usize;
-    *result = if value.is_null() {
-        0 // undefined
-    } else if addr == 1 {
-        1 // null
-    } else if addr == 2 || addr == 3 {
-        4 // boolean
-    } else if addr < 4096 {
-        5 // number
-    } else {
-        6 // object (catch-all for string/function/external)
-    };
+    *result = get_napi_value_type(value);
     NapiStatus::Ok
 }
 

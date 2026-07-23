@@ -6,11 +6,11 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::super::env::{NapiEnv, NapiValue};
 use super::super::status::NapiStatus;
+use super::super::value::{clone_value, free_value, napi_undefined};
 
 thread_local! {
     static REF_COUNTS: RefCell<HashMap<usize, (NapiValue, u32)>> = RefCell::new(HashMap::new());
@@ -21,14 +21,19 @@ static NEXT_REF_ID: AtomicUsize = AtomicUsize::new(1);
 pub unsafe fn napi_create_reference(
     _env: *mut NapiEnv,
     value: NapiValue,
-    _initial_refcount: u32,
+    initial_refcount: u32,
     result: *mut NapiValue,
 ) -> NapiStatus {
     let id = NEXT_REF_ID.fetch_add(1, Ordering::Relaxed);
+    // Store an independent copy so the reference stays valid even after the
+    // (callback-scoped) source value is freed.
+    let owned = unsafe { clone_value(value) };
     REF_COUNTS.with(|reg| {
-        reg.borrow_mut().insert(id, (value, 1));
+        reg.borrow_mut().insert(id, (owned, initial_refcount));
     });
-    *result = id as NapiValue;
+    if !result.is_null() {
+        *result = id as NapiValue;
+    }
     NapiStatus::Ok
 }
 
@@ -37,7 +42,10 @@ pub unsafe fn napi_delete_reference(
     reference: NapiValue,
 ) -> NapiStatus {
     let id = reference as usize;
-    REF_COUNTS.with(|reg| { reg.borrow_mut().remove(&id); });
+    let removed = REF_COUNTS.with(|reg| reg.borrow_mut().remove(&id));
+    if let Some((owned, _)) = removed {
+        unsafe { free_value(owned) };
+    }
     NapiStatus::Ok
 }
 
@@ -48,12 +56,18 @@ pub unsafe fn napi_reference_ref(
 ) -> NapiStatus {
     let id = reference as usize;
     REF_COUNTS.with(|reg| {
-        if let Some((_, count)) = reg.borrow_mut().get_mut(&id) {
-            *count += 1;
-            *result = *count;
+        let mut map = reg.borrow_mut();
+        match map.get_mut(&id) {
+            Some((_, count)) => {
+                *count += 1;
+                if !result.is_null() {
+                    unsafe { *result = *count; }
+                }
+                NapiStatus::Ok
+            }
+            None => NapiStatus::InvalidArg,
         }
-    });
-    NapiStatus::Ok
+    })
 }
 
 pub unsafe fn napi_reference_unref(
@@ -63,14 +77,20 @@ pub unsafe fn napi_reference_unref(
 ) -> NapiStatus {
     let id = reference as usize;
     REF_COUNTS.with(|reg| {
-        if let Some((_, count)) = reg.borrow_mut().get_mut(&id) {
-            if *count > 0 {
-                *count -= 1;
+        let mut map = reg.borrow_mut();
+        match map.get_mut(&id) {
+            Some((_, count)) => {
+                if *count > 0 {
+                    *count -= 1;
+                }
+                if !result.is_null() {
+                    unsafe { *result = *count; }
+                }
+                NapiStatus::Ok
             }
-            *result = *count;
+            None => NapiStatus::InvalidArg,
         }
-    });
-    NapiStatus::Ok
+    })
 }
 
 pub unsafe fn napi_get_reference_value(
@@ -78,10 +98,20 @@ pub unsafe fn napi_get_reference_value(
     reference: NapiValue,
     result: *mut NapiValue,
 ) -> NapiStatus {
+    if result.is_null() {
+        return NapiStatus::InvalidArg;
+    }
     let id = reference as usize;
     REF_COUNTS.with(|reg| {
-        if let Some((val, _)) = reg.borrow().get(&id) {
-            *result = *val;
+        match reg.borrow().get(&id) {
+            Some((val, _)) => {
+                unsafe { *result = *val; }
+            }
+            None => {
+                // Reference not found (e.g. already deleted): report undefined
+                // rather than leaving the out-parameter uninitialized.
+                unsafe { *result = napi_undefined(); }
+            }
         }
     });
     NapiStatus::Ok

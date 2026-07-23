@@ -8,6 +8,7 @@ use std::ffi::CString;
 
 use super::super::env::{NapiEnv, NapiValue};
 use super::super::status::NapiStatus;
+use super::super::value::{alloc_slot, as_slot, napi_undefined, NapiSlot};
 
 pub unsafe fn napi_create_string_utf8(
     _env: *mut NapiEnv,
@@ -16,7 +17,7 @@ pub unsafe fn napi_create_string_utf8(
     result: *mut NapiValue,
 ) -> NapiStatus {
     if str.is_null() {
-        *result = std::ptr::null_mut();
+        *result = napi_undefined();
         return NapiStatus::InvalidArg;
     }
     let len = if length < 0 {
@@ -31,12 +32,14 @@ pub unsafe fn napi_create_string_utf8(
         length
     };
     let bytes = unsafe { std::slice::from_raw_parts(str, len as usize) };
-    if let Ok(s) = std::str::from_utf8(bytes) {
-        let cstr = CString::new(s).unwrap_or_default();
-        *result = cstr.into_raw() as NapiValue;
-        NapiStatus::Ok
-    } else {
-        NapiStatus::GenericFailure
+    match std::str::from_utf8(bytes) {
+        Ok(s) => {
+            let cstr = CString::new(s)
+                .unwrap_or_else(|_| CString::new(s.replace('\0', "")).unwrap_or_default());
+            *result = alloc_slot(NapiSlot::Str(cstr));
+            NapiStatus::Ok
+        }
+        Err(_) => NapiStatus::GenericFailure,
     }
 }
 
@@ -56,21 +59,30 @@ pub unsafe fn napi_get_value_string_utf8(
     bufsize: usize,
     result: *mut usize,
 ) -> NapiStatus {
-    if value.is_null() || (value as usize) < 4096 {
-        return NapiStatus::StringExpected;
-    }
-    let cstr = unsafe { std::ffi::CStr::from_ptr(value as *const std::ffi::c_char) };
-    let s = cstr.to_string_lossy();
-    let bytes = s.as_bytes();
-    let copy_len = bytes.len().min(bufsize - 1);
-    if !buf.is_null() && bufsize > 0 {
-        unsafe {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, copy_len);
-            *buf.add(copy_len) = 0;
+    let cstr = match unsafe { as_slot(value) } {
+        Some(NapiSlot::Str(c)) => c,
+        _ => return NapiStatus::StringExpected,
+    };
+    let bytes = cstr.as_bytes();
+
+    // When no buffer is provided (or size 0) the caller only wants the required
+    // length. Compute it without the `bufsize - 1` subtraction, which would
+    // underflow (panic in debug) when bufsize == 0.
+    if buf.is_null() || bufsize == 0 {
+        if !result.is_null() {
+            *result = bytes.len();
         }
+        return NapiStatus::Ok;
+    }
+
+    let copy_len = bytes.len().min(bufsize - 1);
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, copy_len);
+        *buf.add(copy_len) = 0;
     }
     if !result.is_null() {
-        *result = bytes.len();
+        // Number of bytes written excluding the trailing NUL.
+        *result = copy_len;
     }
     NapiStatus::Ok
 }

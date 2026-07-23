@@ -10,7 +10,7 @@ use boa_engine::{Context, JsValue};
 
 use super::super::env::{NapiEnv, NapiValue};
 use super::super::status::NapiStatus;
-use super::super::value::get_value_as;
+use super::super::value::{alloc_slot, get_value_as, NapiSlot};
 use super::object::value_to_js;
 
 pub unsafe fn napi_create_array(
@@ -23,8 +23,8 @@ pub unsafe fn napi_create_array(
     let obj = js_val.as_object().map(|o| o.clone()).unwrap_or_else(|| {
         boa_engine::JsObject::with_object_proto(ctx.intrinsics())
     });
-    let boxed = Box::new(obj);
-    *result = Box::into_raw(boxed) as NapiValue;
+    let boxed_obj = obj;
+    *result = alloc_slot(NapiSlot::Object(boxed_obj));
     NapiStatus::Ok
 }
 
@@ -40,8 +40,8 @@ pub unsafe fn napi_create_array_with_length(
     let obj = js_val.as_object().map(|o| o.clone()).unwrap_or_else(|| {
         boa_engine::JsObject::with_object_proto(ctx.intrinsics())
     });
-    let boxed = Box::new(obj);
-    *result = Box::into_raw(boxed) as NapiValue;
+    let boxed_obj = obj;
+    *result = alloc_slot(NapiSlot::Object(boxed_obj));
     NapiStatus::Ok
 }
 

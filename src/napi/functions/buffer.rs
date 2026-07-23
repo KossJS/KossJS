@@ -6,49 +6,45 @@
 
 use std::ffi::c_void;
 
-use boa_engine::{Context, JsObject, JsValue};
-
 use super::super::env::{NapiEnv, NapiValue};
 use super::super::status::NapiStatus;
+use super::super::value::{alloc_slot, as_slot, NapiSlot};
 
 pub unsafe fn napi_create_buffer(
-    env: *mut NapiEnv,
+    _env: *mut NapiEnv,
     length: usize,
     data: *mut *mut c_void,
     result: *mut NapiValue,
 ) -> NapiStatus {
-    let ctx = unsafe { &mut *(*env).ctx };
-    let mut buffer = vec![0u8; length];
-    let ptr = buffer.as_mut_ptr();
-    let mut boxed = Box::new(buffer);
+    let mut vec = vec![0u8; length];
+    let ptr = vec.as_mut_ptr();
     if !data.is_null() {
-        *data = boxed.as_mut_ptr() as *mut c_void;
+        *data = ptr as *mut c_void;
     }
-
-    let data_addr = boxed.as_ptr() as usize;
-    *result = data_addr as NapiValue;
-    std::mem::forget(boxed);
+    // The Vec is owned by the slot; moving the Vec does not move its heap
+    // allocation, so `ptr` (and the length) stay valid for the slot's lifetime.
+    *result = alloc_slot(NapiSlot::Buffer(vec));
     NapiStatus::Ok
 }
 
 pub unsafe fn napi_create_buffer_copy(
-    env: *mut NapiEnv,
+    _env: *mut NapiEnv,
     length: usize,
     data: *const c_void,
-    _result_data: *mut *mut c_void,
+    result_data: *mut *mut c_void,
     result: *mut NapiValue,
 ) -> NapiStatus {
-    let ctx = unsafe { &mut *(*env).ctx };
-    let mut buffer = vec![0u8; length];
+    let mut vec = vec![0u8; length];
     if !data.is_null() {
         unsafe {
-            std::ptr::copy_nonoverlapping(data as *const u8, buffer.as_mut_ptr(), length);
+            std::ptr::copy_nonoverlapping(data as *const u8, vec.as_mut_ptr(), length);
         }
     }
-    let ptr = buffer.as_ptr() as usize;
-    let boxed = Box::new(buffer);
-    std::mem::forget(boxed);
-    *result = ptr as NapiValue;
+    let ptr = vec.as_mut_ptr();
+    if !result_data.is_null() {
+        *result_data = ptr as *mut c_void;
+    }
+    *result = alloc_slot(NapiSlot::Buffer(vec));
     NapiStatus::Ok
 }
 
@@ -58,14 +54,16 @@ pub unsafe fn napi_get_buffer_info(
     data: *mut *mut c_void,
     length: *mut usize,
 ) -> NapiStatus {
-    if value.is_null() || (value as usize) < 4096 {
-        return NapiStatus::InvalidArg;
+    match unsafe { as_slot(value) } {
+        Some(NapiSlot::Buffer(v)) => {
+            if !data.is_null() {
+                *data = v.as_ptr() as *mut c_void;
+            }
+            if !length.is_null() {
+                *length = v.len();
+            }
+            NapiStatus::Ok
+        }
+        _ => NapiStatus::InvalidArg,
     }
-    if !data.is_null() {
-        *data = value;
-    }
-    if !length.is_null() {
-        *length = 0;
-    }
-    NapiStatus::Ok
 }
