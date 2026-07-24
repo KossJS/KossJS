@@ -10,7 +10,7 @@ use std::ffi::c_void;
 
 use super::super::env::{NapiCallback, NapiEnv, NapiPropertyDescriptor, NapiValue};
 use super::super::status::NapiStatus;
-use super::super::value::get_value_as;
+use super::super::value::{alloc_slot, get_value_as, NapiSlot};
 use super::function::napi_create_function;
 
 thread_local! {
@@ -49,8 +49,7 @@ pub unsafe fn napi_define_class(
     });
 
     let obj = boa_engine::JsObject::with_object_proto(_ctx.intrinsics());
-    let boxed = Box::new(obj);
-    *result = Box::into_raw(boxed) as NapiValue;
+    *result = alloc_slot(NapiSlot::Object(obj));
     NapiStatus::Ok
 }
 

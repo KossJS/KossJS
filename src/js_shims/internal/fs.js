@@ -55,6 +55,25 @@ function _b64decToString(b64) {
   return chars.join('');
 }
 
+// Standard base64 encode (with padding) of a byte array / Uint8Array.
+function _b64enc(bytes) {
+  var out = '';
+  var i = 0;
+  for (; i + 2 < bytes.length; i += 3) {
+    var n = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
+    out += _b64c[(n >> 18) & 63] + _b64c[(n >> 12) & 63] + _b64c[(n >> 6) & 63] + _b64c[n & 63];
+  }
+  var rem = bytes.length - i;
+  if (rem === 1) {
+    var m = bytes[i] << 16;
+    out += _b64c[(m >> 18) & 63] + _b64c[(m >> 12) & 63] + '==';
+  } else if (rem === 2) {
+    var k = (bytes[i] << 16) | (bytes[i + 1] << 8);
+    out += _b64c[(k >> 18) & 63] + _b64c[(k >> 12) & 63] + _b64c[(k >> 6) & 63] + '=';
+  }
+  return out;
+}
+
 function readFileSyncUtf8(path) {
   if (typeof __koss_fs_read === 'function') {
     var raw = __koss_fs_read(path);
@@ -81,19 +100,20 @@ function readFileSync(path) {
 
 function writeFileSync(path, data) {
   if (typeof __koss_fs_write === 'function') {
-    var dataStr;
-    if (typeof data === 'string') {
-      dataStr = data;
-    } else if (data instanceof Uint8Array) {
-      var chars = [];
-      for (var i = 0; i < data.length; i++) chars.push(String.fromCharCode(data[i]));
-      dataStr = chars.join('');
-    } else if (data && data.toString) {
-      dataStr = data.toString();
+    // Binary data (a Uint8Array, or a Node Buffer wrapping one) is transmitted
+    // as base64 so bytes >= 0x80 survive the JS<->native string boundary; a
+    // latin1/utf8 string round-trip would otherwise corrupt them.
+    var u8 = null;
+    if (data instanceof Uint8Array) u8 = data;
+    else if (data && data._data instanceof Uint8Array) u8 = data._data;
+    var raw;
+    if (u8) {
+      raw = __koss_fs_write(path, _b64enc(u8), true);
     } else {
-      dataStr = String(data);
+      var dataStr = (typeof data === 'string') ? data
+        : (data && data.toString ? data.toString() : String(data));
+      raw = __koss_fs_write(path, dataStr, false);
     }
-    var raw = __koss_fs_write(path, dataStr);
     var result = parseResult(raw);
     throwIfError(result, 'Failed to write file: ' + path);
     return result && result.value;

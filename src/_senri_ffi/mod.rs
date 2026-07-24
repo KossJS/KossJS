@@ -284,6 +284,27 @@ pub fn register_senri_ffi(context: &mut Context, instance_ptr: *mut c_void) {
     );
     builder.function(create_cb_fn, js_string!("createCallback"), 3);
 
+    // freeCallback(ptr) -> bool : release a callback previously produced by
+    // createCallback, reclaiming its libffi closure and CallbackData. Without
+    // this the callback allocation would live for the entire process.
+    let free_cb_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            let addr = args
+                .first()
+                .and_then(|v| {
+                    if let Some(obj) = v.as_object() {
+                        obj.downcast_ref::<crate::_senri_ffi::pointer::JsPointer>()
+                            .map(|p| p.address)
+                    } else {
+                        v.as_number().map(|n| n as usize)
+                    }
+                })
+                .unwrap_or(0);
+            Ok(JsValue::from(callback::free_callback(addr)))
+        },
+    );
+    builder.function(free_cb_fn, js_string!("freeCallback"), 1);
+
     register_memory_methods(&mut builder);
 
     let senri_obj = builder.build();

@@ -10,7 +10,7 @@ use boa_engine::{js_string, JsValue};
 
 use super::super::env::{NapiEnv, NapiPropertyDescriptor, NapiValue, NAPI_CONFIGURABLE, NAPI_ENUMERABLE, NAPI_WRITABLE};
 use super::super::status::NapiStatus;
-use super::super::value::get_value_as;
+use super::super::value::{alloc_slot, as_slot, get_value_as, NapiSlot};
 
 pub unsafe fn napi_create_object(
     _env: *mut NapiEnv,
@@ -18,8 +18,7 @@ pub unsafe fn napi_create_object(
 ) -> NapiStatus {
     let ctx = unsafe { &mut *(*_env).ctx };
     let obj = boa_engine::JsObject::with_object_proto(ctx.intrinsics());
-    let boxed = Box::new(obj);
-    *result = Box::into_raw(boxed) as NapiValue;
+    *result = alloc_slot(NapiSlot::Object(obj));
     NapiStatus::Ok
 }
 
@@ -153,53 +152,22 @@ pub unsafe fn napi_define_properties(
 }
 
 fn key_value_to_string(key: NapiValue) -> String {
-    if key.is_null() {
-        return String::new();
+    match unsafe { as_slot(key) } {
+        Some(NapiSlot::Str(cstr)) => cstr.to_string_lossy().to_string(),
+        Some(NapiSlot::Number(n)) => format!("{}", *n as i64),
+        _ => String::new(),
     }
-    let addr = key as usize;
-    if addr > 0x10000 {
-        if let Ok(cstr) = unsafe { std::ffi::CStr::from_ptr(key as *const std::ffi::c_char) }.to_str() {
-            return cstr.to_string();
-        }
-    }
-    if addr < 4096 && addr > 0 {
-        let n: f64 = unsafe { *(key as *const f64) };
-        return format!("{}", n as i64);
-    }
-    String::new()
 }
 
 fn napi_value_from_cstr(ptr: *const u8) -> NapiValue {
     let cstr = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::ffi::c_char) };
     let s = cstr.to_string_lossy().to_string();
     let cstring = std::ffi::CString::new(s).unwrap_or_default();
-    cstring.into_raw() as NapiValue
+    alloc_slot(NapiSlot::Str(cstring))
 }
 
-pub fn value_to_js(val: NapiValue, _ctx: &mut boa_engine::Context) -> JsValue {
-    if val.is_null() {
-        return JsValue::undefined();
-    }
-    let addr = val as usize;
-    if addr == 1 {
-        return JsValue::null();
-    }
-    if addr == 2 {
-        return JsValue::from(true);
-    }
-    if addr == 3 {
-        return JsValue::from(false);
-    }
-    if addr < 4096 {
-        let n: f64 = unsafe { *(val as *const f64) };
-        return JsValue::from(n);
-    }
-    if addr > 0x10000 {
-        if let Ok(cstr) = unsafe { std::ffi::CStr::from_ptr(val as *const std::ffi::c_char) }.to_str() {
-            return JsValue::from(js_string!(cstr));
-        }
-    }
-    JsValue::undefined()
+pub fn value_to_js(val: NapiValue, ctx: &mut boa_engine::Context) -> JsValue {
+    unsafe { super::super::value::value_to_js(val, ctx) }
 }
 
 pub fn js_value_to_napi_value(js: &JsValue, _ctx: &mut boa_engine::Context) -> NapiValue {
