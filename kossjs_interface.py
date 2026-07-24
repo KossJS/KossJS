@@ -10,9 +10,10 @@ with the TT23XR Studio Additional Permission:
 
 import ctypes
 import ctypes.util
-import os # pyright: ignore[reportUnusedImport]
+import os
 import sys
 import json
+import platform
 from pathlib import Path
 from typing import Any
 from collections.abc import Callable
@@ -131,7 +132,7 @@ class KossJS:
         """
         self._ptr: ctypes.c_void_p | None = None
         if lib_path is None:
-            lib_path = self._find_library()
+            lib_path = str(Path(__file__).parent / self._find_library())
         
         self._lib = ctypes.CDLL(lib_path)
         self._setup_prototypes()
@@ -165,13 +166,34 @@ class KossJS:
         # self.register_fetch()
     
     def _find_library(self) -> str:
-        base_dir = Path(__file__).parent
-        if sys.platform == "win32":
-            return str(base_dir / "kossjs.dll")
-        elif sys.platform == "darwin":
-            return str(base_dir / "kossjs.dylib")
-        else:
-            return str(base_dir / "kossjs.so")
+        system = sys.platform
+        machine = platform.machine().lower()
+        is_64bit = sys.maxsize > 2**32   # True 表示 64 位 Python
+
+        # 判断是否为 ARM64 / AArch64
+        is_arm = "arm" in machine or "aarch64" in machine
+
+        if system == "win32":
+            if is_arm:
+                return "kossjs_arm64.dll"
+            elif not is_64bit:
+                # 32 位 x86
+                return "kossjs_x86.dll"
+            else:
+                # 64 位 x86（默认）
+                return "kossjs.dll"
+
+        elif system == "darwin":  # macOS
+            if is_arm:
+                return "kossjs_arm64.dylib"
+            else:
+                return "kossjs.dylib"
+
+        else:  # Linux 及其他类 Unix 系统
+            if is_arm:
+                return "kossjs_arm64.so"
+            else:
+                return "kossjs.so"
     
     def _setup_prototypes(self):
         lib = self._lib
