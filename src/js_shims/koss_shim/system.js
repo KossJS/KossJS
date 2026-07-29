@@ -104,9 +104,70 @@ function nextTick(fn) {
   }
 }
 
+function homedir() {
+  if (process && typeof process.homedir === 'function') {
+    return process.homedir();
+  }
+  var envObj = (process && process.env) || {};
+  if (platform() === 'win32') {
+    return envObj.USERPROFILE || envObj.HOMEDRIVE + envObj.HOMEPATH || 'C:\\Users\\default';
+  }
+  return envObj.HOME || '/root';
+}
+
+function tmpdir() {
+  if (process && typeof process.tmpdir === 'function') {
+    return process.tmpdir();
+  }
+  var envObj = (process && process.env) || {};
+  if (platform() === 'win32') {
+    return envObj.TEMP || envObj.TMP || 'C:\\Temp';
+  }
+  return '/tmp';
+}
+
+function type() {
+  var p = platform();
+  if (p === 'win32') return 'Windows_NT';
+  if (p === 'darwin') return 'Darwin';
+  if (p === 'linux') return 'Linux';
+  return 'Unknown';
+}
+
+function release() {
+  if (process && typeof process.release === 'object' && process.release) {
+    return process.release.name || 'unknown';
+  }
+  return 'unknown';
+}
+
+function userInfo(options) {
+  var encoding = (options && options.encoding) || 'utf8';
+  var envObj = (process && process.env) || {};
+  var p = platform();
+  return {
+    uid: p === 'win32' ? -1 : 0,
+    gid: p === 'win32' ? -1 : 0,
+    username: envObj.USERNAME || envObj.USER || 'unknown',
+    homedir: homedir(),
+    shell: p === 'win32' ? null : '/bin/sh',
+  };
+}
+
+function EOL() {
+  return platform() === 'win32' ? '\r\n' : '\n';
+}
+
+function availableParallelism() {
+  var cpuList = cpus();
+  return cpuList.length || 1;
+}
+
 module.exports = {
   arch: arch, platform: platform, hostname: hostname, cpus: cpus,
   memory: memory, uptime: uptime, loadavg: loadavg,
   env: env, pid: pid, exit: exit, cwd: cwd, chdir: chdir,
   version: version, versions: versions, nextTick: nextTick,
+  homedir: homedir, tmpdir: tmpdir, type: type, release: release,
+  userInfo: userInfo, EOL: EOL(), availableParallelism: availableParallelism,
 };

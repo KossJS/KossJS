@@ -16,12 +16,32 @@ var __koss_tcp_close = globalThis.__koss_tcp_close;
 var __koss_tcp_accept = globalThis.__koss_tcp_accept;
 var __koss_dns_lookup = globalThis.__koss_dns_lookup;
 
+function _toBinaryString(data) {
+  if (typeof data === 'string') return data;
+  if (data instanceof Uint8Array) {
+    var s = '';
+    for (var i = 0; i < data.length; i++) s += String.fromCharCode(data[i]);
+    return s;
+  }
+  if (data && data._data instanceof Uint8Array) {
+    var s2 = '';
+    for (var j = 0; j < data._data.length; j++) s2 += String.fromCharCode(data._data[j]);
+    return s2;
+  }
+  if (Array.isArray(data)) {
+    var s3 = '';
+    for (var k = 0; k < data.length; k++) s3 += String.fromCharCode(data[k] & 0xff);
+    return s3;
+  }
+  return String(data);
+}
+
 function createSocket(fd) {
   return {
     _fd: fd,
     write: function(data) {
       if (typeof __koss_tcp_write === 'function') {
-        return __koss_tcp_write(fd, String(data));
+        return __koss_tcp_write(fd, _toBinaryString(data));
       }
       throw new Error('TCP write not available');
     },
@@ -104,7 +124,18 @@ function httpFetch(url, options) {
   var headers = opts.headers || {};
   var body = opts.body;
 
-  var requestJson = JSON.stringify({ method: method, headers: headers, body: body || undefined });
+  var bodyStr = undefined;
+  if (body !== undefined && body !== null) {
+    if (typeof body === 'string') {
+      bodyStr = body;
+    } else if (body instanceof Uint8Array) {
+      bodyStr = _toBinaryString(body);
+    } else {
+      bodyStr = String(body);
+    }
+  }
+
+  var requestJson = JSON.stringify({ method: method, headers: headers, body: bodyStr });
   var result = __koss_fetch(url, requestJson);
   if (result && typeof result === 'string') {
     try {

@@ -10,7 +10,9 @@
 var internalFs = require('koss:internal/fs');
 var internalNet = require('koss:internal/net');
 var streamModule = require('koss:internal/stream');
+var dataModule = require('koss:data');
 
+var decode = dataModule.decode;
 var Buffer = globalThis.Buffer;
 
 // ═══════════════════════════════════════════
@@ -20,6 +22,11 @@ var Buffer = globalThis.Buffer;
 function read(path) {
   var data = internalFs.readFileSync(path);
   if (data instanceof Uint8Array) return data;
+  if (typeof data === 'string') {
+    var bytes = new Uint8Array(data.length);
+    for (var i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i) & 0xff;
+    return bytes;
+  }
   return new Uint8Array(0);
 }
 
@@ -32,9 +39,7 @@ function write(path, data) {
     return internalFs.writeFileSync(path, data);
   }
   if (data instanceof Uint8Array) {
-    var chars = [];
-    for (var i = 0; i < data.length; i++) chars.push(String.fromCharCode(data[i]));
-    return internalFs.writeFileSync(path, chars.join(''));
+    return internalFs.writeFileSync(path, data);
   }
   return internalFs.writeFileSync(path, String(data));
 }
@@ -95,6 +100,60 @@ function mv(src, dst) {
 
 function exists(path) {
   return internalFs.existsSync(path);
+}
+
+function append(path, data) {
+  var existing = read(path);
+  var newData;
+  if (typeof data === 'string') {
+    var existingStr = existing.length > 0 ? decode(existing) : '';
+    writeText(path, existingStr + data);
+    return;
+  }
+  if (data instanceof Uint8Array) {
+    newData = data;
+  } else {
+    newData = new Uint8Array(0);
+  }
+  var combined = new Uint8Array(existing.length + newData.length);
+  combined.set(existing, 0);
+  combined.set(newData, existing.length);
+  write(path, combined);
+}
+
+function chmod(path, mode) {
+  return internalFs.chmodSync(String(path), Number(mode) || 0);
+}
+
+function truncate(path, len) {
+  if (len === 0) {
+    writeText(path, '');
+  } else if (len && len > 0) {
+    var data = read(path);
+    write(path, data.slice(0, len));
+  }
+}
+
+function mkdtemp(prefix) {
+  var dir = internalFs.realpathSync('.') + '/' + (prefix || 'tmp-') + Date.now();
+  internalFs.mkdirSync(dir);
+  return dir;
+}
+
+function lstat(path) {
+  return internalFs.statSync(String(path));
+}
+
+function realpath(path) {
+  return internalFs.realpathSync(String(path));
+}
+
+function symlink(target, path) {
+  throw new Error('symlink not implemented');
+}
+
+function readlink(path) {
+  throw new Error('readlink not implemented');
 }
 
 // ═══════════════════════════════════════════
@@ -171,7 +230,10 @@ var pipeline = streamModule.pipeline;
 
 module.exports = {
   read: read, readText: readText, write: write, writeText: writeText,
-  stat: stat, list: list, mkdir: mkdir, rm: rm, cp: cp, mv: mv, exists: exists, watch: watch,
+  stat: stat, lstat: lstat, realpath: realpath, symlink: symlink, readlink: readlink,
+  list: list, mkdir: mkdir, rm: rm, cp: cp, mv: mv,
+  exists: exists, append: append, chmod: chmod, truncate: truncate, mkdtemp: mkdtemp,
+  watch: watch,
   connect: connect, serve: serve, fetch: fetch, dns: dns,
   ReadStream: ReadStream, WriteStream: WriteStream,
   createReadStream: createReadStream, createWriteStream: createWriteStream, pipeline: pipeline,

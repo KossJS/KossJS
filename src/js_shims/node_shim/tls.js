@@ -5,11 +5,11 @@
 // "非本软件模块的源代码公开义务例外"
 
 // koss:node/tls - Node.js tls module (L3)
+// Maps to koss:net standard library with TLS extensions
 
-const _net = require('koss:node/net');
-const Socket = _net.Socket;
+var net = require('koss:net');
 
-class TLSSocket extends Socket {
+class TLSSocket extends net.Socket {
   constructor(options) {
     super(options);
     this._authorized = options?.rejectUnauthorized !== false;

@@ -20,7 +20,7 @@ use std::net::{TcpListener, TcpStream, ToSocketAddrs, IpAddr};
 use std::time::{Duration, Instant};
 
 use boa_engine::object::builtins::{JsFunction, JsPromise};
-use boa_engine::{Context, JsError, JsNativeError, JsValue, Module, Source, NativeFunction};
+use boa_engine::{Context, JsError, JsNativeError, JsObject, JsValue, Module, Source, NativeFunction};
 use boa_engine::js_string;
 use boa_runtime::Console;
 use tokio::runtime::Runtime;
@@ -1577,6 +1577,187 @@ fn register_crypto_functions(instance: &mut KossInstance) {
         random_uuid_fn.to_js_function(ctx.realm()),
         boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
     ).ok();
+
+    // ===== Bytes-based crypto functions =====
+
+    let hash_bytes_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            if args.len() < 2 {
+                return Err(JsNativeError::error().with_message("hashBytes: algorithm and data required").into());
+            }
+            let algo = args[0].to_string(ctx).map_err(|_| JsNativeError::error().with_message("hashBytes: algorithm must be string"))?;
+            let data_val = args.get(1).ok_or_else(|| JsNativeError::error().with_message("hashBytes: data required"))?;
+            let data_bytes = js_value_to_bytes(data_val, ctx)?;
+            let algo_str = algo.to_std_string_escaped();
+            match crate::bindings::crypto::hash_bytes(&algo_str, &data_bytes) {
+                Ok(hash) => Ok(bytes_to_js_value(&hash)),
+                Err(e) => Err(JsNativeError::error().with_message(format!("hashBytes failed: {e}")).into()),
+            }
+        },
+    );
+    ctx.register_global_property(
+        js_string!("__koss_hash_bytes"),
+        hash_bytes_fn.to_js_function(ctx.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    let hmac_bytes_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            if args.len() < 3 {
+                return Err(JsNativeError::error().with_message("hmacBytes: algorithm, key, and data required").into());
+            }
+            let algo = args[0].to_string(ctx).map_err(|_| JsNativeError::error().with_message("hmacBytes: algorithm must be string"))?;
+            let key_bytes = js_value_to_bytes(args.get(1).unwrap(), ctx)?;
+            let data_bytes = js_value_to_bytes(args.get(2).unwrap(), ctx)?;
+            let algo_str = algo.to_std_string_escaped();
+            match crate::bindings::crypto::hmac_bytes(&algo_str, &key_bytes, &data_bytes) {
+                Ok(mac) => Ok(bytes_to_js_value(&mac)),
+                Err(e) => Err(JsNativeError::error().with_message(format!("hmacBytes failed: {e}")).into()),
+            }
+        },
+    );
+    ctx.register_global_property(
+        js_string!("__koss_hmac_bytes"),
+        hmac_bytes_fn.to_js_function(ctx.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    let pbkdf2_bytes_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            if args.len() < 4 {
+                return Err(JsNativeError::error().with_message("pbkdf2Bytes: password, salt, iterations, keyLen required").into());
+            }
+            let password = js_value_to_bytes(args.get(0).unwrap(), ctx)?;
+            let salt = js_value_to_bytes(args.get(1).unwrap(), ctx)?;
+            let iterations = args.get(2).and_then(|v| v.as_number()).unwrap_or(100_000.0) as u32;
+            let key_len = args.get(3).and_then(|v| v.as_number()).unwrap_or(32.0) as u32;
+            match crate::bindings::crypto::pbkdf2_bytes(&password, &salt, iterations, key_len) {
+                Ok(key) => Ok(bytes_to_js_value(&key)),
+                Err(e) => Err(JsNativeError::error().with_message(format!("pbkdf2Bytes failed: {e}")).into()),
+            }
+        },
+    );
+    ctx.register_global_property(
+        js_string!("__koss_pbkdf2_bytes"),
+        pbkdf2_bytes_fn.to_js_function(ctx.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    let aes_gcm_encrypt_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            if args.len() < 4 {
+                return Err(JsNativeError::error().with_message("aesGcmEncrypt: key, nonce, aad, plaintext required").into());
+            }
+            let key = js_value_to_bytes(args.get(0).unwrap(), ctx)?;
+            let nonce = js_value_to_bytes(args.get(1).unwrap(), ctx)?;
+            let aad = js_value_to_bytes(args.get(2).unwrap(), ctx)?;
+            let plaintext = js_value_to_bytes(args.get(3).unwrap(), ctx)?;
+            match crate::bindings::crypto::aes_gcm_encrypt(&key, &nonce, &aad, &plaintext) {
+                Ok(ct) => Ok(bytes_to_js_value(&ct)),
+                Err(e) => Err(JsNativeError::error().with_message(format!("aesGcmEncrypt failed: {e}")).into()),
+            }
+        },
+    );
+    ctx.register_global_property(
+        js_string!("__koss_aes_gcm_encrypt"),
+        aes_gcm_encrypt_fn.to_js_function(ctx.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    let aes_gcm_decrypt_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            if args.len() < 4 {
+                return Err(JsNativeError::error().with_message("aesGcmDecrypt: key, nonce, aad, ciphertext required").into());
+            }
+            let key = js_value_to_bytes(args.get(0).unwrap(), ctx)?;
+            let nonce = js_value_to_bytes(args.get(1).unwrap(), ctx)?;
+            let aad = js_value_to_bytes(args.get(2).unwrap(), ctx)?;
+            let ciphertext = js_value_to_bytes(args.get(3).unwrap(), ctx)?;
+            match crate::bindings::crypto::aes_gcm_decrypt(&key, &nonce, &aad, &ciphertext) {
+                Ok(pt) => Ok(bytes_to_js_value(&pt)),
+                Err(e) => Err(JsNativeError::error().with_message(format!("aesGcmDecrypt failed: {e}")).into()),
+            }
+        },
+    );
+    ctx.register_global_property(
+        js_string!("__koss_aes_gcm_decrypt"),
+        aes_gcm_decrypt_fn.to_js_function(ctx.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    let ed25519_keypair_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, _args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            match crate::bindings::crypto::ed25519_keypair() {
+                Ok((pubkey, privkey)) => {
+                    let obj = JsObject::with_null_proto();
+                    let _ = obj.set(js_string!("publicKey"), bytes_to_js_value(&pubkey), false, _ctx);
+                    let _ = obj.set(js_string!("privateKey"), bytes_to_js_value(&privkey), false, _ctx);
+                    Ok(JsValue::from(obj))
+                }
+                Err(e) => Err(JsNativeError::error().with_message(format!("ed25519KeyPair failed: {e}")).into()),
+            }
+        },
+    );
+    ctx.register_global_property(
+        js_string!("__koss_ed25519_keypair"),
+        ed25519_keypair_fn.to_js_function(ctx.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    let ed25519_sign_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            if args.len() < 2 {
+                return Err(JsNativeError::error().with_message("ed25519Sign: privateKey and message required").into());
+            }
+            let privkey = js_value_to_bytes(args.get(0).unwrap(), ctx)?;
+            let message = js_value_to_bytes(args.get(1).unwrap(), ctx)?;
+            match crate::bindings::crypto::ed25519_sign(&privkey, &message) {
+                Ok(sig) => Ok(bytes_to_js_value(&sig)),
+                Err(e) => Err(JsNativeError::error().with_message(format!("ed25519Sign failed: {e}")).into()),
+            }
+        },
+    );
+    ctx.register_global_property(
+        js_string!("__koss_ed25519_sign"),
+        ed25519_sign_fn.to_js_function(ctx.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    let ed25519_verify_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            if args.len() < 3 {
+                return Err(JsNativeError::error().with_message("ed25519Verify: publicKey, message, and signature required").into());
+            }
+            let pubkey = js_value_to_bytes(args.get(0).unwrap(), ctx)?;
+            let message = js_value_to_bytes(args.get(1).unwrap(), ctx)?;
+            let signature = js_value_to_bytes(args.get(2).unwrap(), ctx)?;
+            match crate::bindings::crypto::ed25519_verify(&pubkey, &message, &signature) {
+                Ok(valid) => Ok(JsValue::from(valid)),
+                Err(e) => Err(JsNativeError::error().with_message(format!("ed25519Verify failed: {e}")).into()),
+            }
+        },
+    );
+    ctx.register_global_property(
+        js_string!("__koss_ed25519_verify"),
+        ed25519_verify_fn.to_js_function(ctx.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    let timing_safe_equal_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            if args.len() < 2 {
+                return Err(JsNativeError::error().with_message("timingSafeEqual: two arguments required").into());
+            }
+            let a = js_value_to_bytes(args.get(0).unwrap(), ctx)?;
+            let b = js_value_to_bytes(args.get(1).unwrap(), ctx)?;
+            Ok(JsValue::from(crate::bindings::crypto::timing_safe_equal(&a, &b)))
+        },
+    );
+    ctx.register_global_property(
+        js_string!("__koss_timing_safe_equal"),
+        timing_safe_equal_fn.to_js_function(ctx.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
 }
 
 fn bytes_to_json_arr(data: &[u8]) -> String {
@@ -1587,6 +1768,36 @@ fn bytes_to_json_arr(data: &[u8]) -> String {
 fn json_arr_to_bytes(json: &str) -> Result<Vec<u8>, String> {
     let v: Vec<u8> = serde_json::from_str(json).map_err(|e| format!("parse error: {e}"))?;
     Ok(v)
+}
+
+fn js_value_to_bytes(val: &JsValue, ctx: &mut Context) -> Result<Vec<u8>, JsError> {
+    if let Some(s) = val.as_string() {
+        let s = s.to_std_string_escaped();
+        if s.starts_with('[') {
+            return json_arr_to_bytes(&s)
+                .map_err(|e| JsNativeError::error().with_message(format!("byte parse error: {e}")).into());
+        }
+        return Ok(s.into_bytes());
+    }
+    if let Some(n) = val.as_number() {
+        return Ok(vec![n as u8]);
+    }
+    if let Some(obj) = val.as_object() {
+        let len_val = obj.get(js_string!("length"), ctx)?;
+        let len = len_val.to_number(ctx)? as usize;
+        let mut bytes = Vec::with_capacity(len);
+        for i in 0..len {
+            let v = obj.get(i, ctx)?;
+            bytes.push(v.to_number(ctx)? as u8);
+        }
+        return Ok(bytes);
+    }
+    Err(JsNativeError::error().with_message("expected Uint8Array, Buffer, or byte array").into())
+}
+
+fn bytes_to_js_value(data: &[u8]) -> JsValue {
+    let json = serde_json::json!(data).to_string();
+    JsValue::from(js_string!(json))
 }
 
 fn register_zlib_functions(ctx: &mut Context) {

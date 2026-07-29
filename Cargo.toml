@@ -16,23 +16,26 @@ boa_parser = "0.21.1"
 boa_runtime = "0.21.1"
 boa_gc = "0.21.1"
 rustc-hash = "2.1.3"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1.0.150"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 once_cell = "1"
-base64 = "0.22"
+base64 = "0.23.0"
 num_cpus = "1"
 url = "2"
 reqwest = { version = "0.13", features = ["json", "rustls"], default-features = false }
-rustls = "0.23.41"
+rustls = "0.23.42"
 rustls-native-certs = "0.8"
-webpki-roots = "1"
-tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "fs", "net", "time"] }
+webpki-roots = "1.0.9"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "fs", "net", "time"] }
 rand = "0.10.2"
 sha1 = "0.11"
 sha2 = "0.11"
 md-5 = "0.11"
 hmac = "0.13"
 pbkdf2 = "0.13"
+aes-gcm = "0.11.0"
+ed25519-dalek = "3.0.0"
+constant_time_eq = "0.5.0"
 flate2 = "1.1"
 
 # 动态加载动态库（跨平台，iOS 不支持动态调用动态库所以跳过，Android 和 HarmonyOS 有限制也跳过）
@@ -46,7 +49,7 @@ libffi-sys = "4.2.0"
 winapi = { version = "0.3", features = ["winuser", "processthreadsapi"] }
 
 [target.'cfg(all(unix, not(any(target_os = "android", target_os = "ios", target_os = "ohos"))))'.dependencies]
-libc = "0.2.186"
+libc = "0.2.189"
 
 [target.'cfg(target_os = "android")'.dependencies]
 # Android 无额外依赖，预留扩展
@@ -63,5 +66,6 @@ codegen-units = 1
 strip = "symbols"
 opt-level = "z"
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("ohos"))'] }
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = ['cfg(target_os, values("ohos"))']

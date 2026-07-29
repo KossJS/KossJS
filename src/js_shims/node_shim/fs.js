@@ -5,12 +5,11 @@
 // "非本软件模块的源代码公开义务例外"
 
 // koss:node/fs - Node.js fs module (L3)
-// Wraps koss:internal/fs with Node.js-compatible API
+// Maps to koss:io standard library
 
-const internalFs = require('koss:internal/fs');
+var io = require('koss:io');
 
-const { Buffer } = globalThis;
-const kMaxLength = 4294967296;
+var { Buffer } = globalThis;
 
 function getOptions(options, defaultEncoding) {
   if (options === null || options === undefined) return { encoding: defaultEncoding };
@@ -19,88 +18,86 @@ function getOptions(options, defaultEncoding) {
   return { encoding: defaultEncoding };
 }
 
-function handleError(err) { if (err) throw err; }
-
 // === Synchronous API ===
 
 function readFileSync(path, options) {
-  const opts = getOptions(options, null);
-  const data = internalFs.readFileSync(String(path));
-  if (opts.encoding && Buffer.isBuffer(data)) {
-    return data.toString(opts.encoding);
+  var opts = getOptions(options, null);
+  if (opts.encoding) {
+    return io.readText(String(path));
   }
-  return data;
+  return io.read(String(path));
 }
 
 function writeFileSync(path, data, options) {
-  const opts = getOptions(options, 'utf8');
-  internalFs.writeFileSync(String(path), data);
+  var opts = getOptions(options, 'utf8');
+  if (typeof data === 'string') {
+    io.writeText(String(path), data);
+  } else {
+    io.write(String(path), data);
+  }
 }
 
 function appendFileSync(path, data, options) {
-  writeFileSync(path, data, options);
+  io.append(String(path), data);
 }
 
 function existsSync(path) {
-  try { return internalFs.existsSync(String(path)); }
-  catch { return false; }
+  return io.exists(String(path));
 }
 
 function statSync(path, options) {
-  return internalFs.statSync(String(path));
+  return io.stat(String(path));
 }
 
 function lstatSync(path, options) {
-  return internalFs.statSync(String(path));
+  return io.lstat(String(path));
 }
 
 function mkdirSync(path, options) {
-  const opts = typeof options === 'object' ? options : { recursive: Boolean(options) };
-  internalFs.mkdirSync(String(path), opts);
+  var opts = typeof options === 'object' ? options : { recursive: Boolean(options) };
+  io.mkdir(String(path), opts);
 }
 
 function rmdirSync(path, options) {
-  internalFs.rmdirSync(String(path));
+  io.rm(String(path));
 }
 
 function unlinkSync(path) {
-  internalFs.unlinkSync(String(path));
+  io.rm(String(path));
 }
 
 function readdirSync(path, options) {
-  const opts = getOptions(options, null);
-  const entries = internalFs.readdirSync(String(path));
-  return opts.withFileTypes ? entries : entries.map(e => typeof e === 'string' ? e : e[0]);
+  var opts = getOptions(options, null);
+  var entries = io.list(String(path));
+  return opts.withFileTypes ? entries : entries.map(function(e) { return typeof e === 'string' ? e : e[0]; });
 }
 
 function renameSync(oldPath, newPath) {
-  internalFs.renameSync(String(oldPath), String(newPath));
+  io.mv(String(oldPath), String(newPath));
 }
 
 function realpathSync(path, options) {
-  return internalFs.realpathSync(String(path));
+  return io.realpath(String(path));
 }
 
 function copyFileSync(src, dest, flags) {
-  internalFs.copyFileSync(String(src), String(dest));
+  io.cp(String(src), String(dest));
 }
 
 function chmodSync(path, mode) {
-  internalFs.chmodSync(String(path), Number(mode) || 0);
+  io.chmod(String(path), Number(mode) || 0);
 }
 
 function accessSync(path, mode) {
-  if (!existsSync(path)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT', errno: -2, syscall: 'access', path: String(path) });
+  if (!io.exists(path)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT', errno: -2, syscall: 'access', path: String(path) });
 }
 
 function mkdtempSync(prefix, options) {
-  const dir = internalFs.realpathSync('.') + '/' + prefix + Date.now();
-  internalFs.mkdirSync(dir);
-  return dir;
+  return io.mkdtemp(prefix || 'tmp-');
 }
 
 function truncateSync(path, len) {
-  if (len === 0) writeFileSync(path, '');
+  io.truncate(String(path), len || 0);
 }
 
 function fstatSync(fd) {
@@ -111,14 +108,18 @@ function fstatSync(fd) {
 
 function readFile(path, options, callback) {
   if (typeof options === 'function') { callback = options; options = undefined; }
-  try { var data = readFileSync(path, options); callback(null, data); }
-  catch (err) { callback(err); }
+  try {
+    var data = readFileSync(path, options);
+    callback(null, data);
+  } catch (err) { callback(err); }
 }
 
 function writeFile(path, data, options, callback) {
   if (typeof options === 'function') { callback = options; options = undefined; }
-  try { writeFileSync(path, data, options); callback(null); }
-  catch (err) { callback(err); }
+  try {
+    writeFileSync(path, data, options);
+    callback(null);
+  } catch (err) { callback(err); }
 }
 
 function appendFile(path, data, options, callback) {
@@ -196,25 +197,25 @@ function chmod(path, mode, callback) {
 
 // === Promises API ===
 
-const promises = {
-  readFile: (path, options) => new Promise((resolve, reject) => readFile(path, options, (err, data) => err ? reject(err) : resolve(data))),
-  writeFile: (path, data, options) => new Promise((resolve, reject) => writeFile(path, data, options, (err) => err ? reject(err) : resolve())),
-  appendFile: (path, data, options) => new Promise((resolve, reject) => appendFile(path, data, options, (err) => err ? reject(err) : resolve())),
-  stat: (path, options) => new Promise((resolve, reject) => stat(path, options, (err, s) => err ? reject(err) : resolve(s))),
-  lstat: (path, options) => new Promise((resolve, reject) => lstat(path, options, (err, s) => err ? reject(err) : resolve(s))),
-  mkdir: (path, options) => new Promise((resolve, reject) => mkdir(path, options, (err) => err ? reject(err) : resolve())),
-  rmdir: (path, options) => new Promise((resolve, reject) => rmdir(path, options, (err) => err ? reject(err) : resolve())),
-  unlink: (path) => new Promise((resolve, reject) => unlink(path, (err) => err ? reject(err) : resolve())),
-  readdir: (path, options) => new Promise((resolve, reject) => readdir(path, options, (err, files) => err ? reject(err) : resolve(files))),
-  rename: (oldPath, newPath) => new Promise((resolve, reject) => rename(oldPath, newPath, (err) => err ? reject(err) : resolve())),
-  realpath: (path, options) => new Promise((resolve, reject) => realpath(path, options, (err, p) => err ? reject(err) : resolve(p))),
-  copyFile: (src, dest, flags) => new Promise((resolve, reject) => copyFile(src, dest, flags, (err) => err ? reject(err) : resolve())),
-  access: (path, mode) => new Promise((resolve, reject) => access(path, mode, (err) => err ? reject(err) : resolve())),
-  chmod: (path, mode) => new Promise((resolve, reject) => chmod(path, mode, (err) => err ? reject(err) : resolve())),
-  mkdtemp: (prefix, options) => new Promise((resolve, reject) => { try { resolve(mkdtempSync(prefix, options)); } catch (err) { reject(err); } }),
+var promises = {
+  readFile: function(path, options) { return new Promise(function(resolve, reject) { readFile(path, options, function(err, data) { err ? reject(err) : resolve(data); }); }); },
+  writeFile: function(path, data, options) { return new Promise(function(resolve, reject) { writeFile(path, data, options, function(err) { err ? reject(err) : resolve(); }); }); },
+  appendFile: function(path, data, options) { return new Promise(function(resolve, reject) { appendFile(path, data, options, function(err) { err ? reject(err) : resolve(); }); }); },
+  stat: function(path, options) { return new Promise(function(resolve, reject) { stat(path, options, function(err, s) { err ? reject(err) : resolve(s); }); }); },
+  lstat: function(path, options) { return new Promise(function(resolve, reject) { lstat(path, options, function(err, s) { err ? reject(err) : resolve(s); }); }); },
+  mkdir: function(path, options) { return new Promise(function(resolve, reject) { mkdir(path, options, function(err) { err ? reject(err) : resolve(); }); }); },
+  rmdir: function(path, options) { return new Promise(function(resolve, reject) { rmdir(path, options, function(err) { err ? reject(err) : resolve(); }); }); },
+  unlink: function(path) { return new Promise(function(resolve, reject) { unlink(path, function(err) { err ? reject(err) : resolve(); }); }); },
+  readdir: function(path, options) { return new Promise(function(resolve, reject) { readdir(path, options, function(err, files) { err ? reject(err) : resolve(files); }); }); },
+  rename: function(oldPath, newPath) { return new Promise(function(resolve, reject) { rename(oldPath, newPath, function(err) { err ? reject(err) : resolve(); }); }); },
+  realpath: function(path, options) { return new Promise(function(resolve, reject) { realpath(path, options, function(err, p) { err ? reject(err) : resolve(p); }); }); },
+  copyFile: function(src, dest, flags) { return new Promise(function(resolve, reject) { copyFile(src, dest, flags, function(err) { err ? reject(err) : resolve(); }); }); },
+  access: function(path, mode) { return new Promise(function(resolve, reject) { access(path, mode, function(err) { err ? reject(err) : resolve(); }); }); },
+  chmod: function(path, mode) { return new Promise(function(resolve, reject) { chmod(path, mode, function(err) { err ? reject(err) : resolve(); }); }); },
+  mkdtemp: function(prefix, options) { return new Promise(function(resolve, reject) { try { resolve(mkdtempSync(prefix, options)); } catch (err) { reject(err); } }); },
 };
 
-const constants = {
+var constants = {
   F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
   O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2, O_CREAT: 64, O_EXCL: 128, O_TRUNC: 512, O_APPEND: 1024,
   S_IFMT: 61440, S_IFREG: 32768, S_IFDIR: 16384, S_IRWXU: 448, S_IRUSR: 256, S_IWUSR: 128, S_IXUSR: 64,

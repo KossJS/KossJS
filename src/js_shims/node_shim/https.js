@@ -5,17 +5,23 @@
 // "非本软件模块的源代码公开义务例外"
 
 // koss:node/https - Node.js https module (L3)
+// Maps to koss:http standard library (HTTPS is HTTP over TLS)
 
-const _http = require('koss:node/http');
-const HttpServer = _http.Server;
-const IncomingMessage = _http.IncomingMessage;
-const ServerResponse = _http.ServerResponse;
-const _events = require('koss:node/events');
-const EventEmitter = _events.EventEmitter;
-const _net = require('koss:node/net');
-const Socket = _net.Socket;
+var http = require('koss:http');
+var net = require('koss:net');
 
-class Server extends HttpServer {
+class TLSSocket extends net.Socket {
+  constructor(options) {
+    super(options);
+    this._authorized = options?.rejectUnauthorized !== false;
+  }
+  get encrypted() { return true; }
+  get authorized() { return this._authorized; }
+  get authorizationError() { return this._authorized ? null : new Error('TLS authorization failed'); }
+  get alpnProtocol() { return 'http/1.1'; }
+}
+
+class Server extends http.Server {
   constructor(options, requestListener) {
     super(options, requestListener);
   }
@@ -26,18 +32,11 @@ function createServer(options, requestListener) {
 }
 
 function request(url, options, callback) {
-  throw new Error('https.request (client) not implemented');
+  return http.request(url, options, callback);
 }
 
 function get(url, options, callback) {
-  throw new Error('https.get (client) not implemented');
-}
-
-class TLSSocket extends Socket {
-  constructor(options) { super(options); }
-  get encrypted() { return true; }
-  get authorized() { return true; }
-  get authorizationError() { return null; }
+  return http.get(url, options, callback);
 }
 
 const globalAgent = { maxSockets: Infinity };

@@ -43,8 +43,16 @@ const performance = {
     else { for (const k in measures) delete measures[k]; }
   },
   getEntries() {
-    return [...Object.values(marks).map((v, i) => new PerformanceEntry(Object.keys(marks)[i] || `mark_${i}`, 'mark', v, 0)),
-            ...Object.values(measures)];
+    const entries = [];
+    const markKeys = Object.keys(marks);
+    for (let i = 0; i < markKeys.length; i++) {
+      entries.push(new PerformanceEntry(markKeys[i], 'mark', marks[markKeys[i]], 0));
+    }
+    const measureKeys = Object.keys(measures);
+    for (let i = 0; i < measureKeys.length; i++) {
+      entries.push(measures[measureKeys[i]]);
+    }
+    return entries;
   },
   getEntriesByType(type) {
     return this.getEntries().filter(e => e.entryType === type);

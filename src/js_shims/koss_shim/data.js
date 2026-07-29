@@ -9,18 +9,50 @@
 
 function encode(text) {
   var str = String(text);
-  var bytes = new Uint8Array(str.length);
-  for (var i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i) & 0xff;
-  return bytes;
+  var bytes = [];
+  for (var i = 0; i < str.length; i++) {
+    var cc = str.charCodeAt(i);
+    if (cc < 0x80) {
+      bytes.push(cc);
+    } else if (cc < 0x800) {
+      bytes.push(0xc0 | (cc >> 6));
+      bytes.push(0x80 | (cc & 0x3f));
+    } else if (cc < 0x10000) {
+      bytes.push(0xe0 | (cc >> 12));
+      bytes.push(0x80 | ((cc >> 6) & 0x3f));
+      bytes.push(0x80 | (cc & 0x3f));
+    } else {
+      bytes.push(0xf0 | (cc >> 18));
+      bytes.push(0x80 | ((cc >> 12) & 0x3f));
+      bytes.push(0x80 | ((cc >> 6) & 0x3f));
+      bytes.push(0x80 | (cc & 0x3f));
+    }
+  }
+  return new Uint8Array(bytes);
 }
 
 function decode(bytes) {
-  if (bytes instanceof Uint8Array) {
-    var chars = [];
-    for (var i = 0; i < bytes.length; i++) chars.push(String.fromCharCode(bytes[i]));
-    return chars.join('');
+  if (!(bytes instanceof Uint8Array)) return String(bytes);
+  var chars = [];
+  var i = 0;
+  while (i < bytes.length) {
+    var b = bytes[i++];
+    if (b < 0x80) {
+      chars.push(b);
+    } else if (b < 0xe0) {
+      chars.push(((b & 0x1f) << 6) | (bytes[i++] & 0x3f));
+    } else if (b < 0xf0) {
+      var b2 = bytes[i++] & 0x3f;
+      var b3 = bytes[i++] & 0x3f;
+      chars.push(((b & 0x0f) << 12) | (b2 << 6) | b3);
+    } else {
+      var b2_ = bytes[i++] & 0x3f;
+      var b3_ = bytes[i++] & 0x3f;
+      var b4 = bytes[i++] & 0x3f;
+      chars.push(((b & 0x07) << 18) | (b2_ << 12) | (b3_ << 6) | b4);
+    }
   }
-  return String(bytes);
+  return String.fromCharCode.apply(null, chars);
 }
 
 function concat() {
@@ -120,9 +152,66 @@ function fromBase64(b64) {
   return bytes.slice(0, idx);
 }
 
+function slice(bytes, start, end) {
+  if (!(bytes instanceof Uint8Array)) return new Uint8Array(0);
+  var s = start || 0;
+  var e = end !== undefined ? end : bytes.length;
+  if (s < 0) s = Math.max(0, bytes.length + s);
+  if (e < 0) e = Math.max(0, bytes.length + e);
+  if (s >= bytes.length) return new Uint8Array(0);
+  return bytes.subarray(s, e);
+}
+
+function indexOf(bytes, search, start) {
+  if (!(bytes instanceof Uint8Array)) return -1;
+  var searchBytes = search instanceof Uint8Array ? search : fromHex(String(search));
+  var from = start || 0;
+  for (var i = from; i <= bytes.length - searchBytes.length; i++) {
+    var found = true;
+    for (var j = 0; j < searchBytes.length; j++) {
+      if (bytes[i + j] !== searchBytes[j]) { found = false; break; }
+    }
+    if (found) return i;
+  }
+  return -1;
+}
+
+function includes(bytes, search, start) {
+  return indexOf(bytes, search, start) !== -1;
+}
+
+function repeat(bytes, count) {
+  if (!(bytes instanceof Uint8Array) || count <= 0) return new Uint8Array(0);
+  var result = new Uint8Array(bytes.length * count);
+  for (var i = 0; i < count; i++) {
+    result.set(bytes, i * bytes.length);
+  }
+  return result;
+}
+
+function fill(bytes, value, start, end) {
+  if (!(bytes instanceof Uint8Array)) return bytes;
+  var s = start || 0;
+  var e = end !== undefined ? end : bytes.length;
+  var v = typeof value === 'number' ? value : 0;
+  for (var i = s; i < e; i++) bytes[i] = v & 0xff;
+  return bytes;
+}
+
+function toUTF8(text) {
+  return encode(String(text));
+}
+
+function fromUTF8(bytes) {
+  return decode(bytes);
+}
+
 module.exports = {
   encode: encode, decode: decode, concat: concat,
   compare: compare, isEqual: isEqual,
   toHex: toHex, fromHex: fromHex,
   toBase64: toBase64, fromBase64: fromBase64,
+  slice: slice, indexOf: indexOf, includes: includes,
+  repeat: repeat, fill: fill,
+  toUTF8: toUTF8, fromUTF8: fromUTF8,
 };

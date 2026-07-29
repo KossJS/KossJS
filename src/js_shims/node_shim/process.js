@@ -5,7 +5,6 @@
 // "非本软件模块的源代码公开义务例外"
 
 // koss:node/process - Node.js process module (L3)
+// Maps to koss:process standard library
 
-const p = globalThis.process || {};
-
-module.exports = p;
+module.exports = require('koss:process');

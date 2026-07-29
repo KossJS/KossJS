@@ -861,6 +861,217 @@ pub mod crypto {
         true
     }
 
+    // ===== 字节版 Hash =====
+
+    pub fn hash_bytes(algorithm: &str, data: &[u8]) -> Result<Vec<u8>, String> {
+        use sha2::{Sha256, Sha384, Sha512};
+        use sha1::Sha1;
+        use md5::Md5;
+
+        macro_rules! hash_for {
+            ($algo:ty, $data:expr) => {{
+                use sha2::Digest;
+                let mut hasher = <$algo>::new();
+                hasher.update($data);
+                Ok(hasher.finalize().to_vec())
+            }};
+        }
+
+        match algorithm.to_lowercase().as_str() {
+            "sha1" | "sha-1" => {
+                use sha1::Digest;
+                let mut hasher = Sha1::new();
+                hasher.update(data);
+                Ok(hasher.finalize().to_vec())
+            }
+            "sha256" | "sha-256" => hash_for!(Sha256, data),
+            "sha384" | "sha-384" => hash_for!(Sha384, data),
+            "sha512" | "sha-512" => hash_for!(Sha512, data),
+            "md5" => {
+                use md5::Digest;
+                let mut hasher = Md5::new();
+                hasher.update(data);
+                Ok(hasher.finalize().to_vec())
+            }
+            _ => Err(format!("Unknown hash algorithm: {}", algorithm)),
+        }
+    }
+
+    // ===== 字节版 HMAC =====
+
+    pub fn hmac_bytes(algorithm: &str, key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
+        use hmac::{Hmac, Mac, KeyInit};
+        use sha1::Sha1;
+        use sha2::{Sha256, Sha384, Sha512};
+        use md5::Md5;
+
+        macro_rules! hmac_for {
+            ($algo:ty) => {{
+                let mut mac = <Hmac<$algo>>::new_from_slice(key)
+                    .map_err(|e| format!("HMAC key error: {e}"))?;
+                mac.update(data);
+                Ok(mac.finalize().into_bytes().to_vec())
+            }};
+        }
+
+        match algorithm.to_lowercase().as_str() {
+            "sha256" | "sha-256" => hmac_for!(Sha256),
+            "sha384" | "sha-384" => hmac_for!(Sha384),
+            "sha512" | "sha-512" => hmac_for!(Sha512),
+            "sha1" | "sha-1" => hmac_for!(Sha1),
+            "md5" => hmac_for!(Md5),
+            _ => Err(format!("Unknown HMAC algorithm: {}", algorithm)),
+        }
+    }
+
+    // ===== 字节版 PBKDF2 =====
+
+    pub fn pbkdf2_bytes(
+        password: &[u8],
+        salt: &[u8],
+        iterations: u32,
+        key_len: u32,
+    ) -> Result<Vec<u8>, String> {
+        use pbkdf2::pbkdf2_hmac;
+        use sha2::Sha256;
+
+        if iterations < 1 {
+            return Err("iterations must be at least 1".to_string());
+        }
+        if key_len == 0 || key_len > 1024 {
+            return Err("key_len must be between 1 and 1024".to_string());
+        }
+
+        let mut key = vec![0u8; key_len as usize];
+        pbkdf2_hmac::<Sha256>(password, salt, iterations, &mut key);
+        Ok(key)
+    }
+
+    // ===== AES-256-GCM 加密 =====
+
+    pub fn aes_gcm_encrypt(
+        key: &[u8],
+        nonce: &[u8],
+        aad: &[u8],
+        plaintext: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        use aes_gcm::{Aes256Gcm, Key, KeyInit};
+        use aes_gcm::aead::{Aead, Nonce, Payload};
+
+        if key.len() != 16 && key.len() != 24 && key.len() != 32 {
+            return Err(format!("Invalid AES key length: {} bytes (expected 16, 24, or 32)", key.len()));
+        }
+        if nonce.len() != 12 {
+            return Err(format!("Invalid AES-GCM nonce length: {} bytes (expected 12)", nonce.len()));
+        }
+
+        let cipher_key = Key::<Aes256Gcm>::try_from(key)
+            .map_err(|_| "Invalid AES key length".to_string())?;
+        let cipher = Aes256Gcm::new(&cipher_key);
+        let nonce = Nonce::<Aes256Gcm>::try_from(nonce)
+            .map_err(|_| "Invalid AES-GCM nonce length".to_string())?;
+        let payload = Payload { msg: plaintext, aad };
+
+        cipher.encrypt(&nonce, payload)
+            .map_err(|e| format!("AES-GCM encryption failed: {e}"))
+    }
+
+    // ===== AES-256-GCM 解密 =====
+
+    pub fn aes_gcm_decrypt(
+        key: &[u8],
+        nonce: &[u8],
+        aad: &[u8],
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        use aes_gcm::{Aes256Gcm, Key, KeyInit};
+        use aes_gcm::aead::{Aead, Nonce, Payload};
+
+        if key.len() != 16 && key.len() != 24 && key.len() != 32 {
+            return Err(format!("Invalid AES key length: {} bytes (expected 16, 24, or 32)", key.len()));
+        }
+        if nonce.len() != 12 {
+            return Err(format!("Invalid AES-GCM nonce length: {} bytes (expected 12)", nonce.len()));
+        }
+        if ciphertext.is_empty() {
+            return Err("Ciphertext is empty".to_string());
+        }
+
+        let cipher_key = Key::<Aes256Gcm>::try_from(key)
+            .map_err(|_| "Invalid AES key length".to_string())?;
+        let cipher = Aes256Gcm::new(&cipher_key);
+        let nonce = Nonce::<Aes256Gcm>::try_from(nonce)
+            .map_err(|_| "Invalid AES-GCM nonce length".to_string())?;
+        let payload = Payload { msg: ciphertext, aad };
+
+        cipher.decrypt(&nonce, payload)
+            .map_err(|e| format!("AES-GCM decryption failed: {e}"))
+    }
+
+    // ===== Ed25519 密钥对生成 =====
+
+    pub fn ed25519_keypair() -> Result<(Vec<u8>, Vec<u8>), String> {
+        use ed25519_dalek::SigningKey;
+        use rand::Rng;
+
+        let mut secret_bytes = [0u8; 32];
+        rand::rng().fill_bytes(&mut secret_bytes);
+        let signing_key = SigningKey::from_bytes(&secret_bytes);
+        let verifying_key = signing_key.verifying_key();
+
+        Ok((verifying_key.to_bytes().to_vec(), signing_key.to_bytes().to_vec()))
+    }
+
+    // ===== Ed25519 签名 =====
+
+    pub fn ed25519_sign(private_key: &[u8], message: &[u8]) -> Result<Vec<u8>, String> {
+        use ed25519_dalek::{SigningKey, Signer};
+
+        if private_key.len() != 32 {
+            return Err(format!("Invalid Ed25519 private key length: {} bytes (expected 32)", private_key.len()));
+        }
+
+        let mut key_bytes = [0u8; 32];
+        key_bytes.copy_from_slice(private_key);
+        let signing_key = SigningKey::from_bytes(&key_bytes);
+        let signature = signing_key.sign(message);
+
+        Ok(signature.to_bytes().to_vec())
+    }
+
+    // ===== Ed25519 验签 =====
+
+    pub fn ed25519_verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<bool, String> {
+        use ed25519_dalek::{VerifyingKey, Signature, Verifier};
+
+        if public_key.len() != 32 {
+            return Err(format!("Invalid Ed25519 public key length: {} bytes (expected 32)", public_key.len()));
+        }
+        if signature.len() != 64 {
+            return Err(format!("Invalid Ed25519 signature length: {} bytes (expected 64)", signature.len()));
+        }
+
+        let mut pk_bytes = [0u8; 32];
+        pk_bytes.copy_from_slice(public_key);
+        let verifying_key = VerifyingKey::from_bytes(&pk_bytes)
+            .map_err(|e| format!("Invalid Ed25519 public key: {e}"))?;
+
+        let mut sig_bytes = [0u8; 64];
+        sig_bytes.copy_from_slice(signature);
+        let sig = Signature::from_bytes(&sig_bytes);
+
+        Ok(verifying_key.verify(message, &sig).is_ok())
+    }
+
+    // ===== 常量时间比较 =====
+
+    pub fn timing_safe_equal(a: &[u8], b: &[u8]) -> bool {
+        if a.len() != b.len() {
+            return false;
+        }
+        constant_time_eq::constant_time_eq(a, b)
+    }
+
     pub fn get_crypto_constants() -> Vec<(&'static str, i32)> {
         vec![
             ("OPENSSL_VERSION_NUMBER", 0x30000000),
