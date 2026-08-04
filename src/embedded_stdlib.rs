@@ -198,7 +198,7 @@ function mkdir(path, options) {
     io.mkdir(path, options);
   } catch (e) {
     var msg = e && e.message ? e.message : String(e);
-    if (msg.indexOf('already exists') !== -1 || msg.indexOf('os error 183') !== -1) return;
+    if (msg.indexOf('already exists') !== -1 || msg.indexOf('os error 183') !== -1 || msg.indexOf('os error 17') !== -1) return;
     throw e;
   }
 }
