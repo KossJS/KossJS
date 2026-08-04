@@ -1,5 +1,5 @@
 """
-Tests for the Koss native API modules (koss:io, koss:crypto, koss:system, koss:data, koss:ffi, koss:worker).
+Tests for the Koss native API modules (koss:io, koss:crypto, koss:system, koss:data, koss:ffi).
 
 Tests cover:
 1. KOSS_BUILTIN_KOSS flag control
@@ -8,7 +8,6 @@ Tests cover:
 4. koss:system - platform info
 5. koss:data - buffer and encoding
 6. koss:ffi - foreign function interface
-7. koss:worker - worker thread pool
 """
 
 import sys
@@ -23,13 +22,13 @@ from kossjs_interface import KossJS
 TMPDIR = tempfile.gettempdir().replace('\\', '/')
 
 
-def tmpfile(name):
+def tmpfile(name: str) -> str:
     return TMPDIR + '/' + name
 
 
-def cleanup(*names):
+def cleanup(*names: str) -> None:
     for name in names:
-        p = os.path.join(tempfile.gettempdir(), name)
+        p: str = os.path.join(tempfile.gettempdir(), name)
         if os.path.isdir(p):
             shutil.rmtree(p, ignore_errors=True)
         elif os.path.isfile(p):
@@ -327,8 +326,10 @@ class TestKossCrypto:
         result = self.koss.eval("""
         var c = require('koss:crypto');
         var enc = c.encrypt('sha256', 'k', 'data');
-        var dec = c.decrypt('sha256', 'k', 'data');
-        enc.length === dec.length;
+        var dec = c.decrypt('sha256', enc);
+        var s = '';
+        for (var i = 0; i < dec.length; i++) s += String.fromCharCode(dec[i]);
+        s === 'k';
         """)
         assert result == 'true' or result is True
 
@@ -614,41 +615,4 @@ class TestKossFfi:
         typeof require('koss:ffi').strerror;
         """)
         assert result == 'function'
-        koss.destroy()
-
-
-class TestKossWorker:
-    """Test koss:worker module - worker thread pool."""
-
-    def test_worker_module_importable(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL)
-        result = koss.eval("typeof require('koss:worker').createPool === 'function'")
-        assert result == 'true' or result is True
-        koss.destroy()
-
-    def test_worker_has_all_exports(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL)
-        result = koss.eval("""
-        var w = require('koss:worker');
-        typeof w.createPool === 'function' &&
-        typeof w.post === 'function' &&
-        typeof w.receive === 'function' &&
-        typeof w.terminate === 'function';
-        """)
-        assert result == 'true' or result is True
-        koss.destroy()
-
-    def test_worker_create_pool(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL,
-                      capabilities=KossJS.KOSS_CAP_ALL, stable=False)
-        result = koss.eval("""
-        var pool = require('koss:worker').createPool(2);
-        typeof pool === 'object' &&
-        typeof pool.execute === 'function' &&
-        typeof pool.post === 'function' &&
-        typeof pool.receive === 'function' &&
-        typeof pool.terminate === 'function' &&
-        typeof pool.shutdown === 'function';
-        """)
-        assert result == 'true' or result is True
         koss.destroy()

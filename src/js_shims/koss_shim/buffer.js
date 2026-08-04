@@ -121,6 +121,10 @@ function NodeBuffer(value, encodingOrOffset, length) {
     this._data = new Uint8Array(len);
     this._data.set(src.subarray(offset, offset + len));
     this._length = len;
+  } else if (Array.isArray(value)) {
+    this._data = new Uint8Array(value.length);
+    for (var ai = 0; ai < value.length; ai++) this._data[ai] = value[ai] & 0xff;
+    this._length = value.length;
   } else if (value && value._isBuffer) {
     this._data = new Uint8Array(value.length);
     this._data.set(value._data);
@@ -128,6 +132,21 @@ function NodeBuffer(value, encodingOrOffset, length) {
   } else {
     this._data = new Uint8Array(0);
     this._length = 0;
+  }
+  _defineIndexAccess(this);
+}
+
+function _defineIndexAccess(buf) {
+  var len = buf._length;
+  for (var i = 0; i < len; i++) {
+    (function(idx) {
+      Object.defineProperty(buf, idx, {
+        get: function() { return buf._data[idx]; },
+        set: function(v) { buf._data[idx] = v & 0xff; },
+        configurable: true,
+        enumerable: true,
+      });
+    })(i);
   }
 }
 
@@ -285,7 +304,8 @@ NodeBuffer.prototype.compare = function(other, start, end, thisStart, thisEnd) {
 };
 
 // ─── Instance Methods ───
-NodeBuffer.prototype.toString = function(encoding, start, end) {
+Object.defineProperty(NodeBuffer.prototype, 'toString', {
+  value: function(encoding, start, end) {
   var enc = encoding || 'utf8';
   var s = start || 0;
   var e = end !== undefined ? end : this._length;
@@ -318,7 +338,11 @@ NodeBuffer.prototype.toString = function(encoding, start, end) {
     return chars3.join('');
   }
   return _utf8Decode(slice);
-};
+  },
+  writable: true,
+  configurable: true,
+  enumerable: false,
+});
 
 NodeBuffer.prototype.toJSON = function() {
   var data = [];
@@ -773,7 +797,12 @@ NodeBuffer.prototype[Symbol.iterator] = function() {
   };
 };
 
-NodeBuffer.prototype.toLocaleString = NodeBuffer.prototype.toString;
+Object.defineProperty(NodeBuffer.prototype, 'toLocaleString', {
+  value: NodeBuffer.prototype.toString,
+  writable: true,
+  configurable: true,
+  enumerable: false,
+});
 
 NodeBuffer.poolSize = 8192;
 

@@ -65,4 +65,4 @@ def test_crypto_timing_safe_equal_diff(koss: KossJS):
 
 def test_crypto_get_hashes(koss: KossJS):
     result = koss.eval("require('koss:node/crypto').getHashes().length")
-    assert result == '3'
+    assert result == '5'

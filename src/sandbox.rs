@@ -54,7 +54,6 @@ pub const KOSS_CAP_ALL: u32 = 0xFFFFFFFF;
 pub const KOSS_CAP_FS: u32 = KOSS_CAP_ALL_FS;
 pub const KOSS_CAP_NET: u32 = KOSS_CAP_ALL_NET;
 pub const KOSS_CAP_CRYPTO: u32 = KOSS_CAP_ALL_CRYPTO;
-pub const KOSS_CAP_WORKER: u32 = 1 << 3;
 pub const KOSS_CAP_EXTERNAL_LOADER: u32 = MODULE_LOAD;
 
 use std::ffi::c_void;

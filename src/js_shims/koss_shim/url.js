@@ -105,7 +105,8 @@ _URLSearchParams.prototype.forEach = function(callback, thisArg) {
   }
 };
 
-_URLSearchParams.prototype.toString = function() {
+Object.defineProperty(_URLSearchParams.prototype, 'toString', {
+  value: function() {
   var parts = [];
   for (var i = 0; i < this._pairs.length; i++) {
     var key = encodeURIComponent(this._pairs[i][0]);
@@ -113,7 +114,11 @@ _URLSearchParams.prototype.toString = function() {
     parts.push(key + (val ? '=' + val : ''));
   }
   return parts.join('&');
-};
+  },
+  writable: true,
+  configurable: true,
+  enumerable: false,
+});
 
 var _URL = globalThis.URL || function URL(input, base) {
   if (typeof input !== 'string') throw new TypeError('URL input must be a string');
@@ -215,6 +220,7 @@ _URL.prototype._parse = function(input, base) {
   if (this.protocol === 'file:') {
     if (!this.pathname) this.pathname = '/';
   }
+  this._syncSearchParams();
   this._buildHref();
 };
 
@@ -230,13 +236,40 @@ _URL.prototype._buildHref = function() {
   this.href = href;
 };
 
+_URL.prototype._syncSearchParams = function() {
+  var self = this;
+  var origSet = _URLSearchParams.prototype.set;
+  var origAppend = _URLSearchParams.prototype.append;
+  var origDelete = _URLSearchParams.prototype.delete;
+  self.searchParams.set = function(key, value) {
+    origSet.call(self.searchParams, key, value);
+    self.search = '?' + self.searchParams.toString();
+    self._buildHref();
+  };
+  self.searchParams.append = function(key, value) {
+    origAppend.call(self.searchParams, key, value);
+    self.search = '?' + self.searchParams.toString();
+    self._buildHref();
+  };
+  self.searchParams.delete = function(key) {
+    origDelete.call(self.searchParams, key);
+    self.search = self.searchParams.toString() ? '?' + self.searchParams.toString() : '';
+    self._buildHref();
+  };
+};
+
 _URL.prototype.toJSON = function() {
   return this.href;
 };
 
-_URL.prototype.toString = function() {
+Object.defineProperty(_URL.prototype, 'toString', {
+  value: function() {
   return this.href;
-};
+  },
+  writable: true,
+  configurable: true,
+  enumerable: false,
+});
 
 _URLSearchParams = globalThis.URLSearchParams || _URLSearchParams;
 _URL = globalThis.URL || _URL;
@@ -254,8 +287,11 @@ function format(url, options) {
   var result = '';
   if (url.protocol) result += url.protocol + '//';
   if (auth && url.auth) result += url.auth + '@';
-  if (url.hostname) result += url.hostname;
-  if (url.port) result += ':' + url.port;
+  if (url.host) result += url.host;
+  else if (url.hostname) {
+    result += url.hostname;
+    if (url.port) result += ':' + url.port;
+  }
   if (url.pathname) result += url.pathname;
   if (search && url.search) result += url.search;
   if (fragment && url.hash) result += url.hash;
@@ -264,8 +300,8 @@ function format(url, options) {
 
 function resolve(source, relative) {
   var srcUrl = (source instanceof _URL) ? source : new _URL(source);
-  var relUrl = (relative instanceof _URL) ? relative : new _URL(relative);
-  if (relUrl.protocol) {
+  var relUrl = (relative instanceof _URL) ? relative : new _URL(relative, source);
+  if (relUrl.protocol && relUrl.hostname) {
     return new _URL(
       relUrl.protocol + '//' + (relUrl.auth || '') + (relUrl.hostname || '') +
       (relUrl.port ? ':' + relUrl.port : '') +
@@ -277,7 +313,7 @@ function resolve(source, relative) {
   if (pathname.charAt(0) === '/') {
     return new _URL(
       srcUrl.protocol + '//' + (relUrl.auth || srcUrl.auth) +
-      relUrl.hostname + (relUrl.port ? ':' + relUrl.port : '') +
+      (srcUrl.hostname || '') + (srcUrl.port ? ':' + srcUrl.port : '') +
       pathname + relUrl.search + relUrl.hash,
       srcUrl.href
     );

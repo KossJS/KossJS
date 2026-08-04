@@ -756,19 +756,48 @@ function _createTransform(fn) {
 // 同步 API
 // ═══════════════════════════════════════════
 
+function _toJsonArray(data) {
+  var bytes = _toBytes(data);
+  var parts = new Array(bytes.length);
+  for (var i = 0; i < bytes.length; i++) parts[i] = bytes[i];
+  return '[' + parts.join(',') + ']';
+}
+
+function _fromJsonArray(str) {
+  var arr;
+  try { arr = JSON.parse(str); } catch (e) { arr = []; }
+  var bytes = new Uint8Array(arr);
+  if (Buffer && Buffer.from) {
+    return new Buffer(bytes);
+  }
+  return bytes;
+}
+
 function gzipSync(input, opts) {
+  if (typeof globalThis.__koss_gzip === 'function') {
+    return _fromJsonArray(globalThis.__koss_gzip(_toJsonArray(input)));
+  }
   return _gzipInternal(input, opts);
 }
 
 function gunzipSync(input, opts) {
+  if (typeof globalThis.__koss_gunzip === 'function') {
+    return _fromJsonArray(globalThis.__koss_gunzip(_toJsonArray(input)));
+  }
   return _gunzipInternal(input, opts);
 }
 
 function deflateSync(input, opts) {
+  if (typeof globalThis.__koss_deflate === 'function') {
+    return _fromJsonArray(globalThis.__koss_deflate(_toJsonArray(input)));
+  }
   return _deflateInternal(input, opts);
 }
 
 function inflateSync(input, opts) {
+  if (typeof globalThis.__koss_inflate === 'function') {
+    return _fromJsonArray(globalThis.__koss_inflate(_toJsonArray(input)));
+  }
   return _inflateInternal(input, opts);
 }
 

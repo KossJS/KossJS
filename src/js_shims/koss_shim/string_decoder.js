@@ -361,4 +361,4 @@ StringDecoder.prototype._decodeSingle = function(buf) {
   return _utf8Decode(buf);
 };
 
-module.exports = StringDecoder;
+module.exports = { StringDecoder: StringDecoder };

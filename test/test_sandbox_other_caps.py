@@ -3,7 +3,7 @@
 这些能力位控制各种高级功能的访问权限。
 注意：部分能力位目前可能尚未实现完整功能，测试主要验证常量定义和基本行为。
 """
-import pytest
+import pytest # pyright: ignore[reportUnusedImport]
 from kossjs_interface import KossJS, JsError
 
 
@@ -207,32 +207,6 @@ def test_dynamic_code_function_constructor():
     try:
         result = js.eval("new Function('return 1 + 2')()")
         assert result == "3"
-    finally:
-        js.destroy()
-
-
-def test_dynamic_code_worker_threads():
-    """worker_threads 模块应该在有 DYNAMIC_CODE 能力时可用"""
-    js = KossJS(capabilities=KossJS.DYNAMIC_CODE | KossJS.MODULE_LOAD)
-    try:
-        try:
-            result = js.eval("typeof require('koss:node/worker_threads')")
-            # worker_threads 可能可用也可能不可用
-            assert result in ["object", "undefined"]
-        except JsError:
-            # 模块可能不可用
-            pass
-    finally:
-        js.destroy()
-
-
-def test_dynamic_code_worker_threads_disabled_without_cap():
-    """没有 DYNAMIC_CODE 能力时，internalBinding('worker_threads') 应该被拒绝"""
-    js = KossJS(capabilities=KossJS.MODULE_LOAD)
-    try:
-        with pytest.raises(JsError) as exc:
-            js.eval("internalBinding('worker_threads')")
-        assert "KossCapabilityError" in str(exc.value)
     finally:
         js.destroy()
 

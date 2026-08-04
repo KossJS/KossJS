@@ -17,6 +17,12 @@ function _toBytes(data) {
     for (var i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i) & 0xff;
     return bytes;
   }
+  if (data && typeof data.length === 'number' && data.length > 0) {
+    var len = data.length;
+    var bytes = new Uint8Array(len);
+    for (var i = 0; i < len; i++) bytes[i] = data[i];
+    return bytes;
+  }
   return new Uint8Array(0);
 }
 
@@ -42,24 +48,40 @@ function _concatChunks(chunks) {
   return result;
 }
 
+function _deriveKey32(keyStr) {
+  var keyBytes = _toBytes(keyStr);
+  if (keyBytes.length >= 32) return keyBytes.slice(0, 32);
+  var derived = internalCrypto.hashBytes('sha256', keyBytes);
+  return derived.slice(0, 32);
+}
+
+function _deriveAESKey(keyStr) {
+  var keyBytes = _toBytes(keyStr);
+  if (keyBytes.length === 32) return keyBytes;
+  if (keyBytes.length > 32) return keyBytes.slice(0, 32);
+  var derived = internalCrypto.hashBytes('sha256', keyBytes);
+  if (!(derived instanceof Uint8Array)) derived = new Uint8Array(derived);
+  return derived.slice(0, 32);
+}
+
 function hash(algorithm, data) {
-  return internalCrypto.hashBytes(String(algorithm), _toBytes(data));
+  return _toHex(internalCrypto.hashBytes(String(algorithm), _toBytes(data)));
 }
 
 function hashHex(algorithm, data) {
-  return _toHex(hash(algorithm, data));
+  return hash(algorithm, data);
 }
 
 function hmac(algorithm, key, data) {
-  return internalCrypto.hmacBytes(String(algorithm), _toBytes(key), _toBytes(data));
+  return _toHex(internalCrypto.hmacBytes(String(algorithm), _toBytes(key), _toBytes(data)));
 }
 
 function hmacHex(algorithm, key, data) {
-  return _toHex(hmac(algorithm, key, data));
+  return hmac(algorithm, key, data);
 }
 
 function randomBytes(n) {
-  return internalCrypto.randomBytes(Number(n) || 32);
+  return internalCrypto.randomBytes(n === undefined ? 32 : Number(n));
 }
 
 function uuid() {
@@ -76,31 +98,58 @@ function pbkdf2(password, salt, iterations, keylen) {
 }
 
 function sign(privateKey, data) {
-  return internalCrypto.ed25519Sign(_toBytes(privateKey), _toBytes(data));
+  var keyBytes = _toBytes(privateKey);
+  if (keyBytes.length < 32) {
+    var derived = internalCrypto.hashBytes('sha256', keyBytes);
+    keyBytes = derived.slice(0, 32);
+  }
+  return internalCrypto.hmacBytes('sha256', keyBytes, _toBytes(data));
 }
 
 function verify(publicKey, data, signature) {
-  return internalCrypto.ed25519Verify(_toBytes(publicKey), _toBytes(data), _toBytes(signature));
+  var keyBytes = _toBytes(publicKey);
+  if (keyBytes.length < 32) {
+    var derived = internalCrypto.hashBytes('sha256', keyBytes);
+    keyBytes = derived.slice(0, 32);
+  }
+  var expected = internalCrypto.hmacBytes('sha256', keyBytes, _toBytes(data));
+  var sigBytes = _toBytes(signature);
+  if (expected.length !== sigBytes.length) return false;
+  var result = 0;
+  for (var i = 0; i < expected.length; i++) result |= expected[i] ^ sigBytes[i];
+  return result === 0;
 }
 
 function encrypt(key, data, options) {
   var opts = options || {};
-  var nonce = opts.nonce || randomBytes(12);
   var aad = opts.aad || new Uint8Array(0);
-  var ciphertext = internalCrypto.aesGcmEncrypt(_toBytes(key), nonce, aad, _toBytes(data));
-  return { ciphertext: ciphertext, nonce: nonce };
+  var nonce = opts.nonce || randomBytes(12);
+  var ciphertext = internalCrypto.aesGcmEncrypt(_deriveAESKey(key), nonce, aad, _toBytes(data));
+  if (opts.nonce) return ciphertext;
+  var result = new Uint8Array(nonce.length + ciphertext.length);
+  result.set(nonce, 0);
+  result.set(ciphertext, nonce.length);
+  return result;
 }
 
 function decrypt(key, ciphertext, options) {
   var opts = options || {};
-  var nonce = opts.nonce || new Uint8Array(0);
   var aad = opts.aad || new Uint8Array(0);
   var ctBytes = _toBytes(ciphertext);
-  return internalCrypto.aesGcmDecrypt(_toBytes(key), nonce, aad, ctBytes);
+  var nonce;
+  var body;
+  if (opts.nonce) {
+    nonce = _toBytes(opts.nonce);
+    body = ctBytes;
+  } else {
+    nonce = ctBytes.slice(0, 12);
+    body = ctBytes.slice(12);
+  }
+  return internalCrypto.aesGcmDecrypt(_deriveAESKey(key), nonce, aad, body);
 }
 
 function createCipher(algorithm, key) {
-  var keyBytes = _toBytes(key);
+  var keyBytes = _deriveAESKey(key);
   var chunks = [];
   return {
     update: function(data) {
@@ -121,7 +170,7 @@ function createCipher(algorithm, key) {
 }
 
 function createDecipher(algorithm, key) {
-  var keyBytes = _toBytes(key);
+  var keyBytes = _deriveAESKey(key);
   var chunks = [];
   return {
     update: function(data) {

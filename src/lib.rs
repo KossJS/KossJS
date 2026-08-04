@@ -14,7 +14,6 @@ pub mod module_loader;
 pub mod napi;
 pub mod resolver;
 pub mod sandbox;
-pub mod worker;
 pub mod license_output;
 pub mod version;
 mod runtime;

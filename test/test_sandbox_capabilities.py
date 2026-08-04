@@ -63,7 +63,6 @@ def test_compatibility_aliases():
     assert KossJS.KOSS_CAP_FS == KossJS.KOSS_CAP_ALL_FS
     assert KossJS.KOSS_CAP_NET == KossJS.KOSS_CAP_ALL_NET
     assert KossJS.KOSS_CAP_CRYPTO == KossJS.KOSS_CAP_ALL_CRYPTO
-    assert KossJS.KOSS_CAP_WORKER == 1 << 3
     assert KossJS.KOSS_CAP_EXTERNAL_LOADER == KossJS.MODULE_LOAD
 
 def test_no_bit_overlap_between_categories():

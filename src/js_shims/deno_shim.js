@@ -45,7 +45,13 @@ function lstat(path) {
 }
 
 function mkdir(path, options) {
-  io.mkdir(path, options);
+  try {
+    io.mkdir(path, options);
+  } catch (e) {
+    var msg = e && e.message ? e.message : String(e);
+    if (msg.indexOf('already exists') !== -1 || msg.indexOf('os error 183') !== -1) return;
+    throw e;
+  }
 }
 
 function remove(path) {
@@ -103,7 +109,13 @@ function exit(code) {
 }
 
 function memoryUsage() {
-  return kossSystem.memory();
+  var mem = kossSystem.memory();
+  return {
+    rss: mem.total || 0,
+    heapTotal: mem.free || 0,
+    heapUsed: mem.used || 0,
+    external: 0,
+  };
 }
 
 // === Timers ===

@@ -373,8 +373,9 @@ var win32Resolve = (function () {
     var p = toStr(path).replace(/[\\\/]+$/, '');
     if (p === '') return '.';
     if (p === '\\') return '\\';
+    if (p === '/') return '/';
     if (/^[A-Za-z]:$/.test(p)) return p + '\\';
-    var parts = p.split('\\');
+    var parts = p.replace(/[\\\/]+/g, '\\').split('\\');
     var last = parts.pop();
     if (parts.length === 0) return last === '' ? '\\' : '.';
     var result = parts.join('\\');

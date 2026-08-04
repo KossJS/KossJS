@@ -44,6 +44,7 @@ def test_zlib_deflate_sync(koss: KossJS):
 
 
 def test_zlib_inflate_sync(koss: KossJS):
+    # raise Exception("Since this test would freeze, we're temporarily forcing it to skip and triggering an error (the error is to indicate that this issue hasn't been fixed)")
     result = koss.eval("""
         var z = require('koss:node/zlib');
         var B = require('koss:node/buffer').Buffer;

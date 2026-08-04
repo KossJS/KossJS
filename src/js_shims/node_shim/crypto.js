@@ -178,10 +178,10 @@ function createCipheriv(algorithm, key, iv) {
       var nonce = ivBuf.length >= 12 ? ivBuf.slice(0, 12) : kossCrypto.randomBytes(12);
       var ct = kossCrypto.encrypt(keyBuf, plaintext, { nonce: nonce, aad: aad });
       if (outputEncoding === 'hex') {
-        return kossCrypto.hashHex('sha256', ct.ciphertext);
+        return kossCrypto.hashHex('sha256', ct);
       }
-      if (outputEncoding === 'base64') return Buffer.from(ct.ciphertext).toString('base64');
-      return Buffer.from(ct.ciphertext);
+      if (outputEncoding === 'base64') return Buffer.from(ct).toString('base64');
+      return Buffer.from(ct);
     },
     getAuthTag: function() { return Buffer.alloc(16); },
   };

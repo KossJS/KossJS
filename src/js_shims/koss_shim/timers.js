@@ -251,6 +251,12 @@ function clearAllTimers() {
 // 导出
 // ═══════════════════════════════════════════
 
+var timersPromises = {
+  setTimeout: setTimeoutPromise,
+  setImmediate: setImmediatePromise,
+  setInterval: setIntervalPromise,
+};
+
 module.exports = {
   setTimeout: setTimeout,
   clearTimeout: clearTimeout,
@@ -266,4 +272,5 @@ module.exports = {
   unenroll: unenroll,
   clearAllTimers: clearAllTimers,
   Timeout: Timeout,
+  promises: timersPromises,
 };

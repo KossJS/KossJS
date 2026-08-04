@@ -82,7 +82,6 @@ class KossJS:
     KOSS_CAP_FS = KOSS_CAP_ALL_FS
     KOSS_CAP_NET = KOSS_CAP_ALL_NET
     KOSS_CAP_CRYPTO = KOSS_CAP_ALL_CRYPTO
-    KOSS_CAP_WORKER = 1 << 3
     KOSS_CAP_EXTERNAL_LOADER = MODULE_LOAD
 
     # Builtin Flags — controls which koss:* modules are visible
@@ -127,7 +126,7 @@ class KossJS:
             # Sandbox + Deno only
             runtime = KossJS(
                 capabilities=KossJS.KOSS_CAP_SANDBOX,
-                builtins=KossJS.KOSS_BUILTIN_DENO,
+                builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS,
             )
         """
         self._ptr: ctypes.c_void_p | None = None
@@ -284,24 +283,6 @@ class KossJS:
         lib.koss_tick.restype = KossResult
         lib.koss_tick.argtypes = [ctypes.c_void_p]
 
-        lib.koss_create_worker_pool.restype = KossResult
-        lib.koss_create_worker_pool.argtypes = [ctypes.c_void_p, ctypes.c_int32]
-
-        lib.koss_worker_post_message.restype = KossResult
-        lib.koss_worker_post_message.argtypes = [ctypes.c_void_p, ctypes.c_int32, ctypes.c_char_p]
-
-        lib.koss_worker_execute.restype = KossResult
-        lib.koss_worker_execute.argtypes = [ctypes.c_void_p, ctypes.c_int32, ctypes.c_char_p]
-
-        lib.koss_worker_try_recv.restype = KossResult
-        lib.koss_worker_try_recv.argtypes = [ctypes.c_void_p]
-
-        lib.koss_worker_terminate.restype = KossResult
-        lib.koss_worker_terminate.argtypes = [ctypes.c_void_p, ctypes.c_int32]
-
-        lib.koss_worker_shutdown.restype = KossResult
-        lib.koss_worker_shutdown.argtypes = [ctypes.c_void_p]
-
         lib.koss_register_module_loader.restype = KossResult
         lib.koss_register_module_loader.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 
@@ -384,44 +365,6 @@ class KossJS:
         val = self._check_result(result)
         return val == "1"
 
-    def create_worker_pool(self, size: int) -> str:
-        """Create a pool of worker threads for parallel execution."""
-        result = self._lib.koss_create_worker_pool(self._ptr, size)
-        return self._check_result(result)
-
-    def worker_post_message(self, worker_id: int, data: str) -> str:
-        """Post a JSON message to a worker thread."""
-        result = self._lib.koss_worker_post_message(self._ptr, worker_id, data.encode("utf-8"))
-        return self._check_result(result)
-
-    def worker_execute(self, worker_id: int, code: str) -> str:
-        """Execute JavaScript code on a worker thread."""
-        result = self._lib.koss_worker_execute(self._ptr, worker_id, code.encode("utf-8"))
-        return self._check_result(result)
-
-    def worker_try_recv(self) -> str | None:
-        """Try to receive a message from any worker (non-blocking). Returns None if no message."""
-        result = self._lib.koss_worker_try_recv(self._ptr)
-        try:
-            val = self._check_result(result)
-            if val == "null" or not val:
-                return None
-            return val
-        except Exception:
-            import logging
-            logging.getLogger("KossJS").warning("worker_try_recv: failed to parse result", exc_info=True)
-            return None
-
-    def worker_terminate(self, worker_id: int) -> str:
-        """Terminate a specific worker thread."""
-        result = self._lib.koss_worker_terminate(self._ptr, worker_id)
-        return self._check_result(result)
-
-    def worker_shutdown(self) -> str:
-        """Shut down all worker threads and clean up the pool."""
-        result = self._lib.koss_worker_shutdown(self._ptr)
-        return self._check_result(result)
-    
     def run_file(self, path: str) -> str:
         """Execute a JavaScript file and return the result."""
         result = self._lib.koss_run_file(self._ptr, path.encode("utf-8"))

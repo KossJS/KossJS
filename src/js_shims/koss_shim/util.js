@@ -2,9 +2,14 @@
 
 "use strict";
 
-const { Buffer } = require("buffer");
-const { format: fmt, inspect, debuglog: dl, deprecate } = require("util");
-const { TextEncoder, TextDecoder } = require("text-encoding");
+var Buffer;
+try {
+  Buffer = require('koss:buffer').Buffer;
+} catch (e) {
+  Buffer = globalThis.Buffer;
+}
+var TextEncoder = globalThis.TextEncoder;
+var TextDecoder = globalThis.TextDecoder;
 
 const kNoOp = () => {};
 const kSymbol = Symbol;
@@ -116,20 +121,162 @@ function isUndefined(value) {
   return value === kUndefined;
 }
 
-function format(...args) {
-  return fmt(...args);
+function _formatValue(value) {
+  if (value === kNull) return 'null';
+  if (value === kUndefined) return 'undefined';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'function') return inspect(value);
+  if (typeof value === 'object' && value !== kNull) return inspect(value);
+  return kString(value);
+}
+
+function format(f) {
+  const args = kArray.from(arguments);
+  if (typeof f !== 'string') {
+    const parts = [];
+    for (let i = 0; i < args.length; i++) parts.push(_formatValue(args[i]));
+    return parts.join(' ');
+  }
+  const rest = args.slice(1);
+  let argIndex = 0;
+  let out = '';
+  let i = 0;
+  while (i < f.length) {
+    const ch = f[i];
+    if (ch !== '%') {
+      out += ch;
+      i++;
+      continue;
+    }
+    const spec = f[++i];
+    if (spec === '%') {
+      out += '%';
+      i++;
+      continue;
+    }
+    if (spec === 's') {
+      out += argIndex < rest.length ? kString(rest[argIndex++]) : '%s';
+      i++;
+      continue;
+    }
+    if (spec === 'd' || spec === 'i') {
+      const v = argIndex < rest.length ? rest[argIndex++] : NaN;
+      out += kNumber(v).toString();
+      i++;
+      continue;
+    }
+    if (spec === 'f') {
+      const vf = argIndex < rest.length ? rest[argIndex++] : NaN;
+      out += parseFloat(vf).toString();
+      i++;
+      continue;
+    }
+    if (spec === 'j') {
+      const vj = argIndex < rest.length ? rest[argIndex++] : kUndefined;
+      try {
+        out += JSON.stringify(vj);
+      } catch (_) {
+        out += '[Circular]';
+      }
+      i++;
+      continue;
+    }
+    if (spec === 'o' || spec === 'O') {
+      const vo = argIndex < rest.length ? rest[argIndex++] : kUndefined;
+      out += inspect(vo);
+      i++;
+      continue;
+    }
+    out += '%' + spec;
+    i++;
+  }
+  for (let j = argIndex; j < rest.length; j++) {
+    out += ' ' + _formatValue(rest[j]);
+  }
+  return out;
 }
 
 function formatWithOptions(options, ...args) {
-  return fmt(...args);
+  return format(...args);
+}
+
+function _inspectValue(value, depth) {
+  if (value === kNull) return 'null';
+  if (value === kUndefined) return 'undefined';
+  const t = typeof value;
+  if (t === 'string') return "'" + value + "'";
+  if (t === 'number') return kString(value);
+  if (t === 'boolean') return kString(value);
+  if (t === 'symbol') return kString(value);
+  if (t === 'function') {
+    const name = value.name || value.displayName || 'anonymous';
+    return '[Function: ' + name + ']';
+  }
+  if (t === 'object') {
+    if (value instanceof kRegExp) return kString(value);
+    if (value instanceof Date) {
+      return typeof value.toISOString === 'function' ? value.toISOString() : kString(value);
+    }
+    if (typeof Buffer !== 'undefined' && Buffer.isBuffer && Buffer.isBuffer(value)) {
+      let hex = '';
+      for (let i = 0; i < value.length && i < 8; i++) {
+        hex += (value[i] < 16 ? '0' : '') + value[i].toString(16);
+      }
+      return '<Buffer ' + hex + '>'; 
+    }
+    if (kArray.isArray(value)) {
+      if (value.length === 0) return '[]';
+      const items = [];
+      for (let i = 0; i < value.length; i++) items.push(_inspectValue(value[i], depth + 1));
+      return '[' + items.join(', ') + ']';
+    }
+    const keys = kObject.keys(value);
+    if (keys.length === 0) return '{}';
+    const entries = [];
+    for (let j = 0; j < keys.length; j++) {
+      entries.push(keys[j] + ': ' + _inspectValue(value[keys[j]], depth + 1));
+    }
+    return '{ ' + entries.join(', ') + ' }';
+  }
+  return kString(value);
+}
+
+function inspect(value, options, depth) {
+  return _inspectValue(value, 0);
 }
 
 function debug(namespace) {
-  return dl(namespace);
+  return function debug() {
+    if (typeof console !== 'undefined' && console.error) {
+      console.error('DEBUG:' + namespace, kArray.from(arguments).join(' '));
+    }
+  };
 }
 
 function debuglog(set) {
-  return dl(set);
+  return function debuglog() {
+    if (typeof console !== 'undefined' && console.error) {
+      console.error('DEBUG:' + set, kArray.from(arguments).join(' '));
+    }
+  };
+}
+
+function deprecate(fn, msg, code) {
+  if (typeof fn !== 'function') {
+    throw new kTypeError('The "fn" argument must be of type Function');
+  }
+  let warned = false;
+  const deprecated = function () {
+    if (!warned) {
+      warned = true;
+      if (typeof console !== 'undefined' && console.error) {
+        console.error('DeprecationWarning: ' + (msg || ''));
+      }
+    }
+    return fn.apply(this, arguments);
+  };
+  deprecated.deprecation = true;
+  return deprecated;
 }
 
 function log(...args) {
@@ -362,6 +509,57 @@ const querystring = {
   },
 };
 
+const types = {
+  isArray: kArray.isArray,
+  isArrayBuffer: function (v) { return v instanceof ArrayBuffer; },
+  isArrayBufferView: function (v) { return v instanceof ArrayBuffer && ArrayBuffer.isView(v); },
+  isBoolean: function (v) { return typeof v === 'boolean'; },
+  isDate: function (v) { return v instanceof Date; },
+  isFunction: function (v) { return typeof v === 'function'; },
+  isNull: function (v) { return v === kNull; },
+  isNumber: function (v) { return typeof v === 'number'; },
+  isObject: function (v) { return typeof v === 'object' && v !== kNull; },
+  isRegExp: function (v) { return v instanceof kRegExp; },
+  isString: function (v) { return typeof v === 'string'; },
+  isSymbol: function (v) { return typeof v === 'symbol'; },
+  isUndefined: function (v) { return v === kUndefined; },
+};
+
+const _systemErrorNames = {
+  1: 'EPERM', 2: 'ENOENT', 3: 'ESRCH', 4: 'EINTR', 5: 'EIO', 6: 'ENXIO', 7: 'E2BIG',
+  8: 'ENOEXEC', 9: 'EBADF', 10: 'ECHILD', 11: 'EAGAIN', 12: 'ENOMEM', 13: 'EACCES',
+  14: 'EFAULT', 15: 'ENOTBLK', 16: 'EBUSY', 17: 'EEXIST', 18: 'EXDEV', 19: 'ENODEV',
+  20: 'ENOTDIR', 21: 'EISDIR', 22: 'EINVAL', 23: 'ENFILE', 24: 'EMFILE', 25: 'ENOTTY',
+  26: 'ETXTBSY', 27: 'EFBIG', 28: 'ENOSPC', 29: 'ESPIPE', 30: 'EROFS', 31: 'EMLINK',
+  32: 'EPIPE', 33: 'EDOM', 34: 'ERANGE', 35: 'EDEADLK', 36: 'ENAMETOOLONG',
+  37: 'ENOLCK', 38: 'ENOSYS', 39: 'ENOTEMPTY', 40: 'ELOOP', 41: 'ENOMSG',
+  42: 'EIDRM', 43: 'ECHRNG', 44: 'EL2NSYNC', 45: 'EL3HLT', 46: 'EL3RST',
+  47: 'ELNRNG', 48: 'EUNATCH', 49: 'ENOCSI', 50: 'EL2HLT', 51: 'EBADE',
+  52: 'EBADR', 53: 'EXFULL', 54: 'ENOANO', 55: 'EBADRQC', 56: 'EBADSLT',
+  57: 'EDEADLOCK', 59: 'EBFONT', 60: 'ENOSTR', 61: 'ENODATA', 62: 'ETIME',
+  63: 'ENOSR', 64: 'ENONET', 65: 'ENOPKG', 66: 'EREMOTE', 67: 'ENOLINK',
+  68: 'EADV', 69: 'ESRMNT', 70: 'ECOMM', 71: 'EPROTO', 72: 'EMULTIHOP',
+  73: 'EDOTDOT', 74: 'EBADMSG', 75: 'EOVERFLOW', 76: 'ENOTUNIQ', 77: 'EBADFD',
+  78: 'EREMCHG', 79: 'ELIBACC', 80: 'ELIBBAD', 81: 'ELIBSCN', 82: 'ELIBMAX',
+  83: 'ELIBEXEC', 84: 'EILSEQ', 85: 'ERESTART', 86: 'ESTRPIPE', 87: 'EUSERS',
+  88: 'ENOTSOCK', 89: 'EDESTADDRREQ', 90: 'EMSGSIZE', 91: 'EPROTOTYPE',
+  92: 'ENOPROTOOPT', 93: 'EPROTONOSUPPORT', 94: 'ESOCKTNOSUPPORT',
+  95: 'EOPNOTSUPP', 96: 'EPFNOSUPPORT', 97: 'EAFNOSUPPORT', 98: 'EADDRINUSE',
+  99: 'EADDRNOTAVAIL', 100: 'ENETDOWN', 101: 'ENETUNREACH', 102: 'ENETRESET',
+  103: 'ECONNABORTED', 104: 'ECONNRESET', 105: 'ENOBUFS', 106: 'EISCONN',
+  107: 'ENOTCONN', 108: 'ESHUTDOWN', 109: 'ETOOMANYREFS', 110: 'ETIMEDOUT',
+  111: 'ECONNREFUSED', 112: 'EHOSTDOWN', 113: 'EHOSTUNREACH', 114: 'EALREADY',
+  115: 'EINPROGRESS', 116: 'ESTALE', 117: 'EUCLEAN', 118: 'ENOTNAM', 119: 'ENAVAIL',
+  120: 'EISNAM', 121: 'EREMOTEIO', 122: 'EDQUOT', 123: 'ENOMEDIUM',
+  124: 'EMEDIUMTYPE', 125: 'ECANCELED', 126: 'ENOKEY', 127: 'EKEYEXPIRED',
+  128: 'EKEYREVOKED', 129: 'EKEYREJECTED', 130: 'EOWNERDEAD', 131: 'ENOTRECOVERABLE',
+  132: 'ERFKILL', 133: 'EHWPOISON',
+};
+
+function getSystemErrorName(errno) {
+  return _systemErrorNames[errno] || 'Unknown';
+}
+
 module.exports = {
   inherits,
   inheritsDeep,
@@ -397,4 +595,6 @@ module.exports = {
   AbortController,
   AbortSignal,
   querystring,
+  types,
+  getSystemErrorName,
 };

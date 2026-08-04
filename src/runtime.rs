@@ -30,11 +30,10 @@ use crate::buffer;
 use crate::license_output::output_license_once;
 use crate::version::get_version;
 use crate::module_loader::KossModuleLoader;
-use crate::worker::{WorkerEvent, WorkerPool};
+
 
 // One-time warning flags for unstable mode (stable=false)
 static FFI_STABLE_WARNED: AtomicBool = AtomicBool::new(false);
-static WORKER_STABLE_WARNED: AtomicBool = AtomicBool::new(false);
 
 // TCP socket storage for persistent connections
 static NEXT_TCP_FD: AtomicU32 = AtomicU32::new(1);
@@ -582,8 +581,6 @@ fn ffi_js_value_to_bytes(val: &JsValue, type_info: &crate::_senri_ffi::types::Ow
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────
-/// Maximum permitted worker pool size (CWE-400: prevent resource exhaustion).
-const MAX_WORKER_POOL_SIZE: usize = 64;
 
 /// Maximum permitted externally-loaded module code size (CWE-94: prevent
 /// code injection via oversized external module payloads).
@@ -591,21 +588,21 @@ const MAX_EXTERNAL_MODULE_CODE_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
 
 use crate::sandbox::{
     AuditDecision, KOSS_CAP_ALL_CRYPTO, KOSS_CAP_ALL_FS, KOSS_CAP_ALL_NET,
-    KOSS_CAP_EXTERNAL_LOADER, KOSS_CAP_WORKER, SandboxState,
+    KOSS_CAP_EXTERNAL_LOADER, SandboxState,
 };
 
 // ---------------------------------------------------------------------------
 // Opaque handle — each KossInstance is an isolated JS VM
 // ---------------------------------------------------------------------------
 // SAFETY: Boa Context is not Sync. All mutable access to the context and its
-// associated fields (event_loop, worker_pool, external_module_loader) MUST
+// associated fields (event_loop, external_module_loader) MUST
 // occur on the same thread that created the instance. The NativeFunction
 // closures below capture raw pointers (or Rc handles) to these fields, and
 // are guaranteed by Boa's single-threaded execution model to only be invoked
 // from the owning thread.
 //
 // THREAD-SAFETY WARNING FOR HOSTS (CWE-362):
-// The C ABI functions below (koss_eval, koss_tick, koss_worker_execute, etc.)
+// The C ABI functions below (koss_eval, koss_tick, etc.)
 // directly dereference `*mut KossInstance` without any mutex or lock. All
 // calls to C API functions for a given KossInstance MUST be made from a
 // single thread. Concurrent access from multiple threads will cause
@@ -614,7 +611,6 @@ use crate::sandbox::{
 // external mutex or ensure exclusive thread ownership.
 pub struct KossInstance {
     pub event_loop: Option<KossEventLoop>,
-    pub worker_pool: Option<WorkerPool>,
     /// Optional external module loader callback (e.g. from Python).
     /// Called as a fallback when the embedded stdlib doesn't contain the module.
     pub external_module_loader: Option<NativeCallback>,
@@ -622,7 +618,7 @@ pub struct KossInstance {
     pub capabilities: u32,
     /// Sandbox state: audit mask and future extension fields.
     pub sandbox: SandboxState,
-    /// When true, FFI and Worker capabilities are disabled (stable mode).
+    /// When true, FFI capabilities are disabled (stable mode).
     pub stable: bool,
     /// Builtin module flags — controls which koss:* modules are visible.
     /// See KOSS_BUILTIN_* constants in builtins.rs.
@@ -638,7 +634,6 @@ impl KossInstance {
     pub fn new(context: Context, caps: u32, stable: bool, builtins: u32) -> Self {
         KossInstance {
             event_loop: KossEventLoop::new(),
-            worker_pool: None,
             external_module_loader: None,
             capabilities: caps,
             sandbox: SandboxState::default(),
@@ -933,16 +928,6 @@ fn register_internal_module_loader(instance: &mut KossInstance) {
             &name
         };
 
-        // Special case: worker/worker_threads require stable=false
-        // (KOSS_CAP_WORKER bit overlaps with FS_MKDIR, requiring stable-aware logic)
-        if module_name == "worker" || module_name == "worker_threads" {
-            let inst = unsafe { &*instance_ptr };
-            if inst.stable {
-                return Err(JsError::from(JsNativeError::error()
-                    .with_message("KossCapabilityError: Module 'worker_threads' is disabled in stable mode. Set stable=false when creating the instance to enable Worker features.")));
-            }
-        }
-
         // 0. Try koss: protocol builtins (koss:node/*, koss:bun, koss:deno, koss:io, etc.)
         if crate::builtins::is_koss_specifier(&name) {
             let inst = unsafe { &*instance_ptr };
@@ -1225,11 +1210,7 @@ fn register_fs_functions(instance: &mut KossInstance) {
     });
 
     // __koss_fs_mkdir(path, recursive) -> { code: 0 }
-    // NOTE: gated on FS_WRITE rather than FS_MKDIR because FS_MKDIR (1<<3)
-    // collides with the legacy KOSS_CAP_WORKER alias (also 1<<3), which stable
-    // mode strips — so FS_MKDIR is unusable there. Directory creation is a write
-    // operation, so FS_WRITE is the appropriate (and non-colliding) capability.
-    reg_fs!("__koss_fs_mkdir", crate::sandbox::FS_WRITE, |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+    reg_fs!("__koss_fs_mkdir", crate::sandbox::FS_MKDIR, |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
         let path = args.first().ok_or_else(|| JsNativeError::error().with_message("mkdir: path required"))?
             .to_string(ctx).map_err(|_| JsNativeError::error().with_message("mkdir: path must be string"))?;
         let recursive = args.get(1).and_then(|v| v.as_number()).map(|n| n != 0.0).unwrap_or(false);
@@ -1533,7 +1514,9 @@ fn register_crypto_functions(instance: &mut KossInstance) {
 
     let rand_fn = NativeFunction::from_copy_closure(
         move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
-            let size = args.first().and_then(|v| v.as_number()).unwrap_or(32.0) as usize;
+            let size = args.first()
+                .map(|v| v.to_number(_ctx).unwrap_or(32.0) as usize)
+                .unwrap_or(32);
             let data = crate::bindings::crypto::get_random_values(size);
             let json = serde_json::json!(data).to_string();
             Ok(JsValue::from(js_string!(json)))
@@ -1895,192 +1878,6 @@ fn register_zlib_functions(ctx: &mut Context) {
 
 fn register_zlib_functions_all(instance: &mut KossInstance) {
     register_zlib_functions(&mut instance.context);
-}
-
-fn register_worker_api(instance: &mut KossInstance) {
-    if instance.stable {
-        // Register stub functions that throw explicit errors
-        let fns = [
-            "__koss_create_worker_pool",
-            "__koss_worker_post_message",
-            "__koss_worker_execute",
-            "__koss_worker_try_recv",
-            "__koss_worker_terminate",
-            "__koss_worker_shutdown",
-        ];
-        for name in &fns {
-            let js_fn = unsafe {
-                NativeFunction::from_closure(
-                    move |_t: &JsValue, _a: &[JsValue], _c: &mut Context| -> Result<JsValue, JsError> {
-                        Err(JsNativeError::typ()
-                            .with_message("Worker is disabled in stable mode. Set stable=false when creating the instance to enable Worker features.")
-                            .into())
-                    },
-                )
-            }.to_js_function(instance.context.realm());
-            instance.context.register_global_property(
-                boa_engine::js_string!(*name),
-                js_fn,
-                boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
-            ).ok();
-        }
-        return;
-    }
-
-    let instance_ptr = instance as *mut KossInstance;
-
-    // __koss_create_worker_pool(size) → creates worker pool
-    let create_pool = NativeFunction::from_copy_closure(move |_this, args, _ctx| {
-        let inst = unsafe { &mut *instance_ptr };
-        let size = args.first().and_then(|v| v.as_number()).unwrap_or(1.0) as i32;
-        if size <= 0 {
-            return Ok(JsValue::undefined());
-        }
-        inst.worker_pool = Some(WorkerPool::new(size as usize));
-        Ok(JsValue::from(boa_engine::js_string!(format!("{{\"created\":{size}}}"))))
-    });
-
-    let js_create_pool = create_pool.to_js_function(instance.context.realm());
-    instance.context.register_global_property(
-        boa_engine::js_string!("__koss_create_worker_pool"),
-        js_create_pool,
-        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
-    ).ok();
-
-    // __koss_worker_post_message(workerId, data)
-    let instance_ptr2 = instance as *mut KossInstance;
-    let post_msg = NativeFunction::from_copy_closure(move |_this, args, ctx| {
-        let inst = unsafe { &mut *instance_ptr2 };
-        let pool = match inst.worker_pool.as_ref() {
-            Some(p) => p,
-            None => return Ok(JsValue::undefined()),
-        };
-        let worker_id = args.get(0).and_then(|v| v.as_number()).unwrap_or(0.0) as usize;
-        let data = args.get(1).map(|v| js_value_to_string(v, ctx)).unwrap_or_default();
-        match pool.post_message(worker_id, &data) {
-            Ok(()) => Ok(JsValue::from(boa_engine::js_string!("ok"))),
-            Err(e) => Ok(JsValue::from(boa_engine::js_string!(e))),
-        }
-    });
-
-    let js_post_msg = post_msg.to_js_function(instance.context.realm());
-    instance.context.register_global_property(
-        boa_engine::js_string!("__koss_worker_post_message"),
-        js_post_msg,
-        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
-    ).ok();
-
-    // __koss_worker_execute(workerId, code)
-    let instance_ptr3 = instance as *mut KossInstance;
-    let exec = NativeFunction::from_copy_closure(move |_this, args, ctx| {
-        let inst = unsafe { &mut *instance_ptr3 };
-        let pool = match inst.worker_pool.as_ref() {
-            Some(p) => p,
-            None => return Ok(JsValue::undefined()),
-        };
-        let worker_id = args.get(0).and_then(|v| v.as_number()).unwrap_or(0.0) as usize;
-        let code = args.get(1).map(|v| js_value_to_string(v, ctx)).unwrap_or_default();
-        match pool.execute(worker_id, &code) {
-            Ok(cmd_id) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"commandId\":{cmd_id}}}")))),
-            Err(e) => Ok(JsValue::from(boa_engine::js_string!(e))),
-        }
-    });
-
-    let js_exec = exec.to_js_function(instance.context.realm());
-    instance.context.register_global_property(
-        boa_engine::js_string!("__koss_worker_execute"),
-        js_exec,
-        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
-    ).ok();
-
-    // __koss_worker_try_recv() → gets next message from any worker
-    let instance_ptr4 = instance as *mut KossInstance;
-    let recv = NativeFunction::from_copy_closure(move |_this, _args, _ctx| {
-        let inst = unsafe { &mut *instance_ptr4 };
-        let pool = match inst.worker_pool.as_ref() {
-            Some(p) => p,
-            None => return Ok(JsValue::null()),
-        };
-        match pool.try_recv() {
-            Some(event) => {
-                let json = match event {
-                    WorkerEvent::Result { worker_id, id, success, value } => {
-                        serde_json::json!({
-                            "type": "result",
-                            "workerId": worker_id,
-                            "id": id,
-                            "success": success,
-                            "value": value,
-                        })
-                    }
-                    WorkerEvent::Message { worker_id, data } => {
-                        serde_json::json!({
-                            "type": "message",
-                            "workerId": worker_id,
-                            "data": data,
-                        })
-                    }
-                    WorkerEvent::Error { worker_id, message } => {
-                        serde_json::json!({
-                            "type": "error",
-                            "workerId": worker_id,
-                            "message": message,
-                        })
-                    }
-                };
-                let s = serde_json::to_string(&json).unwrap_or_default();
-                Ok(JsValue::from(boa_engine::js_string!(s)))
-            }
-            None => Ok(JsValue::null()),
-        }
-    });
-
-    let js_recv = recv.to_js_function(instance.context.realm());
-    instance.context.register_global_property(
-        boa_engine::js_string!("__koss_worker_try_recv"),
-        js_recv,
-        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
-    ).ok();
-
-    // __koss_worker_terminate(workerId)
-    let instance_ptr5 = instance as *mut KossInstance;
-    let term = NativeFunction::from_copy_closure(move |_this, args, _ctx| {
-        let inst = unsafe { &mut *instance_ptr5 };
-        let pool = match inst.worker_pool.as_mut() {
-            Some(p) => p,
-            None => return Ok(JsValue::undefined()),
-        };
-        let worker_id = args.get(0).and_then(|v| v.as_number()).unwrap_or(0.0) as usize;
-        match pool.terminate(worker_id) {
-            Ok(()) => Ok(JsValue::from(boa_engine::js_string!("ok"))),
-            Err(e) => Ok(JsValue::from(boa_engine::js_string!(e))),
-        }
-    });
-
-    let js_term = term.to_js_function(instance.context.realm());
-    instance.context.register_global_property(
-        boa_engine::js_string!("__koss_worker_terminate"),
-        js_term,
-        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
-    ).ok();
-
-    // __koss_worker_shutdown()
-    let instance_ptr6 = instance as *mut KossInstance;
-    let shutdown = NativeFunction::from_copy_closure(move |_this, _args, _ctx| {
-        let inst = unsafe { &mut *instance_ptr6 };
-        if let Some(ref mut pool) = inst.worker_pool {
-            pool.shutdown();
-        }
-        inst.worker_pool = None;
-        Ok(JsValue::from(boa_engine::js_string!("ok")))
-    });
-
-    let js_shutdown = shutdown.to_js_function(instance.context.realm());
-    instance.context.register_global_property(
-        boa_engine::js_string!("__koss_worker_shutdown"),
-        js_shutdown,
-        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
-    ).ok();
 }
 
 fn register_nodejs_globals(ctx: &mut Context) {
@@ -2525,10 +2322,13 @@ const process = {
                         delete globalThis.Buffer;
                         globalThis.module = module;
                         globalThis.exports = module.exports;
-                        eval(parsed.code);
-                        globalThis.module = originalModule;
-                        globalThis.exports = originalExports;
-                        globalThis.Buffer = originalBuffer;
+                        try {
+                            eval(parsed.code);
+                        } finally {
+                            globalThis.module = originalModule;
+                            globalThis.exports = originalExports;
+                            globalThis.Buffer = originalBuffer;
+                        }
                     } else if (parsed.type === 'object') {
                         module.exports = parsed.value;
                     }
@@ -2573,18 +2373,12 @@ fn create_instance_internal(
     _root_dir: Option<&str>,
 ) -> *mut KossInstance {
     let effective_caps = if stable {
-        caps & !(crate::sandbox::KOSS_CAP_ALL_FFI | crate::sandbox::KOSS_CAP_WORKER)
+        caps & !crate::sandbox::KOSS_CAP_ALL_FFI
     } else {
         if caps & crate::sandbox::KOSS_CAP_ALL_FFI != 0 {
             if !FFI_STABLE_WARNED.swap(true, Ordering::Relaxed) {
                 eprintln!("[KossJS WARNING] Unstable mode: FFI features are enabled.");
                 eprintln!("[KossJS WARNING] FFI may have security implications in production.");
-            }
-        }
-        if caps & crate::sandbox::KOSS_CAP_WORKER != 0 {
-            if !WORKER_STABLE_WARNED.swap(true, Ordering::Relaxed) {
-                eprintln!("[KossJS WARNING] Unstable mode: Worker threads are enabled.");
-                eprintln!("[KossJS WARNING] Workers may have security implications in production.");
             }
         }
         caps
@@ -2656,15 +2450,6 @@ fn create_instance_internal(
         register_crypto_functions(&mut instance);
         register_zlib_functions_all(&mut instance);
     }
-    let has_worker = effective_caps & KOSS_CAP_WORKER != 0;
-    if has_worker {
-        register_worker_api(&mut instance);
-    } else if stable && (caps & KOSS_CAP_WORKER != 0) {
-        let worker_stub_code = r#"globalThis.__koss_create_worker_pool = function() { throw new Error('Worker is disabled in stable mode'); };"#;
-        if let Err(e) = instance.context.eval(boa_parser::Source::from_bytes(worker_stub_code.as_bytes())) {
-            eprintln!("Warning: Failed to register Worker stub: {:?}", e);
-        }
-    }
     Box::into_raw(instance)
 }
 
@@ -2696,7 +2481,7 @@ pub extern "C" fn koss_create_with_builtins(
 
 /// Create a new isolated JS instance with specific capabilities and stable mode.
 /// Uses KOSS_BUILTIN_ALL for backward compatibility.
-/// When `stable` is true, FFI and Worker capabilities are stripped from `caps`.
+/// When `stable` is true, FFI capabilities are stripped from `caps`.
 #[unsafe(no_mangle)]
 pub extern "C" fn koss_create_with_caps(caps: u32, stable: bool) -> *mut KossInstance {
     koss_create_with_builtins(caps, crate::builtins::KOSS_BUILTIN_ALL, stable)
@@ -3340,7 +3125,7 @@ pub unsafe extern "C" fn koss_get_capabilities(ptr: *mut KossInstance) -> u32 {
     }
 }
 
-/// Returns true if the instance was created in stable mode (FFI/Worker disabled).
+/// Returns true if the instance was created in stable mode (FFI disabled).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn koss_is_stable(ptr: *mut KossInstance) -> bool {
     output_license_once();
@@ -3452,240 +3237,6 @@ pub unsafe extern "C" fn koss_check_sandbox(
 }
 
 // ===========================================================================
-// C ABI — Worker pool management
-// ===========================================================================
-
-/// Create a worker pool with the given number of worker threads.
-/// Each worker runs in its own OS thread with an isolated JS Context.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn koss_create_worker_pool(
-    ptr: *mut KossInstance,
-    size: i32,
-) -> KossResult {
-    output_license_once();
-    unsafe {
-        if ptr.is_null() {
-            return KossResult::err(2, "null pointer");
-        }
-        if size <= 0 {
-            return KossResult::err(2, "worker pool size must be positive");
-        }
-
-        let instance = &mut *ptr;
-        if instance.capabilities & KOSS_CAP_WORKER == 0 {
-            let msg = if instance.stable {
-                "Worker is disabled in stable mode. Set stable=false when creating the instance to enable Worker features."
-            } else {
-                "worker capability disabled"
-            };
-            return KossResult::err(1, msg);
-        }
-        instance.worker_pool = Some(WorkerPool::new((size as usize).min(MAX_WORKER_POOL_SIZE)));
-        let capped = (size as usize).min(MAX_WORKER_POOL_SIZE);
-        KossResult::ok(&format!("{{\"created\":{capped}}}"))
-    }
-}
-
-/// Post a message to a worker thread. The message is a JSON string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn koss_worker_post_message(
-    ptr: *mut KossInstance,
-    worker_id: i32,
-    data: *const c_char,
-) -> KossResult {
-    output_license_once();
-    unsafe {
-        if ptr.is_null() || data.is_null() {
-            return KossResult::err(2, "null pointer");
-        }
-
-        let instance = &mut *ptr;
-        if instance.capabilities & KOSS_CAP_WORKER == 0 {
-            let msg = if instance.stable {
-                "Worker is disabled in stable mode. Set stable=false when creating the instance to enable Worker features."
-            } else {
-                "worker capability disabled"
-            };
-            return KossResult::err(1, msg);
-        }
-        let pool = match instance.worker_pool.as_ref() {
-            Some(p) => p,
-            None => return KossResult::err(1, "no worker pool created"),
-        };
-
-        let data_str = match CStr::from_ptr(data).to_str() {
-            Ok(s) => s,
-            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
-        };
-
-        match pool.post_message(worker_id as usize, data_str) {
-            Ok(()) => KossResult::ok("ok"),
-            Err(e) => KossResult::err(1, &e),
-        }
-    }
-}
-
-/// Execute JavaScript code on a worker thread. Returns a command ID.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn koss_worker_execute(
-    ptr: *mut KossInstance,
-    worker_id: i32,
-    code: *const c_char,
-) -> KossResult {
-    output_license_once();
-    unsafe {
-        if ptr.is_null() || code.is_null() {
-            return KossResult::err(2, "null pointer");
-        }
-
-        let instance = &mut *ptr;
-        if instance.capabilities & KOSS_CAP_WORKER == 0 {
-            let msg = if instance.stable {
-                "Worker is disabled in stable mode. Set stable=false when creating the instance to enable Worker features."
-            } else {
-                "worker capability disabled"
-            };
-            return KossResult::err(1, msg);
-        }
-        let pool = match instance.worker_pool.as_ref() {
-            Some(p) => p,
-            None => return KossResult::err(1, "no worker pool created"),
-        };
-
-        let code_str = match CStr::from_ptr(code).to_str() {
-            Ok(s) => s,
-            Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
-        };
-
-        match pool.execute(worker_id as usize, code_str) {
-            Ok(cmd_id) => KossResult::ok(&format!("{{\"commandId\":{cmd_id}}}")),
-            Err(e) => KossResult::err(1, &e),
-        }
-    }
-}
-
-/// Try to receive a message from any worker (non-blocking).
-/// Returns JSON or "null" if no message available.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn koss_worker_try_recv(
-    ptr: *mut KossInstance,
-) -> KossResult {
-    output_license_once();
-    unsafe {
-        if ptr.is_null() {
-            return KossResult::err(2, "null pointer");
-        }
-
-        let instance = &mut *ptr;
-        if instance.capabilities & KOSS_CAP_WORKER == 0 {
-            let msg = if instance.stable {
-                "Worker is disabled in stable mode. Set stable=false when creating the instance to enable Worker features."
-            } else {
-                "worker capability disabled"
-            };
-            return KossResult::err(1, msg);
-        }
-        let pool = match instance.worker_pool.as_ref() {
-            Some(p) => p,
-            None => return KossResult::err(1, "no worker pool created"),
-        };
-
-        match pool.try_recv() {
-            Some(event) => {
-                let json = match event {
-                    WorkerEvent::Result { worker_id, id, success, value } => {
-                        serde_json::json!({
-                            "type": "result",
-                            "workerId": worker_id,
-                            "id": id,
-                            "success": success,
-                            "value": value,
-                        })
-                    }
-                    WorkerEvent::Message { worker_id, data } => {
-                        serde_json::json!({
-                            "type": "message",
-                            "workerId": worker_id,
-                            "data": data,
-                        })
-                    }
-                    WorkerEvent::Error { worker_id, message } => {
-                        serde_json::json!({
-                            "type": "error",
-                            "workerId": worker_id,
-                            "message": message,
-                        })
-                    }
-                };
-                KossResult::ok(&json.to_string())
-            }
-            None => KossResult::ok("null"),
-        }
-    }
-}
-
-/// Terminate a specific worker thread.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn koss_worker_terminate(
-    ptr: *mut KossInstance,
-    worker_id: i32,
-) -> KossResult {
-    output_license_once();
-    unsafe {
-        if ptr.is_null() {
-            return KossResult::err(2, "null pointer");
-        }
-
-        let instance = &mut *ptr;
-        if instance.capabilities & KOSS_CAP_WORKER == 0 {
-            let msg = if instance.stable {
-                "Worker is disabled in stable mode. Set stable=false when creating the instance to enable Worker features."
-            } else {
-                "worker capability disabled"
-            };
-            return KossResult::err(1, msg);
-        }
-        let pool = match instance.worker_pool.as_mut() {
-            Some(p) => p,
-            None => return KossResult::err(1, "no worker pool created"),
-        };
-
-        match pool.terminate(worker_id as usize) {
-            Ok(()) => KossResult::ok("ok"),
-            Err(e) => KossResult::err(1, &e),
-        }
-    }
-}
-
-/// Shut down all worker threads and clean up the pool.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn koss_worker_shutdown(
-    ptr: *mut KossInstance,
-) -> KossResult {
-    output_license_once();
-    unsafe {
-        if ptr.is_null() {
-            return KossResult::err(2, "null pointer");
-        }
-
-        let instance = &mut *ptr;
-        if instance.capabilities & KOSS_CAP_WORKER == 0 {
-            let msg = if instance.stable {
-                "Worker is disabled in stable mode. Set stable=false when creating the instance to enable Worker features."
-            } else {
-                "worker capability disabled"
-            };
-            return KossResult::err(1, msg);
-        }
-        if let Some(ref mut pool) = instance.worker_pool {
-            pool.shutdown();
-        }
-        instance.worker_pool = None;
-        KossResult::ok("ok")
-    }
-}
-
-// ===========================================================================
 // C ABI — Internal Bindings
 // ===========================================================================
 
@@ -3754,8 +3305,6 @@ fn is_capability_enabled(caps: u32, audit_mask: u32, name: &str) -> AuditDecisio
         "net" | "url" | "http_parser" | "dns" | "dgram" => KOSS_CAP_ALL_NET,
         // 加密模块
         "crypto" => KOSS_CAP_ALL_CRYPTO,
-        // Worker
-        "worker" | "worker_threads" => KOSS_CAP_WORKER,
         _ => return AuditDecision::Allow, // always-available modules
     };
     
@@ -3988,24 +3537,6 @@ fn handle_binding(name: &str) -> Result<String, String> {
         .to_string()),
         "fetch" => Ok(serde_json::json!({
             "fetch": true,
-        })
-        .to_string()),
-        "worker_threads" => Ok(serde_json::json!({
-            "Worker": true,
-            "isMainThread": true,
-            "parentPort": null,
-            "workerData": null,
-            "getEnvironmentData": true,
-            "setEnvironmentData": true,
-            "SHARE_ENV": true,
-            "threadId": 0,
-        })
-        .to_string()),
-        "worker" => Ok(serde_json::json!({
-            "createWorker": true,
-            "postMessage": true,
-            "onMessage": true,
-            "terminate": true,
         })
         .to_string()),
         // "util" => Ok(serde_json::json!({
@@ -4844,17 +4375,17 @@ mod tests {
 
     #[test]
     fn test_cancel_error_message_debug_enabled() {
-        let msg = cancel_error_message("worker", true);
+        let msg = cancel_error_message("fs", true);
         assert!(msg.contains("KossCancelError"));
-        assert!(msg.contains("worker"));
+        assert!(msg.contains("fs"));
         assert!(msg.contains("sandbox audit cancelled"));
     }
 
     #[test]
     fn test_cancel_error_message_debug_disabled() {
-        let msg = cancel_error_message("worker", false);
+        let msg = cancel_error_message("fs", false);
         assert!(msg.contains("KossCancelError"));
         assert!(msg.contains("Access denied"));
-        assert!(!msg.contains("worker"));
+        assert!(!msg.contains("fs"));
     }
 }

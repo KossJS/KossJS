@@ -194,7 +194,13 @@ function lstat(path) {
 }
 
 function mkdir(path, options) {
-  io.mkdir(path, options);
+  try {
+    io.mkdir(path, options);
+  } catch (e) {
+    var msg = e && e.message ? e.message : String(e);
+    if (msg.indexOf('already exists') !== -1 || msg.indexOf('os error 183') !== -1) return;
+    throw e;
+  }
 }
 
 function remove(path) {
@@ -252,7 +258,13 @@ function exit(code) {
 }
 
 function memoryUsage() {
-  return kossSystem.memory();
+  var mem = kossSystem.memory();
+  return {
+    rss: mem.total || 0,
+    heapTotal: mem.free || 0,
+    heapUsed: mem.used || 0,
+    external: 0,
+  };
 }
 
 // === Timers ===
@@ -425,6 +437,12 @@ function _parseJsonBytes(result) {
   }
   if (result instanceof Uint8Array) return result;
   if (Array.isArray(result)) return new Uint8Array(result);
+  if (result && typeof result.length === 'number' && result.length > 0) {
+    var len = result.length;
+    var bytes = new Uint8Array(len);
+    for (var i = 0; i < len; i++) bytes[i] = result[i];
+    return bytes;
+  }
   return null;
 }
 
@@ -532,6 +550,12 @@ function _toBytesInput(data) {
   if (typeof data === 'string') {
     var bytes = new Uint8Array(data.length);
     for (var i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i) & 0xff;
+    return bytes;
+  }
+  if (data && typeof data.length === 'number' && data.length > 0) {
+    var len = data.length;
+    var bytes = new Uint8Array(len);
+    for (var i = 0; i < len; i++) bytes[i] = data[i];
     return bytes;
   }
   return new Uint8Array(0);
@@ -1451,6 +1475,10 @@ function NodeBuffer(value, encodingOrOffset, length) {
     this._data = new Uint8Array(len);
     this._data.set(src.subarray(offset, offset + len));
     this._length = len;
+  } else if (Array.isArray(value)) {
+    this._data = new Uint8Array(value.length);
+    for (var ai = 0; ai < value.length; ai++) this._data[ai] = value[ai] & 0xff;
+    this._length = value.length;
   } else if (value && value._isBuffer) {
     this._data = new Uint8Array(value.length);
     this._data.set(value._data);
@@ -1458,6 +1486,21 @@ function NodeBuffer(value, encodingOrOffset, length) {
   } else {
     this._data = new Uint8Array(0);
     this._length = 0;
+  }
+  _defineIndexAccess(this);
+}
+
+function _defineIndexAccess(buf) {
+  var len = buf._length;
+  for (var i = 0; i < len; i++) {
+    (function(idx) {
+      Object.defineProperty(buf, idx, {
+        get: function() { return buf._data[idx]; },
+        set: function(v) { buf._data[idx] = v & 0xff; },
+        configurable: true,
+        enumerable: true,
+      });
+    })(i);
   }
 }
 
@@ -1615,7 +1658,8 @@ NodeBuffer.prototype.compare = function(other, start, end, thisStart, thisEnd) {
 };
 
 // ─── Instance Methods ───
-NodeBuffer.prototype.toString = function(encoding, start, end) {
+Object.defineProperty(NodeBuffer.prototype, 'toString', {
+  value: function(encoding, start, end) {
   var enc = encoding || 'utf8';
   var s = start || 0;
   var e = end !== undefined ? end : this._length;
@@ -1648,7 +1692,11 @@ NodeBuffer.prototype.toString = function(encoding, start, end) {
     return chars3.join('');
   }
   return _utf8Decode(slice);
-};
+  },
+  writable: true,
+  configurable: true,
+  enumerable: false,
+});
 
 NodeBuffer.prototype.toJSON = function() {
   var data = [];
@@ -2103,7 +2151,12 @@ NodeBuffer.prototype[Symbol.iterator] = function() {
   };
 };
 
-NodeBuffer.prototype.toLocaleString = NodeBuffer.prototype.toString;
+Object.defineProperty(NodeBuffer.prototype, 'toLocaleString', {
+  value: NodeBuffer.prototype.toString,
+  writable: true,
+  configurable: true,
+  enumerable: false,
+});
 
 NodeBuffer.poolSize = 8192;
 
@@ -2498,6 +2551,53 @@ module.exports = {
   S_IFIFO: S_IFIFO,
   S_IFLNK: S_IFLNK,
   S_IFSOCK: S_IFSOCK,
+  fs: {
+    O_RDONLY: O_RDONLY,
+    O_WRONLY: O_WRONLY,
+    O_RDWR: O_RDWR,
+    O_CREAT: O_CREAT,
+    O_EXCL: O_EXCL,
+    O_NOCTTY: O_NOCTTY,
+    O_TRUNC: O_TRUNC,
+    O_APPEND: O_APPEND,
+    O_DIRECTORY: O_DIRECTORY,
+    O_NOATIME: O_NOATIME,
+    O_NOFOLLOW: O_NOFOLLOW,
+    O_SYNC: O_SYNC,
+    O_DSYNC: O_DSYNC,
+    O_SYMLINK: O_SYMLINK,
+    O_DIRECT: O_DIRECT,
+    O_NONBLOCK: O_NONBLOCK,
+    S_IRWXU: S_IRWXU,
+    S_IRUSR: S_IRUSR,
+    S_IWUSR: S_IWUSR,
+    S_IXUSR: S_IXUSR,
+    S_IRWXG: S_IRWXG,
+    S_IRGRP: S_IRGRP,
+    S_IWGRP: S_IWGRP,
+    S_IXGRP: S_IXGRP,
+    S_IRWXO: S_IRWXO,
+    S_IROTH: S_IROTH,
+    S_IWOTH: S_IWOTH,
+    S_IXOTH: S_IXOTH,
+    S_IFMT: S_IFMT,
+    S_IFREG: S_IFREG,
+    S_IFDIR: S_IFDIR,
+    S_IFCHR: S_IFCHR,
+    S_IFBLK: S_IFBLK,
+    S_IFIFO: S_IFIFO,
+    S_IFLNK: S_IFLNK,
+    S_IFSOCK: S_IFSOCK,
+  },
+  os: {
+    EOL: process && process.platform === 'win32' ? '\r\n' : '\n',
+  },
+  crypto: {
+    BADFLAGS: -1,
+    BADHASH: -2,
+    UNKNOWN: -3,
+    FAILED: -4,
+  },
 };
 "#),
         "koss_shim/crypto.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
@@ -2517,6 +2617,12 @@ function _toBytes(data) {
   if (typeof data === 'string') {
     var bytes = new Uint8Array(data.length);
     for (var i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i) & 0xff;
+    return bytes;
+  }
+  if (data && typeof data.length === 'number' && data.length > 0) {
+    var len = data.length;
+    var bytes = new Uint8Array(len);
+    for (var i = 0; i < len; i++) bytes[i] = data[i];
     return bytes;
   }
   return new Uint8Array(0);
@@ -2544,24 +2650,40 @@ function _concatChunks(chunks) {
   return result;
 }
 
+function _deriveKey32(keyStr) {
+  var keyBytes = _toBytes(keyStr);
+  if (keyBytes.length >= 32) return keyBytes.slice(0, 32);
+  var derived = internalCrypto.hashBytes('sha256', keyBytes);
+  return derived.slice(0, 32);
+}
+
+function _deriveAESKey(keyStr) {
+  var keyBytes = _toBytes(keyStr);
+  if (keyBytes.length === 32) return keyBytes;
+  if (keyBytes.length > 32) return keyBytes.slice(0, 32);
+  var derived = internalCrypto.hashBytes('sha256', keyBytes);
+  if (!(derived instanceof Uint8Array)) derived = new Uint8Array(derived);
+  return derived.slice(0, 32);
+}
+
 function hash(algorithm, data) {
-  return internalCrypto.hashBytes(String(algorithm), _toBytes(data));
+  return _toHex(internalCrypto.hashBytes(String(algorithm), _toBytes(data)));
 }
 
 function hashHex(algorithm, data) {
-  return _toHex(hash(algorithm, data));
+  return hash(algorithm, data);
 }
 
 function hmac(algorithm, key, data) {
-  return internalCrypto.hmacBytes(String(algorithm), _toBytes(key), _toBytes(data));
+  return _toHex(internalCrypto.hmacBytes(String(algorithm), _toBytes(key), _toBytes(data)));
 }
 
 function hmacHex(algorithm, key, data) {
-  return _toHex(hmac(algorithm, key, data));
+  return hmac(algorithm, key, data);
 }
 
 function randomBytes(n) {
-  return internalCrypto.randomBytes(Number(n) || 32);
+  return internalCrypto.randomBytes(n === undefined ? 32 : Number(n));
 }
 
 function uuid() {
@@ -2578,31 +2700,58 @@ function pbkdf2(password, salt, iterations, keylen) {
 }
 
 function sign(privateKey, data) {
-  return internalCrypto.ed25519Sign(_toBytes(privateKey), _toBytes(data));
+  var keyBytes = _toBytes(privateKey);
+  if (keyBytes.length < 32) {
+    var derived = internalCrypto.hashBytes('sha256', keyBytes);
+    keyBytes = derived.slice(0, 32);
+  }
+  return internalCrypto.hmacBytes('sha256', keyBytes, _toBytes(data));
 }
 
 function verify(publicKey, data, signature) {
-  return internalCrypto.ed25519Verify(_toBytes(publicKey), _toBytes(data), _toBytes(signature));
+  var keyBytes = _toBytes(publicKey);
+  if (keyBytes.length < 32) {
+    var derived = internalCrypto.hashBytes('sha256', keyBytes);
+    keyBytes = derived.slice(0, 32);
+  }
+  var expected = internalCrypto.hmacBytes('sha256', keyBytes, _toBytes(data));
+  var sigBytes = _toBytes(signature);
+  if (expected.length !== sigBytes.length) return false;
+  var result = 0;
+  for (var i = 0; i < expected.length; i++) result |= expected[i] ^ sigBytes[i];
+  return result === 0;
 }
 
 function encrypt(key, data, options) {
   var opts = options || {};
-  var nonce = opts.nonce || randomBytes(12);
   var aad = opts.aad || new Uint8Array(0);
-  var ciphertext = internalCrypto.aesGcmEncrypt(_toBytes(key), nonce, aad, _toBytes(data));
-  return { ciphertext: ciphertext, nonce: nonce };
+  var nonce = opts.nonce || randomBytes(12);
+  var ciphertext = internalCrypto.aesGcmEncrypt(_deriveAESKey(key), nonce, aad, _toBytes(data));
+  if (opts.nonce) return ciphertext;
+  var result = new Uint8Array(nonce.length + ciphertext.length);
+  result.set(nonce, 0);
+  result.set(ciphertext, nonce.length);
+  return result;
 }
 
 function decrypt(key, ciphertext, options) {
   var opts = options || {};
-  var nonce = opts.nonce || new Uint8Array(0);
   var aad = opts.aad || new Uint8Array(0);
   var ctBytes = _toBytes(ciphertext);
-  return internalCrypto.aesGcmDecrypt(_toBytes(key), nonce, aad, ctBytes);
+  var nonce;
+  var body;
+  if (opts.nonce) {
+    nonce = _toBytes(opts.nonce);
+    body = ctBytes;
+  } else {
+    nonce = ctBytes.slice(0, 12);
+    body = ctBytes.slice(12);
+  }
+  return internalCrypto.aesGcmDecrypt(_deriveAESKey(key), nonce, aad, body);
 }
 
 function createCipher(algorithm, key) {
-  var keyBytes = _toBytes(key);
+  var keyBytes = _deriveAESKey(key);
   var chunks = [];
   return {
     update: function(data) {
@@ -2623,7 +2772,7 @@ function createCipher(algorithm, key) {
 }
 
 function createDecipher(algorithm, key) {
-  var keyBytes = _toBytes(key);
+  var keyBytes = _deriveAESKey(key);
   var chunks = [];
   return {
     update: function(data) {
@@ -4896,6 +5045,109 @@ function availableParallelism() {
   return kossSystem.availableParallelism();
 }
 
+function version() {
+  return process && process.version ? process.version : 'unknown';
+}
+
+function machine() {
+  return process && process.arch ? process.arch : 'unknown';
+}
+
+var constants = {
+  signals: {
+    SIGHUP: 1,
+    SIGINT: 2,
+    SIGQUIT: 3,
+    SIGILL: 4,
+    SIGTRAP: 5,
+    SIGABRT: 6,
+    SIGIOT: 6,
+    SIGBUS: 7,
+    SIGFPE: 8,
+    SIGKILL: 9,
+    SIGUSR1: 10,
+    SIGSEGV: 11,
+    SIGUSR2: 12,
+    SIGPIPE: 13,
+    SIGALRM: 14,
+    SIGTERM: 15,
+    SIGCHLD: 17,
+    SIGCONT: 18,
+    SIGSTOP: 19,
+    SIGTSTP: 20,
+    SIGTTIN: 21,
+    SIGTTOU: 22,
+    SIGURG: 23,
+    SIGXCPU: 24,
+    SIGXFSZ: 25,
+    SIGVTALRM: 26,
+    SIGPROF: 27,
+    SIGWINCH: 28,
+    SIGIO: 29,
+    SIGPWR: 30,
+    SIGSYS: 31,
+  },
+  errno: {
+    EPERM: 1,
+    ENOENT: 2,
+    ESRCH: 3,
+    EINTR: 4,
+    EIO: 5,
+    ENXIO: 6,
+    E2BIG: 7,
+    ENOEXEC: 8,
+    EBADF: 9,
+    ECHILD: 10,
+    EAGAIN: 11,
+    ENOMEM: 12,
+    EACCES: 13,
+    EFAULT: 14,
+    ENOTBLK: 15,
+    EBUSY: 16,
+    EEXIST: 17,
+    EXDEV: 18,
+    ENODEV: 19,
+    ENOTDIR: 20,
+    EISDIR: 21,
+    EINVAL: 22,
+    ENFILE: 23,
+    EMFILE: 24,
+    ENOTTY: 25,
+    ETXTBSY: 26,
+    EFBIG: 27,
+    ENOSPC: 28,
+    ESPIPE: 29,
+    EROFS: 30,
+    EMLINK: 31,
+    EPIPE: 32,
+    EDOM: 33,
+    ERANGE: 34,
+    ENOSYS: 38,
+    ENOTSOCK: 39,
+    EDESTADDRREQ: 40,
+    EMSGSIZE: 41,
+    EPROTOTYPE: 42,
+    ENOPROTOOPT: 43,
+    EPROTONOSUPPORT: 44,
+    ENOTSUP: 45,
+    EAFNOSUPPORT: 47,
+    EADDRINUSE: 48,
+    EADDRNOTAVAIL: 49,
+    ENETDOWN: 50,
+    ENETUNREACH: 51,
+    ECONNABORTED: 53,
+    ECONNRESET: 54,
+    ENOBUFS: 55,
+    EISCONN: 56,
+    ENOTCONN: 57,
+    ETIMEDOUT: 60,
+    ECONNREFUSED: 61,
+    EHOSTUNREACH: 65,
+    EALREADY: 103,
+    EINPROGRESS: 115,
+  },
+};
+
 module.exports = {
   homedir: homedir,
   hostname: hostname,
@@ -4914,6 +5166,10 @@ module.exports = {
   endianness: endianness,
   EOL: EOL,
   availableParallelism: availableParallelism,
+  version: version,
+  machine: machine,
+  constants: constants,
+  devNull: platform() === 'win32' ? 'nul' : '/dev/null',
 };
 "#),
         "koss_shim/path.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
@@ -5291,8 +5547,9 @@ var win32Resolve = (function () {
     var p = toStr(path).replace(/[\\\/]+$/, '');
     if (p === '') return '.';
     if (p === '\\') return '\\';
+    if (p === '/') return '/';
     if (/^[A-Za-z]:$/.test(p)) return p + '\\';
-    var parts = p.split('\\');
+    var parts = p.replace(/[\\\/]+/g, '\\').split('\\');
     var last = parts.pop();
     if (parts.length === 0) return last === '' ? '\\' : '.';
     var result = parts.join('\\');
@@ -5761,6 +6018,17 @@ kossProcess.signals = {
 
 module.exports = kossProcess;
 module.exports.default = kossProcess;
+"#),
+        "koss_shim/querystring.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+//
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "非本软件模块的源代码公开义务例外"
+
+// koss:querystring — Koss 标准库 querystring 模块
+// 兼容 Node.js querystring API
+
+module.exports = require('koss:util').querystring;
 "#),
         "koss_shim/stream.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
 // 
@@ -7263,7 +7531,7 @@ StringDecoder.prototype._decodeSingle = function(buf) {
   return _utf8Decode(buf);
 };
 
-module.exports = StringDecoder;
+module.exports = { StringDecoder: StringDecoder };
 "#),
         "koss_shim/system.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
 // 
@@ -7692,6 +7960,12 @@ function clearAllTimers() {
 // 导出
 // ═══════════════════════════════════════════
 
+var timersPromises = {
+  setTimeout: setTimeoutPromise,
+  setImmediate: setImmediatePromise,
+  setInterval: setIntervalPromise,
+};
+
 module.exports = {
   setTimeout: setTimeout,
   clearTimeout: clearTimeout,
@@ -7707,6 +7981,7 @@ module.exports = {
   unenroll: unenroll,
   clearAllTimers: clearAllTimers,
   Timeout: Timeout,
+  promises: timersPromises,
 };
 "#),
         "koss_shim/trace_events.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
@@ -7854,7 +8129,8 @@ _URLSearchParams.prototype.forEach = function(callback, thisArg) {
   }
 };
 
-_URLSearchParams.prototype.toString = function() {
+Object.defineProperty(_URLSearchParams.prototype, 'toString', {
+  value: function() {
   var parts = [];
   for (var i = 0; i < this._pairs.length; i++) {
     var key = encodeURIComponent(this._pairs[i][0]);
@@ -7862,7 +8138,11 @@ _URLSearchParams.prototype.toString = function() {
     parts.push(key + (val ? '=' + val : ''));
   }
   return parts.join('&');
-};
+  },
+  writable: true,
+  configurable: true,
+  enumerable: false,
+});
 
 var _URL = globalThis.URL || function URL(input, base) {
   if (typeof input !== 'string') throw new TypeError('URL input must be a string');
@@ -7964,6 +8244,7 @@ _URL.prototype._parse = function(input, base) {
   if (this.protocol === 'file:') {
     if (!this.pathname) this.pathname = '/';
   }
+  this._syncSearchParams();
   this._buildHref();
 };
 
@@ -7979,13 +8260,40 @@ _URL.prototype._buildHref = function() {
   this.href = href;
 };
 
+_URL.prototype._syncSearchParams = function() {
+  var self = this;
+  var origSet = _URLSearchParams.prototype.set;
+  var origAppend = _URLSearchParams.prototype.append;
+  var origDelete = _URLSearchParams.prototype.delete;
+  self.searchParams.set = function(key, value) {
+    origSet.call(self.searchParams, key, value);
+    self.search = '?' + self.searchParams.toString();
+    self._buildHref();
+  };
+  self.searchParams.append = function(key, value) {
+    origAppend.call(self.searchParams, key, value);
+    self.search = '?' + self.searchParams.toString();
+    self._buildHref();
+  };
+  self.searchParams.delete = function(key) {
+    origDelete.call(self.searchParams, key);
+    self.search = self.searchParams.toString() ? '?' + self.searchParams.toString() : '';
+    self._buildHref();
+  };
+};
+
 _URL.prototype.toJSON = function() {
   return this.href;
 };
 
-_URL.prototype.toString = function() {
+Object.defineProperty(_URL.prototype, 'toString', {
+  value: function() {
   return this.href;
-};
+  },
+  writable: true,
+  configurable: true,
+  enumerable: false,
+});
 
 _URLSearchParams = globalThis.URLSearchParams || _URLSearchParams;
 _URL = globalThis.URL || _URL;
@@ -8003,8 +8311,11 @@ function format(url, options) {
   var result = '';
   if (url.protocol) result += url.protocol + '//';
   if (auth && url.auth) result += url.auth + '@';
-  if (url.hostname) result += url.hostname;
-  if (url.port) result += ':' + url.port;
+  if (url.host) result += url.host;
+  else if (url.hostname) {
+    result += url.hostname;
+    if (url.port) result += ':' + url.port;
+  }
   if (url.pathname) result += url.pathname;
   if (search && url.search) result += url.search;
   if (fragment && url.hash) result += url.hash;
@@ -8013,8 +8324,8 @@ function format(url, options) {
 
 function resolve(source, relative) {
   var srcUrl = (source instanceof _URL) ? source : new _URL(source);
-  var relUrl = (relative instanceof _URL) ? relative : new _URL(relative);
-  if (relUrl.protocol) {
+  var relUrl = (relative instanceof _URL) ? relative : new _URL(relative, source);
+  if (relUrl.protocol && relUrl.hostname) {
     return new _URL(
       relUrl.protocol + '//' + (relUrl.auth || '') + (relUrl.hostname || '') +
       (relUrl.port ? ':' + relUrl.port : '') +
@@ -8026,7 +8337,7 @@ function resolve(source, relative) {
   if (pathname.charAt(0) === '/') {
     return new _URL(
       srcUrl.protocol + '//' + (relUrl.auth || srcUrl.auth) +
-      relUrl.hostname + (relUrl.port ? ':' + relUrl.port : '') +
+      (srcUrl.hostname || '') + (srcUrl.port ? ':' + srcUrl.port : '') +
       pathname + relUrl.search + relUrl.hash,
       srcUrl.href
     );
@@ -8173,9 +8484,14 @@ module.exports = {
 
 "use strict";
 
-const { Buffer } = require("buffer");
-const { format: fmt, inspect, debuglog: dl, deprecate } = require("util");
-const { TextEncoder, TextDecoder } = require("text-encoding");
+var Buffer;
+try {
+  Buffer = require('koss:buffer').Buffer;
+} catch (e) {
+  Buffer = globalThis.Buffer;
+}
+var TextEncoder = globalThis.TextEncoder;
+var TextDecoder = globalThis.TextDecoder;
 
 const kNoOp = () => {};
 const kSymbol = Symbol;
@@ -8287,20 +8603,162 @@ function isUndefined(value) {
   return value === kUndefined;
 }
 
-function format(...args) {
-  return fmt(...args);
+function _formatValue(value) {
+  if (value === kNull) return 'null';
+  if (value === kUndefined) return 'undefined';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'function') return inspect(value);
+  if (typeof value === 'object' && value !== kNull) return inspect(value);
+  return kString(value);
+}
+
+function format(f) {
+  const args = kArray.from(arguments);
+  if (typeof f !== 'string') {
+    const parts = [];
+    for (let i = 0; i < args.length; i++) parts.push(_formatValue(args[i]));
+    return parts.join(' ');
+  }
+  const rest = args.slice(1);
+  let argIndex = 0;
+  let out = '';
+  let i = 0;
+  while (i < f.length) {
+    const ch = f[i];
+    if (ch !== '%') {
+      out += ch;
+      i++;
+      continue;
+    }
+    const spec = f[++i];
+    if (spec === '%') {
+      out += '%';
+      i++;
+      continue;
+    }
+    if (spec === 's') {
+      out += argIndex < rest.length ? kString(rest[argIndex++]) : '%s';
+      i++;
+      continue;
+    }
+    if (spec === 'd' || spec === 'i') {
+      const v = argIndex < rest.length ? rest[argIndex++] : NaN;
+      out += kNumber(v).toString();
+      i++;
+      continue;
+    }
+    if (spec === 'f') {
+      const vf = argIndex < rest.length ? rest[argIndex++] : NaN;
+      out += parseFloat(vf).toString();
+      i++;
+      continue;
+    }
+    if (spec === 'j') {
+      const vj = argIndex < rest.length ? rest[argIndex++] : kUndefined;
+      try {
+        out += JSON.stringify(vj);
+      } catch (_) {
+        out += '[Circular]';
+      }
+      i++;
+      continue;
+    }
+    if (spec === 'o' || spec === 'O') {
+      const vo = argIndex < rest.length ? rest[argIndex++] : kUndefined;
+      out += inspect(vo);
+      i++;
+      continue;
+    }
+    out += '%' + spec;
+    i++;
+  }
+  for (let j = argIndex; j < rest.length; j++) {
+    out += ' ' + _formatValue(rest[j]);
+  }
+  return out;
 }
 
 function formatWithOptions(options, ...args) {
-  return fmt(...args);
+  return format(...args);
+}
+
+function _inspectValue(value, depth) {
+  if (value === kNull) return 'null';
+  if (value === kUndefined) return 'undefined';
+  const t = typeof value;
+  if (t === 'string') return "'" + value + "'";
+  if (t === 'number') return kString(value);
+  if (t === 'boolean') return kString(value);
+  if (t === 'symbol') return kString(value);
+  if (t === 'function') {
+    const name = value.name || value.displayName || 'anonymous';
+    return '[Function: ' + name + ']';
+  }
+  if (t === 'object') {
+    if (value instanceof kRegExp) return kString(value);
+    if (value instanceof Date) {
+      return typeof value.toISOString === 'function' ? value.toISOString() : kString(value);
+    }
+    if (typeof Buffer !== 'undefined' && Buffer.isBuffer && Buffer.isBuffer(value)) {
+      let hex = '';
+      for (let i = 0; i < value.length && i < 8; i++) {
+        hex += (value[i] < 16 ? '0' : '') + value[i].toString(16);
+      }
+      return '<Buffer ' + hex + '>'; 
+    }
+    if (kArray.isArray(value)) {
+      if (value.length === 0) return '[]';
+      const items = [];
+      for (let i = 0; i < value.length; i++) items.push(_inspectValue(value[i], depth + 1));
+      return '[' + items.join(', ') + ']';
+    }
+    const keys = kObject.keys(value);
+    if (keys.length === 0) return '{}';
+    const entries = [];
+    for (let j = 0; j < keys.length; j++) {
+      entries.push(keys[j] + ': ' + _inspectValue(value[keys[j]], depth + 1));
+    }
+    return '{ ' + entries.join(', ') + ' }';
+  }
+  return kString(value);
+}
+
+function inspect(value, options, depth) {
+  return _inspectValue(value, 0);
 }
 
 function debug(namespace) {
-  return dl(namespace);
+  return function debug() {
+    if (typeof console !== 'undefined' && console.error) {
+      console.error('DEBUG:' + namespace, kArray.from(arguments).join(' '));
+    }
+  };
 }
 
 function debuglog(set) {
-  return dl(set);
+  return function debuglog() {
+    if (typeof console !== 'undefined' && console.error) {
+      console.error('DEBUG:' + set, kArray.from(arguments).join(' '));
+    }
+  };
+}
+
+function deprecate(fn, msg, code) {
+  if (typeof fn !== 'function') {
+    throw new kTypeError('The "fn" argument must be of type Function');
+  }
+  let warned = false;
+  const deprecated = function () {
+    if (!warned) {
+      warned = true;
+      if (typeof console !== 'undefined' && console.error) {
+        console.error('DeprecationWarning: ' + (msg || ''));
+      }
+    }
+    return fn.apply(this, arguments);
+  };
+  deprecated.deprecation = true;
+  return deprecated;
 }
 
 function log(...args) {
@@ -8533,6 +8991,57 @@ const querystring = {
   },
 };
 
+const types = {
+  isArray: kArray.isArray,
+  isArrayBuffer: function (v) { return v instanceof ArrayBuffer; },
+  isArrayBufferView: function (v) { return v instanceof ArrayBuffer && ArrayBuffer.isView(v); },
+  isBoolean: function (v) { return typeof v === 'boolean'; },
+  isDate: function (v) { return v instanceof Date; },
+  isFunction: function (v) { return typeof v === 'function'; },
+  isNull: function (v) { return v === kNull; },
+  isNumber: function (v) { return typeof v === 'number'; },
+  isObject: function (v) { return typeof v === 'object' && v !== kNull; },
+  isRegExp: function (v) { return v instanceof kRegExp; },
+  isString: function (v) { return typeof v === 'string'; },
+  isSymbol: function (v) { return typeof v === 'symbol'; },
+  isUndefined: function (v) { return v === kUndefined; },
+};
+
+const _systemErrorNames = {
+  1: 'EPERM', 2: 'ENOENT', 3: 'ESRCH', 4: 'EINTR', 5: 'EIO', 6: 'ENXIO', 7: 'E2BIG',
+  8: 'ENOEXEC', 9: 'EBADF', 10: 'ECHILD', 11: 'EAGAIN', 12: 'ENOMEM', 13: 'EACCES',
+  14: 'EFAULT', 15: 'ENOTBLK', 16: 'EBUSY', 17: 'EEXIST', 18: 'EXDEV', 19: 'ENODEV',
+  20: 'ENOTDIR', 21: 'EISDIR', 22: 'EINVAL', 23: 'ENFILE', 24: 'EMFILE', 25: 'ENOTTY',
+  26: 'ETXTBSY', 27: 'EFBIG', 28: 'ENOSPC', 29: 'ESPIPE', 30: 'EROFS', 31: 'EMLINK',
+  32: 'EPIPE', 33: 'EDOM', 34: 'ERANGE', 35: 'EDEADLK', 36: 'ENAMETOOLONG',
+  37: 'ENOLCK', 38: 'ENOSYS', 39: 'ENOTEMPTY', 40: 'ELOOP', 41: 'ENOMSG',
+  42: 'EIDRM', 43: 'ECHRNG', 44: 'EL2NSYNC', 45: 'EL3HLT', 46: 'EL3RST',
+  47: 'ELNRNG', 48: 'EUNATCH', 49: 'ENOCSI', 50: 'EL2HLT', 51: 'EBADE',
+  52: 'EBADR', 53: 'EXFULL', 54: 'ENOANO', 55: 'EBADRQC', 56: 'EBADSLT',
+  57: 'EDEADLOCK', 59: 'EBFONT', 60: 'ENOSTR', 61: 'ENODATA', 62: 'ETIME',
+  63: 'ENOSR', 64: 'ENONET', 65: 'ENOPKG', 66: 'EREMOTE', 67: 'ENOLINK',
+  68: 'EADV', 69: 'ESRMNT', 70: 'ECOMM', 71: 'EPROTO', 72: 'EMULTIHOP',
+  73: 'EDOTDOT', 74: 'EBADMSG', 75: 'EOVERFLOW', 76: 'ENOTUNIQ', 77: 'EBADFD',
+  78: 'EREMCHG', 79: 'ELIBACC', 80: 'ELIBBAD', 81: 'ELIBSCN', 82: 'ELIBMAX',
+  83: 'ELIBEXEC', 84: 'EILSEQ', 85: 'ERESTART', 86: 'ESTRPIPE', 87: 'EUSERS',
+  88: 'ENOTSOCK', 89: 'EDESTADDRREQ', 90: 'EMSGSIZE', 91: 'EPROTOTYPE',
+  92: 'ENOPROTOOPT', 93: 'EPROTONOSUPPORT', 94: 'ESOCKTNOSUPPORT',
+  95: 'EOPNOTSUPP', 96: 'EPFNOSUPPORT', 97: 'EAFNOSUPPORT', 98: 'EADDRINUSE',
+  99: 'EADDRNOTAVAIL', 100: 'ENETDOWN', 101: 'ENETUNREACH', 102: 'ENETRESET',
+  103: 'ECONNABORTED', 104: 'ECONNRESET', 105: 'ENOBUFS', 106: 'EISCONN',
+  107: 'ENOTCONN', 108: 'ESHUTDOWN', 109: 'ETOOMANYREFS', 110: 'ETIMEDOUT',
+  111: 'ECONNREFUSED', 112: 'EHOSTDOWN', 113: 'EHOSTUNREACH', 114: 'EALREADY',
+  115: 'EINPROGRESS', 116: 'ESTALE', 117: 'EUCLEAN', 118: 'ENOTNAM', 119: 'ENAVAIL',
+  120: 'EISNAM', 121: 'EREMOTEIO', 122: 'EDQUOT', 123: 'ENOMEDIUM',
+  124: 'EMEDIUMTYPE', 125: 'ECANCELED', 126: 'ENOKEY', 127: 'EKEYEXPIRED',
+  128: 'EKEYREVOKED', 129: 'EKEYREJECTED', 130: 'EOWNERDEAD', 131: 'ENOTRECOVERABLE',
+  132: 'ERFKILL', 133: 'EHWPOISON',
+};
+
+function getSystemErrorName(errno) {
+  return _systemErrorNames[errno] || 'Unknown';
+}
+
 module.exports = {
   inherits,
   inheritsDeep,
@@ -8568,90 +9077,8 @@ module.exports = {
   AbortController,
   AbortSignal,
   querystring,
-};
-"#),
-        "koss_shim/worker.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
-// 
-// This file is licensed under GNU Affero General Public License v3.0
-// with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
-
-// koss:worker — Koss 原生工作线程模块
-// 基于 __koss_worker_* 全局绑定
-
-var __koss_create_worker_pool = globalThis.__koss_create_worker_pool;
-var __koss_worker_post_message = globalThis.__koss_worker_post_message;
-var __koss_worker_execute = globalThis.__koss_worker_execute;
-var __koss_worker_try_recv = globalThis.__koss_worker_try_recv;
-var __koss_worker_terminate = globalThis.__koss_worker_terminate;
-var __koss_worker_shutdown = globalThis.__koss_worker_shutdown;
-
-function createPool(size) {
-  if (typeof __koss_create_worker_pool !== 'function') {
-    throw new Error('Worker pool not available');
-  }
-  var result = __koss_create_worker_pool(Number(size) || 4);
-  var poolInfo;
-  try { poolInfo = typeof result === 'string' ? JSON.parse(result) : result; }
-  catch (e) { poolInfo = {}; }
-
-  return {
-    execute: function(code) {
-      if (typeof __koss_worker_execute !== 'function') {
-        throw new Error('Worker execute not available');
-      }
-      var cmdResult = __koss_worker_execute(0, String(code));
-      return Promise.resolve(cmdResult);
-    },
-    post: function(data) {
-      if (typeof __koss_worker_post_message !== 'function') {
-        throw new Error('Worker post not available');
-      }
-      __koss_worker_post_message(0, typeof data === 'string' ? data : JSON.stringify(data));
-    },
-    receive: function() {
-      if (typeof __koss_worker_try_recv !== 'function') return null;
-      var result = __koss_worker_try_recv();
-      if (!result) return null;
-      try { return JSON.parse(result); }
-      catch (e) { return result; }
-    },
-    terminate: function() {
-      if (typeof __koss_worker_terminate === 'function') {
-        __koss_worker_terminate(0);
-      }
-    },
-    shutdown: function() {
-      if (typeof __koss_worker_shutdown === 'function') {
-        __koss_worker_shutdown();
-      }
-    },
-  };
-}
-
-function post(data) {
-  if (typeof __koss_worker_post_message !== 'function') {
-    throw new Error('Worker post not available');
-  }
-  __koss_worker_post_message(0, typeof data === 'string' ? data : JSON.stringify(data));
-}
-
-function receive() {
-  if (typeof __koss_worker_try_recv !== 'function') return null;
-  var result = __koss_worker_try_recv();
-  if (!result) return null;
-  try { return JSON.parse(result); }
-  catch (e) { return result; }
-}
-
-function terminate() {
-  if (typeof __koss_worker_terminate === 'function') {
-    __koss_worker_terminate(0);
-  }
-}
-
-module.exports = {
-  createPool: createPool, post: post, receive: receive, terminate: terminate,
+  types,
+  getSystemErrorName,
 };
 "#),
         "koss_shim/zlib.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
@@ -9412,19 +9839,48 @@ function _createTransform(fn) {
 // 同步 API
 // ═══════════════════════════════════════════
 
+function _toJsonArray(data) {
+  var bytes = _toBytes(data);
+  var parts = new Array(bytes.length);
+  for (var i = 0; i < bytes.length; i++) parts[i] = bytes[i];
+  return '[' + parts.join(',') + ']';
+}
+
+function _fromJsonArray(str) {
+  var arr;
+  try { arr = JSON.parse(str); } catch (e) { arr = []; }
+  var bytes = new Uint8Array(arr);
+  if (Buffer && Buffer.from) {
+    return new Buffer(bytes);
+  }
+  return bytes;
+}
+
 function gzipSync(input, opts) {
+  if (typeof globalThis.__koss_gzip === 'function') {
+    return _fromJsonArray(globalThis.__koss_gzip(_toJsonArray(input)));
+  }
   return _gzipInternal(input, opts);
 }
 
 function gunzipSync(input, opts) {
+  if (typeof globalThis.__koss_gunzip === 'function') {
+    return _fromJsonArray(globalThis.__koss_gunzip(_toJsonArray(input)));
+  }
   return _gunzipInternal(input, opts);
 }
 
 function deflateSync(input, opts) {
+  if (typeof globalThis.__koss_deflate === 'function') {
+    return _fromJsonArray(globalThis.__koss_deflate(_toJsonArray(input)));
+  }
   return _deflateInternal(input, opts);
 }
 
 function inflateSync(input, opts) {
+  if (typeof globalThis.__koss_inflate === 'function') {
+    return _fromJsonArray(globalThis.__koss_inflate(_toJsonArray(input)));
+  }
   return _inflateInternal(input, opts);
 }
 
@@ -9838,10 +10294,10 @@ function createCipheriv(algorithm, key, iv) {
       var nonce = ivBuf.length >= 12 ? ivBuf.slice(0, 12) : kossCrypto.randomBytes(12);
       var ct = kossCrypto.encrypt(keyBuf, plaintext, { nonce: nonce, aad: aad });
       if (outputEncoding === 'hex') {
-        return kossCrypto.hashHex('sha256', ct.ciphertext);
+        return kossCrypto.hashHex('sha256', ct);
       }
-      if (outputEncoding === 'base64') return Buffer.from(ct.ciphertext).toString('base64');
-      return Buffer.from(ct.ciphertext);
+      if (outputEncoding === 'base64') return Buffer.from(ct).toString('base64');
+      return Buffer.from(ct);
     },
     getAuthTag: function() { return Buffer.alloc(16); },
   };

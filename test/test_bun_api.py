@@ -15,7 +15,7 @@ import sys
 import os
 import tempfile
 import shutil
-import json
+import json # pyright: ignore[reportUnusedImport]
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -25,11 +25,11 @@ from kossjs_interface import KossJS, JsError
 TMPDIR = tempfile.gettempdir().replace("\\", "/")
 
 
-def _tmp(name):
+def _tmp(name: str) -> str:
     return TMPDIR + "/" + name
 
 
-def _cleanup(*names):
+def _cleanup(*names: str) -> None:
     for name in names:
         p = os.path.join(tempfile.gettempdir(), name)
         if os.path.isdir(p):
@@ -51,7 +51,7 @@ class TestBunBuiltinFlag:
         koss.destroy()
 
     def test_bun_import_with_flag(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN+KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("typeof require('koss:bun').version")
         assert result == "string"
         koss.destroy()
@@ -62,7 +62,7 @@ class TestBunBuiltinFlag:
 class TestBunProperties:
     @pytest.fixture(autouse=True)
     def setup(self):
-        self.koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN)
+        self.koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN+KossJS.KOSS_BUILTIN_KOSS)
         yield
         self.koss.destroy()
 
@@ -88,7 +88,7 @@ class TestBunProperties:
 class TestBunFileIO:
     @pytest.fixture(autouse=True)
     def setup(self):
-        self.koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN)
+        self.koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN+KossJS.KOSS_BUILTIN_KOSS)
         _cleanup("bun_test.txt", "bun_json.txt")
         yield
         self.koss.destroy()
@@ -177,7 +177,7 @@ class TestBunFileIO:
 class TestBunUtils:
     @pytest.fixture(autouse=True)
     def setup(self):
-        self.koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN)
+        self.koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN+KossJS.KOSS_BUILTIN_KOSS)
         yield
         self.koss.destroy()
 
@@ -235,7 +235,7 @@ class TestBunUtils:
 
 class TestBunUUID:
     def test_randomuuidv7_format(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN+KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("""
             var Bun = require('koss:bun');
             var id = Bun.randomUUIDv7();
@@ -245,7 +245,7 @@ class TestBunUUID:
         koss.destroy()
 
     def test_randomuuidv7_unique(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN+KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("""
             var Bun = require('koss:bun');
             var a = Bun.randomUUIDv7();
@@ -260,7 +260,7 @@ class TestBunUUID:
 
 class TestBunReadable:
     def test_readable_throws_not_supported(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN+KossJS.KOSS_BUILTIN_KOSS)
         with pytest.raises(JsError, match="not supported"):
             koss.eval("""
                 var Bun = require('koss:bun');
@@ -273,13 +273,13 @@ class TestBunReadable:
 
 class TestBunServe:
     def test_serve_exists(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN+KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("typeof require('koss:bun').serve")
         assert result == "function"
         koss.destroy()
 
     def test_serve_throws_ssrf_in_sandbox(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN+KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("""
             var Bun = require('koss:bun');
             try {
@@ -297,19 +297,19 @@ class TestBunServe:
 
 class TestBunNotImplemented:
     def test_sql_throws(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN+KossJS.KOSS_BUILTIN_KOSS)
         with pytest.raises(JsError, match="not implemented"):
             koss.eval("require('koss:bun').sql()")
         koss.destroy()
 
     def test_spawn_throws(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN+KossJS.KOSS_BUILTIN_KOSS)
         with pytest.raises(JsError, match="not implemented"):
             koss.eval("require('koss:bun').spawn()")
         koss.destroy()
 
     def test_build_function_throws(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN+KossJS.KOSS_BUILTIN_KOSS)
         with pytest.raises(JsError, match="not implemented"):
             koss.eval("require('koss:bun').build({})")
         koss.destroy()

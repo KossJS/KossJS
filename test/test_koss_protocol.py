@@ -22,7 +22,7 @@ class TestKossProtocol:
 
     def test_import_node_module(self):
         """Test importing a Node module via koss:node/fs"""
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE | KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("""
         var fs = require('koss:node/fs');
         fs.existsSync('/nonexistent');
@@ -32,35 +32,35 @@ class TestKossProtocol:
 
     def test_node_builtin_flag_required(self):
         """Test that koss:node/* requires KOSS_BUILTIN_NODE"""
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN | KossJS.KOSS_BUILTIN_DENO)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN+KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_DENO)
         with pytest.raises(Exception, match="KOSS_BUILTIN_NODE"):
             koss.eval("require('koss:node/fs')")
         koss.destroy()
 
     def test_bun_builtin_flag_required(self):
         """Test that koss:bun requires KOSS_BUILTIN_BUN"""
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE | KossJS.KOSS_BUILTIN_KOSS)
         with pytest.raises(Exception, match="KOSS_BUILTIN_BUN"):
             koss.eval("require('koss:bun')")
         koss.destroy()
 
     def test_deno_builtin_flag_required(self):
         """Test that koss:deno requires KOSS_BUILTIN_DENO"""
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE | KossJS.KOSS_BUILTIN_KOSS)
         with pytest.raises(Exception, match="KOSS_BUILTIN_DENO"):
             koss.eval("require('koss:deno')")
         koss.destroy()
 
     def test_bun_module_import(self):
         """Test importing Bun module via koss:bun"""
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_BUN+KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("require('koss:bun').version")
         assert result == '1.1.42'
         koss.destroy()
 
     def test_deno_module_import(self):
         """Test importing Deno module via koss:deno"""
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_DENO)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("""
         var deno = require('koss:deno');
         deno.version.deno;
@@ -96,7 +96,7 @@ class TestKossProtocol:
 
     def test_get_builtins_method(self):
         """Test the get_builtins() method"""
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE | KossJS.KOSS_BUILTIN_KOSS)
         builtins = koss.get_builtins()
         assert builtins & KossJS.KOSS_BUILTIN_NODE != 0
         assert builtins & KossJS.KOSS_BUILTIN_BUN == 0
@@ -112,7 +112,7 @@ class TestKossProtocol:
 
     def test_node_events_module(self):
         """Test the Node.js events module via koss:node/events"""
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE | KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("""
         var EventEmitter = require('koss:node/events').EventEmitter;
         var ee = new EventEmitter();
@@ -126,7 +126,7 @@ class TestKossProtocol:
 
     def test_node_path_module(self):
         """Test the Node.js path module via koss:node/path"""
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE | KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("""
         var path = require('koss:node/path');
         var p = path.join('/a', 'b', 'c');
@@ -139,7 +139,7 @@ class TestKossProtocol:
 
     def test_node_assert_module(self):
         """Test the Node.js assert module via koss:node/assert"""
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE | KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("""
         var assert = require('koss:node/assert');
         var ok = true;
@@ -151,7 +151,7 @@ class TestKossProtocol:
 
     def test_node_crypto_module(self):
         """Test the Node.js crypto module via koss:node/crypto"""
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE | KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("""
         var crypto = require('koss:node/crypto');
         var hash = crypto.createHash('sha256').update('test').digest('hex');
@@ -163,7 +163,7 @@ class TestKossProtocol:
 
     def test_node_querystring_module(self):
         """Test the Node.js querystring module via koss:node/querystring"""
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE | KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("""
         var qs = require('koss:node/querystring');
         var q = qs.stringify({ a: 1, b: 'hello' });
@@ -174,7 +174,7 @@ class TestKossProtocol:
 
     def test_node_os_module(self):
         """Test the Node.js os module via koss:node/os"""
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE | KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("""
         var os = require('koss:node/os');
         JSON.stringify({ platform: os.platform(), hostname: os.hostname(), type: os.type() });
@@ -184,14 +184,14 @@ class TestKossProtocol:
 
     def test_node_timers_module(self):
         """Test the Node.js timers module via koss:node/timers"""
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE | KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("typeof require('koss:node/timers').setTimeout")
         assert result == 'function'
         koss.destroy()
 
     def test_node_util_module(self):
         """Test the Node.js util module via koss:node/util"""
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE | KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("""
         var util = require('koss:node/util');
         JSON.stringify({ formatted: util.format('%s %d', 'hello', 42), isStr: util.types.isString('x') });
@@ -201,7 +201,7 @@ class TestKossProtocol:
 
     def test_node_zlib_module(self):
         """Test the Node.js zlib module via koss:node/zlib"""
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE)
+        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE | KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("require('koss:node/zlib').constants.Z_OK")
         assert result == '0' or result == 0
         koss.destroy()
@@ -222,8 +222,8 @@ class TestKossProtocol:
             pass  # Expected: FS capability denied
         koss.destroy()
 
-    def test_stable_still_disables_ffi_and_worker(self):
-        """Test that stable mode still disables FFI and Worker even with builtins"""
+    def test_stable_still_disables_ffi(self):
+        """Test that stable mode still disables FFI even with builtins"""
         koss = KossJS(stable=True, builtins=KossJS.KOSS_BUILTIN_NODE)
         # FFI stub should exist but throw when called
         ffi_type = koss.eval("typeof _senri_ffi")

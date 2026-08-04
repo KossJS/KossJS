@@ -19,18 +19,8 @@ def test_stable_default_disables_ffi_caps():
     instance.destroy()
 
 
-def test_stable_default_disables_worker_caps():
-    """stable=True (default) should strip Worker capability bit."""
-    instance = KossJS(stable=True)
-    caps = instance.get_capabilities()
-    assert caps & KossJS.KOSS_CAP_WORKER == 0
-    instance.destroy()
-
-
 def test_stable_true_preserves_other_caps():
-    """stable=True should only strip FFI/Worker, not other capabilities."""
-    # Note: KOSS_CAP_WORKER (1<<3) overlaps with FS_MKDIR (1<<3) in the original design,
-    # so stripping Worker also clears that FS bit. This test verifies FFI is stripped.
+    """stable=True should only strip FFI, not other capabilities."""
     instance = KossJS(
         capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.KOSS_CAP_ALL_CRYPTO | KossJS.KOSS_CAP_ALL_FFI,
         stable=True,
@@ -57,19 +47,6 @@ def test_stable_true_ffi_call_throws_error():
     instance.destroy()
 
 
-def test_stable_true_worker_call_throws_error():
-    """In stable mode, calling Worker should throw an explicit error."""
-    instance = KossJS(stable=True)
-    try:
-        result = instance.eval("__koss_create_worker_pool(2)") # pyright: ignore[reportUnusedVariable]
-        # If eval succeeds, the result should be undefined or error
-        # The stub should have thrown, so we shouldn't reach here
-        assert False, "Expected JsError to be raised"
-    except JsError as e:
-        assert "stable mode" in str(e) or "Worker is disabled" in str(e)
-    instance.destroy()
-
-
 def test_is_stable_true():
     """koss_is_stable should return True for stable instances."""
     instance = KossJS(stable=True)
@@ -89,17 +66,6 @@ def test_unstable_preserves_ffi_caps():
     )
     caps = instance.get_capabilities()
     assert caps & KossJS.KOSS_CAP_ALL_FFI == KossJS.KOSS_CAP_ALL_FFI
-    instance.destroy()
-
-
-def test_unstable_preserves_worker_caps():
-    """stable=False should preserve Worker capability bit."""
-    instance = KossJS(
-        capabilities=KossJS.KOSS_CAP_ALL | KossJS.KOSS_CAP_WORKER,
-        stable=False,
-    )
-    caps = instance.get_capabilities()
-    assert caps & KossJS.KOSS_CAP_WORKER != 0
     instance.destroy()
 
 
@@ -133,5 +99,4 @@ def test_default_creation_is_stable():
     assert instance.is_stable is True
     caps = instance.get_capabilities()
     assert caps & KossJS.KOSS_CAP_ALL_FFI == 0
-    assert caps & KossJS.KOSS_CAP_WORKER == 0
     instance.destroy()

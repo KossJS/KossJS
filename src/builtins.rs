@@ -215,9 +215,111 @@ pub static BUILTIN_MODULES: &[BuiltinModule] = &[
         is_internal: false,
     },
     BuiltinModule {
-        name: "worker",
+        name: "assert",
         flag: KOSS_BUILTIN_KOSS,
-        source_path: "koss_shim/worker.js",
+        source_path: "koss_shim/assert.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "buffer",
+        flag: KOSS_BUILTIN_KOSS,
+        source_path: "koss_shim/buffer.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "constants",
+        flag: KOSS_BUILTIN_KOSS,
+        source_path: "koss_shim/constants.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "diagnostics_channel",
+        flag: KOSS_BUILTIN_KOSS,
+        source_path: "koss_shim/diagnostics_channel.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "events",
+        flag: KOSS_BUILTIN_KOSS,
+        source_path: "koss_shim/events.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "http",
+        flag: KOSS_BUILTIN_KOSS,
+        source_path: "koss_shim/http.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "net",
+        flag: KOSS_BUILTIN_KOSS,
+        source_path: "koss_shim/net.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "os",
+        flag: KOSS_BUILTIN_KOSS,
+        source_path: "koss_shim/os.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "path",
+        flag: KOSS_BUILTIN_KOSS,
+        source_path: "koss_shim/path.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "process",
+        flag: KOSS_BUILTIN_KOSS,
+        source_path: "koss_shim/process.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "stream",
+        flag: KOSS_BUILTIN_KOSS,
+        source_path: "koss_shim/stream.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "string_decoder",
+        flag: KOSS_BUILTIN_KOSS,
+        source_path: "koss_shim/string_decoder.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "timers",
+        flag: KOSS_BUILTIN_KOSS,
+        source_path: "koss_shim/timers.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "trace_events",
+        flag: KOSS_BUILTIN_KOSS,
+        source_path: "koss_shim/trace_events.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "url",
+        flag: KOSS_BUILTIN_KOSS,
+        source_path: "koss_shim/url.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "util",
+        flag: KOSS_BUILTIN_KOSS,
+        source_path: "koss_shim/util.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "querystring",
+        flag: KOSS_BUILTIN_KOSS,
+        source_path: "koss_shim/querystring.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "zlib",
+        flag: KOSS_BUILTIN_KOSS,
+        source_path: "koss_shim/zlib.js",
         is_internal: false,
     },
     BuiltinModule {
@@ -416,7 +518,7 @@ mod tests {
 
     #[test]
     fn test_find_builtin_koss_modules() {
-        for name in &["io", "crypto", "system", "data", "ffi", "worker"] {
+        for name in &["io", "crypto", "system", "data", "ffi"] {
             let m = find_builtin(name).unwrap();
             assert_eq!(m.flag, KOSS_BUILTIN_KOSS);
             assert!(!m.is_internal);
@@ -495,7 +597,7 @@ mod tests {
 
     #[test]
     fn test_resolve_koss_module_with_flag() {
-        for name in &["koss:io", "koss:crypto", "koss:system", "koss:data", "koss:ffi", "koss:worker"] {
+        for name in &["koss:io", "koss:crypto", "koss:system", "koss:data", "koss:ffi"] {
             let result = resolve_builtin_specifier(name, KOSS_BUILTIN_KOSS);
             assert!(result.is_ok(), "Failed to resolve {}", name);
             let (source, _) = result.unwrap();

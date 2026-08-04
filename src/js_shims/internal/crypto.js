@@ -38,6 +38,12 @@ function _parseJsonBytes(result) {
   }
   if (result instanceof Uint8Array) return result;
   if (Array.isArray(result)) return new Uint8Array(result);
+  if (result && typeof result.length === 'number' && result.length > 0) {
+    var len = result.length;
+    var bytes = new Uint8Array(len);
+    for (var i = 0; i < len; i++) bytes[i] = result[i];
+    return bytes;
+  }
   return null;
 }
 
@@ -145,6 +151,12 @@ function _toBytesInput(data) {
   if (typeof data === 'string') {
     var bytes = new Uint8Array(data.length);
     for (var i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i) & 0xff;
+    return bytes;
+  }
+  if (data && typeof data.length === 'number' && data.length > 0) {
+    var len = data.length;
+    var bytes = new Uint8Array(len);
+    for (var i = 0; i < len; i++) bytes[i] = data[i];
     return bytes;
   }
   return new Uint8Array(0);
