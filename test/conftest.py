@@ -28,6 +28,9 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 @pytest.fixture
 def koss():
-    instance = KossJS(builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_NODE)
+    instance = KossJS(
+        capabilities=KossJS.KOSS_CAP_ALL,
+        builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_NODE,
+    )
     yield instance
     instance.destroy()

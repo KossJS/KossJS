@@ -119,31 +119,176 @@ def test_ffi_struct_creates_type():
 
 
 # ============================================================================
-# 审核回调测试：FFI 函数不经过 __koss_bindings，审核回调不会被触发
-# 根据设计文档，FFI 函数直接注册为原生函数，审核通过能力位门控实现
+# 审核回调测试
 # ============================================================================
 
-def test_ffi_no_audit_through_internalbinding():
-    """FFI 函数不经过 internalBinding 路径，审核回调不会被触发
+def test_ffi_open_audit_denial_blocks_operation_and_calls_callback():
+    """FFI_OPEN 审核拒绝应在动态库加载前阻止 _senri_ffi.open。"""
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD, stable=False)
+    calls: list[tuple[str, list[str]]] = []
+    try:
+        def audit(target: str, args: list[str], pwd: str | None):
+            calls.append((target, args))
+            return False
 
-    FFI 函数（如 _senri_ffi.open）直接注册为原生函数，
-    不通过 __koss_bindings 路径，因此审核回调机制不适用于 FFI。
-    审核通过能力位门控实现：没有 FFI_OPEN 能力位则 _senri_ffi.open 不存在。
-    """
+        js.check_sandbox(audit)
+        js.set_audit_mask(KossJS.FFI_OPEN)
+
+        with pytest.raises(JsError):
+            js.eval(f'_senri_ffi.open("{TEST_LIB_PATH}")')
+
+        assert calls == [("ffi.open", [TEST_LIB_PATH])]
+    finally:
+        js.destroy()
+
+def test_ffi_call_audit_denial_blocks_symbol_lookup_and_close():
+    """Existing library handles must honor later FFI_CALL audit policy changes."""
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD, stable=False)
+    calls: list[str] = []
+    try:
+        js.eval(f'var auditLib = _senri_ffi.open("{TEST_LIB_PATH}");')
+
+        def audit(target: str, args: list[str], pwd: str | None):
+            calls.append(target)
+            return False
+
+        js.check_sandbox(audit)
+        js.set_audit_mask(KossJS.FFI_CALL)
+
+        with pytest.raises(JsError):
+            js.eval('auditLib.func("add_int", _senri_ffi.types.int32, [])')
+        with pytest.raises(JsError):
+            js.eval('auditLib.funcAsync("add_int", _senri_ffi.types.int32, [])')
+        with pytest.raises(JsError):
+            js.eval("auditLib.close()")
+        with pytest.raises(JsError):
+            js.eval("auditLib.closeAsync()")
+
+        assert calls == ["ffi.func", "ffi.funcAsync", "ffi.close", "ffi.closeAsync"]
+        js.set_audit_mask(0)
+        js.eval("auditLib.close()")
+    finally:
+        js.destroy()
+
+def test_ffi_alloc_audit_denial_blocks_existing_pointer_access():
+    """Existing pointers must not bypass later FFI_ALLOC audit policy changes."""
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD, stable=False)
+    calls: list[str] = []
+    try:
+        js.eval("var auditPtr = _senri_ffi.alloc(8); auditPtr.writeInt32(7);")
+
+        def audit(target: str, args: list[str], pwd: str | None):
+            calls.append(target)
+            return False
+
+        js.check_sandbox(audit)
+        js.set_audit_mask(KossJS.FFI_ALLOC)
+
+        for expression in [
+            "auditPtr.readInt32()",
+            "auditPtr.writeInt32(9)",
+            "auditPtr.add(4)",
+            "auditPtr.toBigInt()",
+        ]:
+            with pytest.raises(JsError):
+                js.eval(expression)
+
+        assert calls == [
+            "ffi.pointer.readInt32",
+            "ffi.pointer.writeInt32",
+            "ffi.pointer.add",
+            "ffi.pointer.toBigInt",
+        ]
+        js.set_audit_mask(0)
+        js.eval("_senri_ffi.free(auditPtr)")
+    finally:
+        js.destroy()
+
+def test_ffi_call_audit_denial_blocks_errno_operations():
     js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD, stable=False)
     calls: list[str] = []
     try:
         def audit(target: str, args: list[str], pwd: str | None):
             calls.append(target)
-            return True
+            return False
 
         js.check_sandbox(audit)
-        js.set_audit_mask(KossJS.FFI_OPEN)
+        js.set_audit_mask(KossJS.FFI_CALL)
 
-        js.eval(f'var lib = _senri_ffi.open("{TEST_LIB_PATH}");')
-        # FFI 不经过 internalBinding，审核回调不会被触发
-        # 这是预期行为：FFI 通过能力位门控，不通过审核回调
-        assert len(calls) == 0, f"FFI should not trigger audit callback through internalBinding: {calls}"
+        with pytest.raises(JsError):
+            js.eval("_senri_ffi.errno()")
+        with pytest.raises(JsError):
+            js.eval("_senri_ffi.strerror(0)")
+
+        assert calls == ["ffi.errno", "ffi.strerror"]
+    finally:
+        js.destroy()
+
+def test_ffi_alloc_audit_denial_blocks_struct_instance_memory_operations():
+    """Struct construction and field memory access require FFI_ALLOC authorization."""
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD, stable=False)
+    calls: list[str] = []
+    try:
+        js.eval("var AuditPoint = _senri_ffi.struct([_senri_ffi.types.int32]); var auditPoint = AuditPoint({int32: 1});")
+
+        def audit(target: str, args: list[str], pwd: str | None):
+            calls.append(target)
+            return False
+
+        js.check_sandbox(audit)
+        js.set_audit_mask(KossJS.FFI_ALLOC)
+
+        with pytest.raises(JsError):
+            js.eval("AuditPoint({int32: 1})")
+        with pytest.raises(JsError):
+            js.eval("auditPoint.int32")
+        with pytest.raises(JsError):
+            js.eval("auditPoint.int32 = 2")
+        with pytest.raises(JsError):
+            js.eval("auditPoint.toPointer()")
+
+        assert calls == ["ffi.struct.new", "ffi.struct.get", "ffi.struct.set", "ffi.struct.toPointer"]
+    finally:
+        js.destroy()
+
+def test_ffi_callback_audit_denial_suppresses_existing_trampoline():
+    """A denied callback invocation returns zero to C without running JavaScript."""
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FFI | KossJS.MODULE_LOAD, stable=False)
+    calls: list[str] = []
+    try:
+        js.eval(f'''
+            var callbackLib = _senri_ffi.open("{TEST_LIB_PATH}");
+            var values = _senri_ffi.alloc(12);
+            values.writeInt32(0, 1);
+            values.writeInt32(4, 9);
+            values.writeInt32(8, 3);
+            var callbackRan = false;
+            var compareCallback = _senri_ffi.createCallback(
+                _senri_ffi.types.int32,
+                [_senri_ffi.types.pointer, _senri_ffi.types.pointer],
+                function() {{ callbackRan = true; return 1; }}
+            );
+            var findMax = callbackLib.func(
+                "find_max",
+                _senri_ffi.types.int32,
+                [_senri_ffi.types.pointer, _senri_ffi.types.int32,
+                 _senri_ffi.types.pointer]
+            );
+        ''')
+
+        def audit(target: str, args: list[str], pwd: str | None):
+            calls.append(target)
+            return False
+
+        js.check_sandbox(audit)
+        js.set_audit_mask(KossJS.FFI_CALLBACK)
+
+        assert js.eval("findMax(values, 3, compareCallback)") == "1"
+        assert js.eval("callbackRan") == "false"
+        assert calls == ["ffi.callbackInvoke", "ffi.callbackInvoke"]
+
+        js.set_audit_mask(0)
+        js.eval("_senri_ffi.freeCallback(compareCallback); _senri_ffi.free(values); callbackLib.close();")
     finally:
         js.destroy()
 

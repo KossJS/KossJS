@@ -6,6 +6,7 @@
 
 use std::cell::RefCell;
 use std::ffi::CString;
+use std::ffi::c_void;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -53,6 +54,7 @@ pub(crate) fn get_library(handle: &LibraryHandle) -> Result<&libloading::Library
 pub fn create_library_handle(
     lib: libloading::Library,
     path: &str,
+    instance_ptr: *mut c_void,
     ctx: &mut Context,
 ) -> JsObject {
     let wrapper = Box::new(LibraryWrapper { lib });
@@ -72,8 +74,16 @@ pub fn create_library_handle(
     let func_closed = Rc::clone(&closed);
     let func_closure = move |_this: &JsValue,
                              args: &[JsValue],
-                             _ctx: &mut Context|
+                             ctx: &mut Context|
           -> Result<JsValue, JsError> {
+        let instance = unsafe { &*(instance_ptr as *mut crate::runtime::KossInstance) };
+        crate::runtime::authorize_operation(
+            instance,
+            crate::sandbox::FFI_CALL,
+            "ffi.func",
+            args,
+            ctx,
+        )?;
         if *func_closed.borrow() {
             return Err(JsNativeError::error()
                 .with_message("library is closed")
@@ -209,11 +219,19 @@ pub fn create_library_handle(
                       call_args: &[JsValue],
                       call_ctx: &mut Context|
                       -> Result<JsValue, JsError> {
+                    let instance = &*(instance_ptr as *mut crate::runtime::KossInstance);
+                    crate::runtime::authorize_operation(
+                        instance,
+                        crate::sandbox::FFI_CALL,
+                        "ffi.call",
+                        call_args,
+                        call_ctx,
+                    )?;
                     invoke_ffi_call(&ffi_call_for_js, call_args, call_ctx)
                 },
             )
         };
-        let js_func = native.to_js_function(_ctx.realm());
+        let js_func = native.to_js_function(ctx.realm());
         Ok(js_func.into())
     };
 
@@ -222,9 +240,17 @@ pub fn create_library_handle(
 
     let close_closed = Rc::clone(&closed);
     let close_closure = move |_this: &JsValue,
-                              _args: &[JsValue],
-                              _ctx: &mut Context|
+                               args: &[JsValue],
+                               ctx: &mut Context|
           -> Result<JsValue, JsError> {
+        let instance = unsafe { &*(instance_ptr as *mut crate::runtime::KossInstance) };
+        crate::runtime::authorize_operation(
+            instance,
+            crate::sandbox::FFI_CALL,
+            "ffi.close",
+            args,
+            ctx,
+        )?;
         *close_closed.borrow_mut() = true;
         let this_obj = _this.as_object().ok_or_else(|| {
             JsNativeError::error().with_message("not a LibraryHandle")

@@ -5,6 +5,7 @@
 // "非本软件模块的源代码公开义务例外"
 
 use std::rc::Rc;
+use std::ffi::c_void;
 
 use boa_engine::{
     js_string,
@@ -220,6 +221,7 @@ fn write_to_buffer(
 pub fn create_struct_constructor(
     fields: &[(String, Rc<FfiType>)],
     packed: Option<u16>,
+    instance_ptr: *mut c_void,
     ctx: &mut Context,
 ) -> JsObject {
     let (field_infos, total_size, _align) = compute_struct_layout(fields, packed);
@@ -243,7 +245,15 @@ pub fn create_struct_constructor(
 
         let getter = unsafe {
             NativeFunction::from_closure(
-                move |_this: &JsValue, _args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+                move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+                    let instance = &*(instance_ptr as *mut crate::runtime::KossInstance);
+                    crate::runtime::authorize_operation(
+                        instance,
+                        crate::sandbox::FFI_ALLOC,
+                        "ffi.struct.get",
+                        args,
+                        ctx,
+                    )?;
                     let obj = _this.as_object().ok_or_else(|| {
                         JsNativeError::error().with_message("not a struct instance")
                     })?;
@@ -258,7 +268,15 @@ pub fn create_struct_constructor(
 
         let setter = unsafe {
             NativeFunction::from_closure(
-                move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+                move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+                    let instance = &*(instance_ptr as *mut crate::runtime::KossInstance);
+                    crate::runtime::authorize_operation(
+                        instance,
+                        crate::sandbox::FFI_ALLOC,
+                        "ffi.struct.set",
+                        args,
+                        ctx,
+                    )?;
                     let obj = _this.as_object().ok_or_else(|| {
                         JsNativeError::error().with_message("not a struct instance")
                     })?;
@@ -283,7 +301,15 @@ pub fn create_struct_constructor(
     // realm borrow ends here
 
     let to_pointer_fn = NativeFunction::from_copy_closure(
-        move |_this: &JsValue, _args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let instance = unsafe { &*(instance_ptr as *mut crate::runtime::KossInstance) };
+            crate::runtime::authorize_operation(
+                instance,
+                crate::sandbox::FFI_ALLOC,
+                "ffi.struct.toPointer",
+                args,
+                ctx,
+            )?;
             let obj = _this.as_object().ok_or_else(|| {
                 JsNativeError::error().with_message("not a struct instance")
             })?;
@@ -292,7 +318,7 @@ pub fn create_struct_constructor(
             })?;
             let ptr = inst.buffer.as_ptr() as usize;
             let size = inst.buffer.len();
-            let pointer_obj = create_pointer_object(ptr, size, _ctx);
+            let pointer_obj = create_pointer_object(ptr, size, instance_ptr, ctx);
             Ok(JsValue::from(pointer_obj))
         },
     );
@@ -323,7 +349,15 @@ pub fn create_struct_constructor(
 
     let ctor_fn = unsafe {
         NativeFunction::from_closure(
-            move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+                let instance = &*(instance_ptr as *mut crate::runtime::KossInstance);
+                crate::runtime::authorize_operation(
+                    instance,
+                    crate::sandbox::FFI_ALLOC,
+                    "ffi.struct.new",
+                    args,
+                    ctx,
+                )?;
                 let mut buffer = vec![0u8; total_size_for_ctor];
                 let mut cstrings: Vec<std::ffi::CString> = Vec::new();
 
@@ -352,7 +386,7 @@ pub fn create_struct_constructor(
                     proto_for_ctor.clone(),
                     instance,
                 );
-                let ffi_buf = create_pointer_object(buffer_ptr, total_size_for_ctor, _ctx);
+                let ffi_buf = create_pointer_object(buffer_ptr, total_size_for_ctor, instance_ptr, ctx);
                 obj.insert_property(
                     js_string!("_ffi_buffer"),
                     boa_engine::property::PropertyDescriptor::builder()

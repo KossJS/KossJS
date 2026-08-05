@@ -10,7 +10,7 @@ use std::os::raw::c_char;
 use std::os::raw::c_void;
 use std::rc::Rc;
 use std::sync::mpsc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
 use std::sync::Arc;
 #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
@@ -35,13 +35,89 @@ use crate::module_loader::KossModuleLoader;
 // One-time warning flags for unstable mode (stable=false)
 static FFI_STABLE_WARNED: AtomicBool = AtomicBool::new(false);
 
-// TCP socket storage for persistent connections
-static NEXT_TCP_FD: AtomicU32 = AtomicU32::new(1);
-static TCP_CONNECTIONS: std::sync::LazyLock<Mutex<HashMap<u32, TcpStream>>> =
+struct ApiInstanceState {
+    owner: std::thread::ThreadId,
+    busy: bool,
+}
+
+static API_INSTANCES: std::sync::LazyLock<Mutex<HashMap<usize, ApiInstanceState>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
-static NEXT_SERVER_FD: AtomicU32 = AtomicU32::new(1001);
-static TCP_SERVERS: std::sync::LazyLock<Mutex<HashMap<u32, TcpListener>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+struct ApiGuard {
+    key: usize,
+}
+
+impl Drop for ApiGuard {
+    fn drop(&mut self) {
+        if let Ok(mut instances) = API_INSTANCES.lock() {
+            if let Some(state) = instances.get_mut(&self.key) {
+                state.busy = false;
+            }
+        }
+    }
+}
+
+fn register_api_instance(key: usize) {
+    if let Ok(mut instances) = API_INSTANCES.lock() {
+        instances.insert(
+            key,
+            ApiInstanceState {
+                owner: std::thread::current().id(),
+                busy: false,
+            },
+        );
+    }
+}
+
+fn unregister_api_instance(key: usize) {
+    if let Ok(mut instances) = API_INSTANCES.lock() {
+        instances.remove(&key);
+    }
+}
+
+fn enter_api(key: usize) -> Result<ApiGuard, &'static str> {
+    let mut instances = API_INSTANCES.lock().map_err(|_| "API registry unavailable")?;
+    let state = instances.get_mut(&key).ok_or("invalid or destroyed KossInstance")?;
+    if state.owner != std::thread::current().id() {
+        return Err("KossInstance used from a non-owner thread");
+    }
+    if state.busy {
+        return Err("concurrent or reentrant KossInstance access");
+    }
+    state.busy = true;
+    Ok(ApiGuard { key })
+}
+
+macro_rules! api_guard_result {
+    ($ptr:expr) => {
+        match enter_api($ptr as usize) {
+            Ok(guard) => guard,
+            Err(message) => return KossResult::err(3, message),
+        }
+    };
+}
+
+const MAX_TCP_CONNECTIONS: usize = 256;
+const MAX_TCP_SERVERS: usize = 64;
+
+#[derive(Default)]
+struct SocketState {
+    next_connection_fd: u32,
+    next_server_fd: u32,
+    connections: HashMap<u32, TcpStream>,
+    servers: HashMap<u32, TcpListener>,
+}
+
+impl SocketState {
+    fn new() -> Self {
+        Self {
+            next_connection_fd: 1,
+            next_server_fd: 1001,
+            connections: HashMap::new(),
+            servers: HashMap::new(),
+        }
+    }
+}
 
 const FETCH_POLYFILL_CODE: &str = r#"
 'use strict';
@@ -234,6 +310,7 @@ pub struct PendingResolver {
 /// Callback request from async FFI (blocking thread → main thread)
 #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
 pub(crate) struct CallbackRequest {
+    pub instance_ptr: usize,
     pub task_id: u64,
     pub cb_index: usize,
     pub args: Vec<Vec<u8>>,
@@ -344,12 +421,25 @@ impl KossEventLoop {
                     let val = ffi_bytes_to_js_value(raw_bytes, type_info);
                     js_args.push(val);
                 }
-                match js_fn.call(&JsValue::undefined(), &js_args, ctx) {
+                let instance = unsafe { &*(req.instance_ptr as *mut KossInstance) };
+                if authorize_operation(
+                    instance,
+                    crate::sandbox::FFI_CALLBACK,
+                    "ffi.callbackInvoke",
+                    &js_args,
+                    ctx,
+                )
+                .is_err()
+                {
+                    Ok(vec![0u8; req.ret_type.sizeof()])
+                } else {
+                    match js_fn.call(&JsValue::undefined(), &js_args, ctx) {
                     Ok(js_val) => {
                         let ret_bytes = ffi_js_value_to_bytes(&js_val, &req.ret_type);
                         Ok(ret_bytes)
                     }
                     Err(_) => Ok(vec![0u8; req.ret_type.sizeof()]),
+                    }
                 }
             } else {
                 Ok(vec![0u8; req.ret_type.sizeof()])
@@ -623,6 +713,7 @@ pub struct KossInstance {
     /// Builtin module flags — controls which koss:* modules are visible.
     /// See KOSS_BUILTIN_* constants in builtins.rs.
     pub builtins: u32,
+    socket_state: Mutex<SocketState>,
     /// Context MUST be the last field: Rust drops struct fields in declaration
     /// order, and other fields (event_loop.ffi_callback_fns) hold JsFunction
     /// handles that reference the Context. Dropping Context first causes
@@ -639,6 +730,7 @@ impl KossInstance {
             sandbox: SandboxState::default(),
             stable,
             builtins,
+            socket_state: Mutex::new(SocketState::new()),
             context,
         }
     }
@@ -1012,12 +1104,8 @@ fn register_native_fetch(instance: &mut KossInstance) {
     let instance_ptr = instance as *mut KossInstance;
 
     let native = NativeFunction::from_copy_closure(move |_this, args, ctx| {
-        // Check NET_FETCH capability
         let inst = unsafe { &mut *instance_ptr };
-        if !crate::sandbox::has_cap(inst.capabilities, crate::sandbox::NET_FETCH) {
-            return Err(JsError::from(JsNativeError::typ()
-                .with_message("KossCapabilityError: capability denied for fetch")));
-        }
+        authorize_operation(inst, crate::sandbox::NET_FETCH, "net.fetch", args, ctx)?;
 
         if args.len() < 2 {
             return Ok(JsValue::undefined());
@@ -1112,18 +1200,15 @@ fn register_fs_functions(instance: &mut KossInstance) {
     // Capability snapshot: the low-level __koss_fs_* globals are gated by the
     // instance capability bitmask so sandboxed instances cannot bypass the
     // sandbox via these globals (mirrors the NET_FETCH gate on __koss_fetch).
-    let caps = instance.capabilities;
+    let instance_ptr = instance as *mut KossInstance;
     macro_rules! reg_fs {
         ($name:expr, $cap:expr, $closure:expr) => {{
             let inner = $closure;
             let required_cap: u32 = $cap;
             let js_fn = NativeFunction::from_copy_closure(
                 move |this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
-                    if !crate::sandbox::has_cap(caps, required_cap) {
-                        return Err(JsNativeError::error()
-                            .with_message(concat!($name, ": permission denied (missing required FS capability)"))
-                            .into());
-                    }
+                    let inst = unsafe { &*instance_ptr };
+                    authorize_operation(inst, required_cap, $name, args, ctx)?;
                     inner(this, args, ctx)
                 },
             )
@@ -1293,10 +1378,65 @@ fn register_fs_functions(instance: &mut KossInstance) {
     });
 }
 
+pub(crate) fn authorize_operation(
+    instance: &KossInstance,
+    required_cap: u32,
+    target: &str,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> Result<(), JsError> {
+    match crate::sandbox::check_audit_decision(
+        instance.capabilities,
+        instance.sandbox.audit_mask,
+        required_cap,
+    ) {
+        AuditDecision::Allow => Ok(()),
+        AuditDecision::DenyCapability => Err(JsNativeError::error()
+            .with_message(capability_error_message(target, instance.sandbox.audit_debug))
+            .into()),
+        AuditDecision::NeedAudit => {
+            let Some(audit_fn) = instance.sandbox.sync_audit else {
+                return Ok(());
+            };
+            let c_target = CString::new(target)
+                .map_err(|_| JsNativeError::error().with_message("invalid audit target"))?;
+            let c_args: Vec<CString> = args
+                .iter()
+                .map(|arg| CString::new(js_value_to_string(arg, ctx)).unwrap_or_default())
+                .collect();
+            let arg_ptrs: Vec<*const c_char> = c_args.iter().map(|arg| arg.as_ptr()).collect();
+            let pwd = std::env::current_dir()
+                .ok()
+                .and_then(|path| CString::new(path.to_string_lossy().as_bytes()).ok());
+            let allowed = unsafe {
+                audit_fn(
+                    c_target.as_ptr(),
+                    arg_ptrs.as_ptr(),
+                    arg_ptrs.len() as i32,
+                    pwd.as_ref().map_or(std::ptr::null(), |path| path.as_ptr()),
+                    instance.sandbox.sync_userdata,
+                )
+            };
+            if allowed {
+                Ok(())
+            } else {
+                Err(JsNativeError::error()
+                    .with_message(security_error_message(target, instance.sandbox.audit_debug))
+                    .into())
+            }
+        }
+    }
+}
+
 fn register_net_functions(instance: &mut KossInstance) {
+    let caps = instance.capabilities;
+    let instance_ptr = instance as *mut KossInstance;
+    if crate::sandbox::has_cap(caps, crate::sandbox::NET_TCP_CLIENT) {
     // __koss_tcp_connect(host, port) -> fd
     let connect_fn = NativeFunction::from_copy_closure(
         move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &*instance_ptr };
+            authorize_operation(inst, crate::sandbox::NET_TCP_CLIENT, "net.tcpConnect", args, ctx)?;
             if args.len() < 2 {
                 return Err(JsNativeError::error().with_message("tcp_connect: host and port required").into());
             }
@@ -1312,10 +1452,13 @@ fn register_net_functions(instance: &mut KossInstance) {
             match TcpStream::connect(&addr) {
                 Ok(stream) => {
                     let _ = stream.set_nonblocking(true);
-                    let fd = NEXT_TCP_FD.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if let Ok(mut socks) = TCP_CONNECTIONS.lock() {
-                        socks.insert(fd, stream);
+                    let mut sockets = inst.socket_state.lock().map_err(|_| JsNativeError::error().with_message("socket state unavailable"))?;
+                    if sockets.connections.len() >= MAX_TCP_CONNECTIONS {
+                        return Err(JsNativeError::error().with_message("TCP connection limit reached").into());
                     }
+                    let fd = sockets.next_connection_fd;
+                    sockets.next_connection_fd = sockets.next_connection_fd.checked_add(1).ok_or_else(|| JsNativeError::error().with_message("TCP descriptor space exhausted"))?;
+                    sockets.connections.insert(fd, stream);
                     Ok(JsValue::from(fd as i32))
                 }
                 Err(e) => Err(JsNativeError::error().with_message(format!("connect failed: {e}")).into()),
@@ -1331,6 +1474,8 @@ fn register_net_functions(instance: &mut KossInstance) {
     // __koss_tcp_write(fd, data) -> bytes_written
     let write_fn = NativeFunction::from_copy_closure(
         move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &*instance_ptr };
+            authorize_operation(inst, crate::sandbox::NET_TCP_CLIENT, "net.tcpWrite", args, ctx)?;
             if args.len() < 2 {
                 return Err(JsNativeError::error().with_message("tcp_write: fd and data required").into());
             }
@@ -1338,8 +1483,8 @@ fn register_net_functions(instance: &mut KossInstance) {
             let data = args[1].to_string(ctx).map_err(|_| JsNativeError::error().with_message("tcp_write: data must be string"))?;
             let data_str = data.to_std_string_escaped();
 
-            if let Ok(mut socks) = TCP_CONNECTIONS.lock() {
-                if let Some(stream) = socks.get_mut(&fd) {
+            if let Ok(mut sockets) = inst.socket_state.lock() {
+                if let Some(stream) = sockets.connections.get_mut(&fd) {
                     use std::io::Write;
                     match stream.write(data_str.as_bytes()) {
                         Ok(n) => return Ok(JsValue::from(n as i32)),
@@ -1358,14 +1503,16 @@ fn register_net_functions(instance: &mut KossInstance) {
 
     // __koss_tcp_read(fd) -> string | undefined
     let read_fn = NativeFunction::from_copy_closure(
-        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &*instance_ptr };
+            authorize_operation(inst, crate::sandbox::NET_TCP_CLIENT, "net.tcpRead", args, ctx)?;
             if args.is_empty() {
                 return Err(JsNativeError::error().with_message("tcp_read: fd required").into());
             }
             let fd = args[0].as_number().ok_or_else(|| JsNativeError::error().with_message("tcp_read: fd must be number"))? as u32;
 
-            if let Ok(mut socks) = TCP_CONNECTIONS.lock() {
-                if let Some(stream) = socks.get_mut(&fd) {
+            if let Ok(mut sockets) = inst.socket_state.lock() {
+                if let Some(stream) = sockets.connections.get_mut(&fd) {
                     let mut buf = [0u8; 65536];
                     use std::io::Read;
                     match stream.read(&mut buf) {
@@ -1392,17 +1539,17 @@ fn register_net_functions(instance: &mut KossInstance) {
 
     // __koss_tcp_close(fd)
     let close_fn = NativeFunction::from_copy_closure(
-        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &*instance_ptr };
+            authorize_operation(inst, crate::sandbox::NET_TCP_CLIENT, "net.tcpClose", args, ctx)?;
             if args.is_empty() {
                 return Err(JsNativeError::error().with_message("tcp_close: fd required").into());
             }
             let fd = args[0].as_number().ok_or_else(|| JsNativeError::error().with_message("tcp_close: fd must be number"))? as u32;
 
-            if let Ok(mut socks) = TCP_CONNECTIONS.lock() {
-                socks.remove(&fd);
-            }
-            if let Ok(mut servers) = TCP_SERVERS.lock() {
-                servers.remove(&fd);
+            if let Ok(mut sockets) = inst.socket_state.lock() {
+                sockets.connections.remove(&fd);
+                sockets.servers.remove(&fd);
             }
             Ok(JsValue::undefined())
         },
@@ -1412,14 +1559,18 @@ fn register_net_functions(instance: &mut KossInstance) {
         close_fn.to_js_function(instance.context.realm()),
         boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
     ).ok();
+    }
 
     // __koss_tcp_listen(host, port, backlog) -> server_fd
+    if crate::sandbox::has_cap(caps, crate::sandbox::NET_TCP_SERVER) {
     let listen_fn = NativeFunction::from_copy_closure(
-        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &*instance_ptr };
+            authorize_operation(inst, crate::sandbox::NET_TCP_SERVER, "net.tcpListen", args, ctx)?;
             if args.len() < 2 {
                 return Err(JsNativeError::error().with_message("tcp_listen: host and port required").into());
             }
-            let host = args[0].to_string(_ctx).map_err(|_| JsNativeError::error().with_message("tcp_listen: host must be string"))?;
+            let host = args[0].to_string(ctx).map_err(|_| JsNativeError::error().with_message("tcp_listen: host must be string"))?;
             let host_str = host.to_std_string_escaped();
             let port = args[1].as_number().ok_or_else(|| JsNativeError::error().with_message("tcp_listen: port must be number"))? as u16;
 
@@ -1431,10 +1582,13 @@ fn register_net_functions(instance: &mut KossInstance) {
             match TcpListener::bind(&addr) {
                 Ok(listener) => {
                     let _ = listener.set_nonblocking(true);
-                    let fd = NEXT_SERVER_FD.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if let Ok(mut servers) = TCP_SERVERS.lock() {
-                        servers.insert(fd, listener);
+                    let mut sockets = inst.socket_state.lock().map_err(|_| JsNativeError::error().with_message("socket state unavailable"))?;
+                    if sockets.servers.len() >= MAX_TCP_SERVERS {
+                        return Err(JsNativeError::error().with_message("TCP server limit reached").into());
                     }
+                    let fd = sockets.next_server_fd;
+                    sockets.next_server_fd = sockets.next_server_fd.checked_add(1).ok_or_else(|| JsNativeError::error().with_message("TCP server descriptor space exhausted"))?;
+                    sockets.servers.insert(fd, listener);
                     Ok(JsValue::from(fd as i32))
                 }
                 Err(e) => Err(JsNativeError::error().with_message(format!("listen failed: {e}")).into()),
@@ -1449,21 +1603,26 @@ fn register_net_functions(instance: &mut KossInstance) {
 
     // __koss_tcp_accept(server_fd) -> client_fd | undefined
     let accept_fn = NativeFunction::from_copy_closure(
-        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &*instance_ptr };
+            authorize_operation(inst, crate::sandbox::NET_TCP_SERVER, "net.tcpAccept", args, ctx)?;
             if args.is_empty() {
                 return Err(JsNativeError::error().with_message("tcp_accept: server_fd required").into());
             }
             let sfd = args[0].as_number().ok_or_else(|| JsNativeError::error().with_message("tcp_accept: server_fd must be number"))? as u32;
 
-            if let Ok(mut servers) = TCP_SERVERS.lock() {
-                if let Some(listener) = servers.get_mut(&sfd) {
-                    match listener.accept() {
+            if let Ok(mut sockets) = inst.socket_state.lock() {
+                let accepted = sockets.servers.get_mut(&sfd).map(|listener| listener.accept());
+                if let Some(result) = accepted {
+                    match result {
                         Ok((stream, _peer_addr)) => {
                             let _ = stream.set_nonblocking(true);
-                            let fd = NEXT_TCP_FD.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            if let Ok(mut socks) = TCP_CONNECTIONS.lock() {
-                                socks.insert(fd, stream);
+                            if sockets.connections.len() >= MAX_TCP_CONNECTIONS {
+                                return Err(JsNativeError::error().with_message("TCP connection limit reached").into());
                             }
+                            let fd = sockets.next_connection_fd;
+                            sockets.next_connection_fd = sockets.next_connection_fd.checked_add(1).ok_or_else(|| JsNativeError::error().with_message("TCP descriptor space exhausted"))?;
+                            sockets.connections.insert(fd, stream);
                             return Ok(JsValue::from(fd as i32));
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -1481,10 +1640,14 @@ fn register_net_functions(instance: &mut KossInstance) {
         accept_fn.to_js_function(instance.context.realm()),
         boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
     ).ok();
+    }
 
     // __koss_dns_lookup(hostname) -> json_string of IP addresses
+    if crate::sandbox::has_cap(caps, crate::sandbox::NET_DNS) {
     let dns_fn = NativeFunction::from_copy_closure(
         move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &*instance_ptr };
+            authorize_operation(inst, crate::sandbox::NET_DNS, "net.dnsLookup", args, ctx)?;
             if args.is_empty() {
                 return Err(JsNativeError::error().with_message("dns_lookup: hostname required").into());
             }
@@ -1507,11 +1670,32 @@ fn register_net_functions(instance: &mut KossInstance) {
         dns_fn.to_js_function(instance.context.realm()),
         boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
     ).ok();
+    }
+}
+
+fn register_runtime_capabilities(instance: &mut KossInstance) {
+    let caps = instance.capabilities;
+    if crate::sandbox::has_cap(caps, crate::sandbox::NET_FETCH) {
+        register_fetch_polyfill(&mut instance.context);
+        register_native_fetch(instance);
+    }
+    if caps & (crate::sandbox::NET_TCP_CLIENT
+        | crate::sandbox::NET_TCP_SERVER
+        | crate::sandbox::NET_DNS) != 0
+    {
+        register_net_functions(instance);
+    }
+    if caps & KOSS_CAP_ALL_CRYPTO != 0 {
+        register_crypto_functions(instance);
+    }
+    register_zlib_functions_all(instance);
 }
 
 fn register_crypto_functions(instance: &mut KossInstance) {
+    let caps = instance.capabilities;
     let ctx = &mut instance.context;
 
+    if crate::sandbox::has_cap(caps, crate::sandbox::CRYPTO_RANDOM) {
     let rand_fn = NativeFunction::from_copy_closure(
         move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
             let size = args.first()
@@ -1527,7 +1711,9 @@ fn register_crypto_functions(instance: &mut KossInstance) {
         rand_fn.to_js_function(ctx.realm()),
         boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
     ).ok();
+    }
 
+    if crate::sandbox::has_cap(caps, crate::sandbox::CRYPTO_HASH) {
     let hash_fn = NativeFunction::from_copy_closure(
         move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
             if args.len() < 2 {
@@ -1548,7 +1734,9 @@ fn register_crypto_functions(instance: &mut KossInstance) {
         hash_fn.to_js_function(ctx.realm()),
         boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
     ).ok();
+    }
 
+    if crate::sandbox::has_cap(caps, crate::sandbox::CRYPTO_RANDOM) {
     let random_uuid_fn = NativeFunction::from_copy_closure(
         move |_this: &JsValue, _args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
             let uuid = crate::bindings::crypto::random_uuid();
@@ -1560,9 +1748,11 @@ fn register_crypto_functions(instance: &mut KossInstance) {
         random_uuid_fn.to_js_function(ctx.realm()),
         boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
     ).ok();
+    }
 
     // ===== Bytes-based crypto functions =====
 
+    if crate::sandbox::has_cap(caps, crate::sandbox::CRYPTO_HASH) {
     let hash_bytes_fn = NativeFunction::from_copy_closure(
         move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
             if args.len() < 2 {
@@ -1583,7 +1773,9 @@ fn register_crypto_functions(instance: &mut KossInstance) {
         hash_bytes_fn.to_js_function(ctx.realm()),
         boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
     ).ok();
+    }
 
+    if crate::sandbox::has_cap(caps, crate::sandbox::CRYPTO_HMAC) {
     let hmac_bytes_fn = NativeFunction::from_copy_closure(
         move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
             if args.len() < 3 {
@@ -1604,7 +1796,9 @@ fn register_crypto_functions(instance: &mut KossInstance) {
         hmac_bytes_fn.to_js_function(ctx.realm()),
         boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
     ).ok();
+    }
 
+    if crate::sandbox::has_cap(caps, crate::sandbox::CRYPTO_PBKDF2) {
     let pbkdf2_bytes_fn = NativeFunction::from_copy_closure(
         move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
             if args.len() < 4 {
@@ -1625,7 +1819,9 @@ fn register_crypto_functions(instance: &mut KossInstance) {
         pbkdf2_bytes_fn.to_js_function(ctx.realm()),
         boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
     ).ok();
+    }
 
+    if crate::sandbox::has_cap(caps, crate::sandbox::CRYPTO_HMAC) {
     let aes_gcm_encrypt_fn = NativeFunction::from_copy_closure(
         move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
             if args.len() < 4 {
@@ -1667,7 +1863,9 @@ fn register_crypto_functions(instance: &mut KossInstance) {
         aes_gcm_decrypt_fn.to_js_function(ctx.realm()),
         boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
     ).ok();
+    }
 
+    if crate::sandbox::has_cap(caps, crate::sandbox::CRYPTO_RANDOM) {
     let ed25519_keypair_fn = NativeFunction::from_copy_closure(
         move |_this: &JsValue, _args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
             match crate::bindings::crypto::ed25519_keypair() {
@@ -1686,7 +1884,9 @@ fn register_crypto_functions(instance: &mut KossInstance) {
         ed25519_keypair_fn.to_js_function(ctx.realm()),
         boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
     ).ok();
+    }
 
+    if crate::sandbox::has_cap(caps, crate::sandbox::CRYPTO_HASH) {
     let ed25519_sign_fn = NativeFunction::from_copy_closure(
         move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
             if args.len() < 2 {
@@ -1725,7 +1925,9 @@ fn register_crypto_functions(instance: &mut KossInstance) {
         ed25519_verify_fn.to_js_function(ctx.realm()),
         boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
     ).ok();
+    }
 
+    if crate::sandbox::has_cap(caps, crate::sandbox::CRYPTO_HASH) {
     let timing_safe_equal_fn = NativeFunction::from_copy_closure(
         move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
             if args.len() < 2 {
@@ -1741,6 +1943,7 @@ fn register_crypto_functions(instance: &mut KossInstance) {
         timing_safe_equal_fn.to_js_function(ctx.realm()),
         boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
     ).ok();
+    }
 }
 
 fn bytes_to_json_arr(data: &[u8]) -> String {
@@ -2388,10 +2591,12 @@ fn create_instance_internal(
     register_console(&mut instance.context);
     register_koss_global(&mut instance.context, stable);
     buffer::register_buffer_globals(&mut instance.context);
-    register_dlopen_binding(&mut instance.context);
     register_native_bindings(&mut instance);
     register_fs_functions(&mut instance);
     register_nodejs_globals(&mut instance.context);
+    if !stable && crate::sandbox::has_cap(effective_caps, crate::sandbox::NATIVE_ADDON) {
+        register_dlopen_binding(&mut instance);
+    }
     // Register TextEncoder/TextDecoder as globals if not already present
     let te_code = r#"
     (function() {
@@ -2443,14 +2648,10 @@ fn create_instance_internal(
             eprintln!("Warning: Failed to register FFI stub: {:?}", e);
         }
     }
-    if effective_caps & KOSS_CAP_ALL_NET != 0 {
-        register_fetch_polyfill(&mut instance.context);
-        register_native_fetch(&mut instance);
-        register_net_functions(&mut instance);
-        register_crypto_functions(&mut instance);
-        register_zlib_functions_all(&mut instance);
-    }
-    Box::into_raw(instance)
+    register_runtime_capabilities(&mut instance);
+    let ptr = Box::into_raw(instance);
+    register_api_instance(ptr as usize);
+    ptr
 }
 
 /// Create a new isolated JS instance with specific capabilities, builtin flags, and stable mode.
@@ -2545,6 +2746,12 @@ pub unsafe extern "C" fn koss_destroy(ptr: *mut KossInstance) {
     output_license_once();
     unsafe {
         if !ptr.is_null() {
+            let guard = match enter_api(ptr as usize) {
+                Ok(guard) => guard,
+                Err(_) => return,
+            };
+            unregister_api_instance(ptr as usize);
+            std::mem::forget(guard);
             drop(Box::from_raw(ptr));
         }
     }
@@ -2567,6 +2774,7 @@ pub unsafe extern "C" fn koss_eval(ptr: *mut KossInstance, code: *const c_char) 
             return KossResult::err(2, "null pointer");
         }
 
+        let _api_guard = api_guard_result!(ptr);
         let instance = &mut *ptr;
         let code_str = match CStr::from_ptr(code).to_str() {
             Ok(s) => s,
@@ -2662,6 +2870,7 @@ pub unsafe extern "C" fn koss_run_file(ptr: *mut KossInstance, path: *const c_ch
             return KossResult::err(2, "null pointer");
         }
 
+        let _api_guard = api_guard_result!(ptr);
         let instance = &mut *ptr;
         let path_str = match CStr::from_ptr(path).to_str() {
             Ok(s) => s,
@@ -2714,6 +2923,7 @@ pub unsafe extern "C" fn koss_run_module(
         return KossResult::err(2, "null pointer");
     }
 
+    let _api_guard = api_guard_result!(ptr);
     let instance = unsafe { &mut *ptr };
     let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
         Ok(s) => s,
@@ -2774,6 +2984,7 @@ pub unsafe extern "C" fn koss_run_module_string(
         return KossResult::err(2, "null pointer");
     }
 
+    let _api_guard = api_guard_result!(ptr);
     let instance = unsafe { &mut *ptr };
     let code_str = match unsafe { CStr::from_ptr(code) }.to_str() {
         Ok(s) => s,
@@ -2826,6 +3037,7 @@ pub unsafe extern "C" fn koss_run_string(
             return KossResult::err(2, "null pointer");
         }
 
+        let _api_guard = api_guard_result!(ptr);
         let instance = &mut *ptr;
         let code_str = match CStr::from_ptr(code).to_str() {
             Ok(s) => s,
@@ -2866,6 +3078,7 @@ pub unsafe extern "C" fn koss_run_async(
             return KossResult::err(2, "null pointer");
         }
 
+        let _api_guard = api_guard_result!(ptr);
         let instance = &mut *ptr;
         let code_str = match CStr::from_ptr(code).to_str() {
             Ok(s) => s,
@@ -2967,6 +3180,7 @@ pub unsafe extern "C" fn koss_tick(ptr: *mut KossInstance) -> KossResult {
             return KossResult::err(2, "null pointer");
         }
 
+        let _api_guard = api_guard_result!(ptr);
         let instance = &mut *ptr;
         let has_pending = instance.tick();
         let _ = instance.context.run_jobs();
@@ -3019,6 +3233,7 @@ pub unsafe extern "C" fn koss_set_global_string(
             return KossResult::err(2, "null pointer");
         }
 
+        let _api_guard = api_guard_result!(ptr);
         let instance = &mut *ptr;
         let name_str = match CStr::from_ptr(name).to_str() {
             Ok(s) => s,
@@ -3051,6 +3266,7 @@ pub unsafe extern "C" fn koss_register_fetch(ptr: *mut KossInstance) -> KossResu
             return KossResult::err(2, "null pointer");
         }
 
+        let _api_guard = api_guard_result!(ptr);
         let instance = &mut *ptr;
 
         let native = boa_engine::NativeFunction::from_copy_closure(move |_this, args, ctx| {
@@ -3061,12 +3277,7 @@ pub unsafe extern "C" fn koss_register_fetch(ptr: *mut KossInstance) -> KossResu
             let _url = js_value_to_string(&args[0], ctx);
             let request_json = js_value_to_string(&args[1], ctx);
 
-            let json_str = match CString::new(request_json.clone()) {
-                Ok(c) => c,
-                Err(_) => return Ok(JsValue::undefined()),
-            };
-
-            let result_ptr = koss_fetch(ptr as *mut KossInstance, json_str.as_ptr());
+            let result_ptr = fetch_json(&request_json);
 
             if result_ptr.code == 0 && !result_ptr.value.is_null() {
                 let response_str = match CStr::from_ptr(result_ptr.value).to_str() {
@@ -3120,6 +3331,10 @@ pub unsafe extern "C" fn koss_get_capabilities(ptr: *mut KossInstance) -> u32 {
         if ptr.is_null() {
             return 0;
         }
+        let _api_guard = match enter_api(ptr as usize) {
+            Ok(guard) => guard,
+            Err(_) => return 0,
+        };
         let instance = &*ptr;
         instance.capabilities
     }
@@ -3131,8 +3346,12 @@ pub unsafe extern "C" fn koss_is_stable(ptr: *mut KossInstance) -> bool {
     output_license_once();
     unsafe {
         if ptr.is_null() {
-            return true;
+            return false;
         }
+        let _api_guard = match enter_api(ptr as usize) {
+            Ok(guard) => guard,
+            Err(_) => return false,
+        };
         (*ptr).stable
     }
 }
@@ -3146,6 +3365,10 @@ pub unsafe extern "C" fn koss_get_builtins(ptr: *mut KossInstance) -> u32 {
         if ptr.is_null() {
             return 0;
         }
+        let _api_guard = match enter_api(ptr as usize) {
+            Ok(guard) => guard,
+            Err(_) => return 0,
+        };
         (*ptr).builtins
     }
 }
@@ -3159,6 +3382,10 @@ pub unsafe extern "C" fn koss_is_builtin_enabled(ptr: *mut KossInstance, flag: u
         if ptr.is_null() {
             return false;
         }
+        let _api_guard = match enter_api(ptr as usize) {
+            Ok(guard) => guard,
+            Err(_) => return false,
+        };
         (*ptr).builtins & flag != 0
     }
 }
@@ -3177,6 +3404,7 @@ pub unsafe extern "C" fn koss_set_audit_mask(ptr: *mut KossInstance, mask: u32) 
         if ptr.is_null() {
             return KossResult::err(2, "null pointer");
         }
+        let _api_guard = api_guard_result!(ptr);
         let instance = &mut *ptr;
         instance.sandbox.audit_mask = mask & instance.capabilities;
         KossResult::ok("ok")
@@ -3192,6 +3420,10 @@ pub unsafe extern "C" fn koss_get_audit_mask(ptr: *mut KossInstance) -> u32 {
         if ptr.is_null() {
             return 0;
         }
+        let _api_guard = match enter_api(ptr as usize) {
+            Ok(guard) => guard,
+            Err(_) => return 0,
+        };
         (*ptr).sandbox.audit_mask
     }
 }
@@ -3224,6 +3456,7 @@ pub unsafe extern "C" fn koss_check_sandbox(
         if ptr.is_null() {
             return KossResult::err(2, "null pointer");
         }
+        let _api_guard = api_guard_result!(ptr);
         let instance = &mut *ptr;
         if callback as usize == 0 {
             instance.sandbox.sync_audit = None;
@@ -3252,6 +3485,7 @@ pub unsafe extern "C" fn koss_get_binding(
             return KossResult::err(2, "null pointer");
         }
 
+        let _api_guard = api_guard_result!(ptr);
         let instance = &mut *ptr;
         let name_str = match CStr::from_ptr(binding_name).to_str() {
             Ok(s) => s,
@@ -3568,31 +3802,36 @@ pub unsafe extern "C" fn koss_fetch(ptr: *mut KossInstance, url_json: *const c_c
             return KossResult::err(2, "null pointer");
         }
 
+        let _api_guard = api_guard_result!(ptr);
         let json_str = match CStr::from_ptr(url_json).to_str() {
             Ok(s) => s,
             Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
         };
 
-        #[derive(serde::Deserialize)]
-        #[allow(dead_code)]
-        struct FetchInput {
-            url: String,
-            #[serde(flatten)]
-            request: bindings::fetch::FetchRequest,
-        }
+        fetch_json(json_str)
+    }
+}
 
-        let input: FetchInput = match serde_json::from_str(json_str) {
-            Ok(i) => i,
-            Err(e) => return KossResult::err(1, &format!("parse error: {}", e)),
-        };
+fn fetch_json(json_str: &str) -> KossResult {
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct FetchInput {
+        url: String,
+        #[serde(flatten)]
+        request: bindings::fetch::FetchRequest,
+    }
 
-        match bindings::fetch::fetch_with_url(&input.url, json_str) {
-            Ok(response) => {
-                let json = serde_json::to_string(&response).unwrap_or_default();
-                KossResult::ok(&json)
-            }
-            Err(e) => KossResult::err(1, &format!("fetch error: {}", e)),
+    let input: FetchInput = match serde_json::from_str(json_str) {
+        Ok(i) => i,
+        Err(e) => return KossResult::err(1, &format!("parse error: {}", e)),
+    };
+
+    match bindings::fetch::fetch_with_url(&input.url, json_str) {
+        Ok(response) => {
+            let json = serde_json::to_string(&response).unwrap_or_default();
+            KossResult::ok(&json)
         }
+        Err(e) => KossResult::err(1, &format!("fetch error: {}", e)),
     }
 }
 
@@ -3653,6 +3892,10 @@ pub unsafe extern "C" fn koss_enable_audit_debug(ptr: *mut KossInstance, enable:
         if ptr.is_null() {
             return;
         }
+        let _api_guard = match enter_api(ptr as usize) {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
         (*ptr).sandbox.audit_debug = enable;
     }
 }
@@ -3681,6 +3924,7 @@ pub unsafe extern "C" fn koss_set_global_number(
         if ptr.is_null() || name.is_null() {
             return KossResult::err(2, "null pointer");
         }
+        let _api_guard = api_guard_result!(ptr);
         let instance = &mut *ptr;
         let name_str = match CStr::from_ptr(name).to_str() {
             Ok(s) => s,
@@ -3710,6 +3954,7 @@ pub unsafe extern "C" fn koss_set_global_bool(
         if ptr.is_null() || name.is_null() {
             return KossResult::err(2, "null pointer");
         }
+        let _api_guard = api_guard_result!(ptr);
         let instance = &mut *ptr;
         let name_str = match CStr::from_ptr(name).to_str() {
             Ok(s) => s,
@@ -3738,6 +3983,7 @@ pub unsafe extern "C" fn koss_set_global_null(
         if ptr.is_null() || name.is_null() {
             return KossResult::err(2, "null pointer");
         }
+        let _api_guard = api_guard_result!(ptr);
         let instance = &mut *ptr;
         let name_str = match CStr::from_ptr(name).to_str() {
             Ok(s) => s,
@@ -3765,6 +4011,7 @@ pub unsafe extern "C" fn koss_set_global_undefined(
         if ptr.is_null() || name.is_null() {
             return KossResult::err(2, "null pointer");
         }
+        let _api_guard = api_guard_result!(ptr);
         let instance = &mut *ptr;
         let name_str = match CStr::from_ptr(name).to_str() {
             Ok(s) => s,
@@ -3794,6 +4041,7 @@ pub unsafe extern "C" fn koss_set_global_json(
         if ptr.is_null() || name.is_null() || json_str.is_null() {
             return KossResult::err(2, "null pointer");
         }
+        let _api_guard = api_guard_result!(ptr);
         let instance = &mut *ptr;
         let name_str = match CStr::from_ptr(name).to_str() {
             Ok(s) => s,
@@ -3935,6 +4183,7 @@ pub unsafe extern "C" fn koss_register_function(
             return KossResult::err(2, "null pointer");
         }
 
+        let _api_guard = api_guard_result!(ptr);
         let instance = &mut *ptr;
         let name_str = match CStr::from_ptr(name).to_str() {
             Ok(s) => s,
@@ -3976,6 +4225,7 @@ pub unsafe extern "C" fn koss_register_module_loader(
             return KossResult::err(2, "null pointer");
         }
 
+        let _api_guard = api_guard_result!(ptr);
         let instance = &mut *ptr;
         if callback as usize == 0 {
             instance.external_module_loader = None;
@@ -4019,6 +4269,7 @@ pub unsafe extern "C" fn koss_register_class(
             return KossResult::err(2, "null pointer");
         }
 
+        let _api_guard = api_guard_result!(ptr);
         let instance = &mut *ptr;
         let name_str = match CStr::from_ptr(class_name).to_str() {
             Ok(s) => s,
@@ -4252,10 +4503,14 @@ fn register_senri_ffi_impl(instance: &mut KossInstance) {
 }
 
 #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
-fn register_dlopen_binding(ctx: &mut Context) {
+fn register_dlopen_binding(instance: &mut KossInstance) {
+    let instance_ptr = instance as *mut KossInstance;
+    let ctx = &mut instance.context;
     let dlopen_fn = unsafe {
         NativeFunction::from_closure(
-            move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+                let instance = &*instance_ptr;
+                authorize_operation(instance, crate::sandbox::NATIVE_ADDON, "nativeAddon.dlopen", args, ctx)?;
                 let module = args.first()
                     .and_then(|v| v.as_object())
                     .ok_or_else(|| JsNativeError::error().with_message("process.dlopen: module required"))?;
@@ -4264,7 +4519,7 @@ fn register_dlopen_binding(ctx: &mut Context) {
                     .map(|s| s.to_std_string_escaped())
                     .ok_or_else(|| JsNativeError::error().with_message("process.dlopen: filename required"))?;
 
-                crate::bindings::process_dlopen::dlopen_impl(&module, &filename, _ctx)?;
+                crate::bindings::process_dlopen::dlopen_impl(&module, &filename, ctx)?;
                 Ok(JsValue::undefined())
             },
         )
@@ -4289,7 +4544,8 @@ fn register_dlopen_binding(ctx: &mut Context) {
 }
 
 #[cfg(not(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos")))]
-fn register_dlopen_binding(ctx: &mut Context) {
+fn register_dlopen_binding(instance: &mut KossInstance) {
+    let ctx = &mut instance.context;
     let dlopen_fn = unsafe {
         NativeFunction::from_closure(
             move |_this: &JsValue, _args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
@@ -4324,6 +4580,20 @@ fn register_dlopen_binding(ctx: &mut Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static AUDIT_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn deny_audit(
+        _target: *const c_char,
+        _args: *const *const c_char,
+        _argc: i32,
+        _pwd: *const c_char,
+        _userdata: *mut c_void,
+    ) -> bool {
+        AUDIT_CALLS.fetch_add(1, Ordering::SeqCst);
+        false
+    }
 
     #[test]
     fn test_capability_error_message_debug_enabled() {
@@ -4387,5 +4657,229 @@ mod tests {
         assert!(msg.contains("KossCancelError"));
         assert!(msg.contains("Access denied"));
         assert!(!msg.contains("fs"));
+    }
+
+    #[test]
+    fn test_crypto_registration_requires_crypto_capability() {
+        let context = Context::default();
+        let mut instance = KossInstance::new(
+            context,
+            crate::sandbox::NET_FETCH,
+            true,
+            crate::builtins::KOSS_BUILTIN_ALL,
+        );
+
+        register_runtime_capabilities(&mut instance);
+
+        let value = instance
+            .context
+            .eval(Source::from_bytes(b"typeof __koss_random_bytes"))
+            .expect("capability check script should run");
+        assert_eq!(value.to_string(&mut instance.context).unwrap().to_std_string_escaped(), "undefined");
+    }
+
+    #[test]
+    fn test_tcp_server_is_not_registered_for_client_only_capability() {
+        let context = Context::default();
+        let mut instance = KossInstance::new(
+            context,
+            crate::sandbox::NET_TCP_CLIENT,
+            true,
+            crate::builtins::KOSS_BUILTIN_ALL,
+        );
+
+        register_runtime_capabilities(&mut instance);
+
+        let value = instance
+            .context
+            .eval(Source::from_bytes(b"typeof __koss_tcp_listen"))
+            .expect("capability check script should run");
+        assert_eq!(value.to_string(&mut instance.context).unwrap().to_std_string_escaped(), "undefined");
+    }
+
+    #[test]
+    fn test_network_bindings_are_registered_per_capability() {
+        for (caps, bindings) in [
+            (crate::sandbox::NET_TCP_CLIENT, &["__koss_tcp_connect"][..]),
+            (crate::sandbox::NET_TCP_SERVER, &["__koss_tcp_listen", "__koss_tcp_accept"][..]),
+            (crate::sandbox::NET_DNS, &["__koss_dns_lookup"][..]),
+        ] {
+            let context = Context::default();
+            let mut instance = KossInstance::new(
+                context,
+                caps,
+                true,
+                crate::builtins::KOSS_BUILTIN_ALL,
+            );
+
+            register_runtime_capabilities(&mut instance);
+
+            for binding in bindings {
+                let value = instance
+                    .context
+                    .eval(Source::from_bytes(format!("typeof {binding}").as_bytes()))
+                    .expect("capability check script should run");
+                assert_eq!(
+                    value.to_string(&mut instance.context).unwrap().to_std_string_escaped(),
+                    "function",
+                    "{binding} should be registered for caps={caps:#x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_crypto_bindings_are_registered_per_capability() {
+        for (caps, bindings) in [
+            (crate::sandbox::CRYPTO_HASH, &["__koss_hash", "__koss_hash_bytes"][..]),
+            (crate::sandbox::CRYPTO_RANDOM, &["__koss_random_bytes", "__koss_random_uuid"][..]),
+            (crate::sandbox::CRYPTO_HMAC, &["__koss_hmac_bytes", "__koss_aes_gcm_encrypt"][..]),
+            (crate::sandbox::CRYPTO_PBKDF2, &["__koss_pbkdf2_bytes"][..]),
+        ] {
+            let context = Context::default();
+            let mut instance = KossInstance::new(
+                context,
+                caps,
+                true,
+                crate::builtins::KOSS_BUILTIN_ALL,
+            );
+
+            register_runtime_capabilities(&mut instance);
+
+            for binding in bindings {
+                let value = instance
+                    .context
+                    .eval(Source::from_bytes(format!("typeof {binding}").as_bytes()))
+                    .expect("capability check script should run");
+                assert_eq!(
+                    value.to_string(&mut instance.context).unwrap().to_std_string_escaped(),
+                    "function",
+                    "{binding} should be registered for caps={caps:#x}"
+                );
+            }
+        }
+
+        let context = Context::default();
+        let mut instance = KossInstance::new(
+            context,
+            crate::sandbox::CRYPTO_HASH,
+            true,
+            crate::builtins::KOSS_BUILTIN_ALL,
+        );
+
+        register_runtime_capabilities(&mut instance);
+
+        for (binding, expected) in [
+            ("__koss_hash", "function"),
+            ("__koss_hash_bytes", "function"),
+            ("__koss_random_bytes", "undefined"),
+            ("__koss_hmac_bytes", "undefined"),
+            ("__koss_pbkdf2_bytes", "undefined"),
+        ] {
+            let value = instance
+                .context
+                .eval(Source::from_bytes(format!("typeof {binding}").as_bytes()))
+                .expect("capability check script should run");
+            assert_eq!(
+                value.to_string(&mut instance.context).unwrap().to_std_string_escaped(),
+                expected,
+                "{binding} registration did not match its capability"
+            );
+        }
+    }
+
+    #[test]
+    fn test_dlopen_requires_unstable_native_addon_capability() {
+        for (caps, stable, expected) in [
+            (crate::sandbox::NATIVE_ADDON, false, "function"),
+            (crate::sandbox::NATIVE_ADDON, true, "undefined"),
+            (crate::sandbox::KOSS_CAP_SANDBOX, false, "undefined"),
+        ] {
+            let instance = unsafe { &mut *koss_create_with_caps(caps, stable) };
+            let value = instance
+                .context
+                .eval(Source::from_bytes(b"typeof process.dlopen"))
+                .expect("capability check script should run");
+            assert_eq!(
+                value.to_string(&mut instance.context).unwrap().to_std_string_escaped(),
+                expected,
+                "dlopen registration did not match stable={stable}, caps={caps:#x}"
+            );
+            unsafe { koss_destroy(instance) };
+        }
+    }
+
+    #[test]
+    fn test_low_level_fs_operation_honors_audit_denial() {
+        AUDIT_CALLS.store(0, Ordering::SeqCst);
+        let context = Context::default();
+        let mut instance = KossInstance::new(
+            context,
+            crate::sandbox::FS_READ,
+            true,
+            crate::builtins::KOSS_BUILTIN_ALL,
+        );
+        instance.sandbox.audit_mask = crate::sandbox::FS_READ;
+        instance.sandbox.sync_audit = Some(deny_audit);
+        register_fs_functions(&mut instance);
+
+        let result = instance
+            .context
+            .eval(Source::from_bytes(b"__koss_fs_exists('.')"));
+
+        assert!(result.is_err());
+        assert_eq!(AUDIT_CALLS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_api_guard_rejects_reentry_and_cross_thread_access() {
+        let key = usize::MAX - 17;
+        register_api_instance(key);
+
+        let guard = enter_api(key).expect("owner thread should enter instance");
+        assert!(enter_api(key).is_err());
+        let cross_thread = std::thread::spawn(move || enter_api(key).is_err())
+            .join()
+            .unwrap();
+        assert!(cross_thread);
+
+        drop(guard);
+        assert!(enter_api(key).is_ok());
+        unregister_api_instance(key);
+    }
+
+    #[test]
+    fn test_public_api_rejects_cross_thread_instance_access() {
+        let ptr = koss_create_with_caps(crate::sandbox::KOSS_CAP_ALL, false);
+        assert!(!ptr.is_null());
+        let key = ptr as usize;
+
+        let (result_code, capabilities, stable, builtins, builtin_enabled, audit_mask) =
+            std::thread::spawn(move || unsafe {
+                let result = koss_set_audit_mask(key as *mut KossInstance, u32::MAX);
+                let result_code = result.code;
+                koss_free_result(result);
+                koss_enable_audit_debug(key as *mut KossInstance, true);
+                (
+                    result_code,
+                    koss_get_capabilities(key as *mut KossInstance),
+                    koss_is_stable(key as *mut KossInstance),
+                    koss_get_builtins(key as *mut KossInstance),
+                    koss_is_builtin_enabled(key as *mut KossInstance, 1),
+                    koss_get_audit_mask(key as *mut KossInstance),
+                )
+            })
+            .join()
+            .unwrap();
+
+        assert_eq!(result_code, 3);
+        assert_eq!(capabilities, 0);
+        assert!(!stable);
+        assert_eq!(builtins, 0);
+        assert!(!builtin_enabled);
+        assert_eq!(audit_mask, 0);
+        assert!(!unsafe { (*ptr).sandbox.audit_debug });
+
+        unsafe { koss_destroy(ptr) };
     }
 }

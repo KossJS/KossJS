@@ -41,11 +41,11 @@
 ```c
 #include "kossjs.h"
 
-KossInstance *js = koss_create(KOSS_CAP_ALL, NULL);
-KossResult   res = koss_eval(js, "1 + 2", "main.js");
+KossInstance *js = koss_create(); /* 默认无文件、网络或原生代码权限 */
+KossResult   res = koss_eval(js, "1 + 2");
 
 printf("%s\n", res.value); /* 3 */
-koss_free_result(&res);
+koss_free_result(res);
 koss_destroy(js);
 ```
 
@@ -68,6 +68,8 @@ const js = new KossJS()
 const result = js.eval('1 + 2')
 console.log(result) // 3
 ```
+
+以上便捷构造方式默认使用 `KOSS_CAP_SANDBOX`。运行可信代码并确实需要宿主权限时，必须显式传入最小能力集合；不要对用户脚本或第三方插件使用 `KOSS_CAP_ALL`。
 
 > 完整文档请参阅 [KossJS 文档](https://docss.sxxyrry.qzz.io/KossJS/)
 

@@ -107,7 +107,7 @@ class KossJS:
         :param lib_path: Path to the kossjs shared library. Auto-detected if None.
         :param with_modules: Enable ES module loading.
         :param root_dir: Base directory for module resolution.
-        :param capabilities: Capability bitmask. None defaults to KOSS_CAP_ALL.
+        :param capabilities: Capability bitmask. None defaults to KOSS_CAP_SANDBOX.
         :param stable: If True (default), disables FFI and Worker capabilities.
                        If False, enables these experimental features and prints
                        warnings to stderr. Production environments should keep
@@ -143,7 +143,7 @@ class KossJS:
         self._libc.malloc.argtypes = [ctypes.c_size_t]
         self._libc.malloc.restype = ctypes.c_void_p
         
-        caps = capabilities if capabilities is not None else self.KOSS_CAP_ALL
+        caps = capabilities if capabilities is not None else self.KOSS_CAP_SANDBOX
         bltins = builtins if builtins is not None else self.KOSS_BUILTIN_ALL
 
         # Use with_modules to enable module loading from stdlib

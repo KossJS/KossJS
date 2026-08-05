@@ -215,6 +215,7 @@ pub mod async_defs {
     pub(crate) fn invoke_ffi_call_async(
         data: &FfiCallAsync,
         arg_buffers: &[Vec<u8>],
+        instance_ptr: usize,
         task_id: u64,
         callback_tx: &mpsc::Sender<crate::runtime::CallbackRequest>,
         callback_timeout_ms: u64,
@@ -253,7 +254,15 @@ pub mod async_defs {
                 let tx = callback_tx.clone();
                 let tid = task_id;
 
-                let (proxy, cb_data) = create_channel_callback_closure(cb_args, *cb_ret, tx, tid, cb_index, callback_timeout_ms)?;
+                let (proxy, cb_data) = create_channel_callback_closure(
+                    cb_args,
+                    *cb_ret,
+                    tx,
+                    instance_ptr,
+                    tid,
+                    cb_index,
+                    callback_timeout_ms,
+                )?;
                 let code_ptr = *proxy.code_ptr() as usize;
                 closures.push(proxy);
                 cb_datas.push(cb_data);
@@ -324,6 +333,7 @@ pub mod async_defs {
         arg_types: Vec<OwnedFfiType>,
         ret_type: OwnedFfiType,
         callback_tx: mpsc::Sender<crate::runtime::CallbackRequest>,
+        instance_ptr: usize,
         task_id: u64,
         cb_index: usize,
         ret_size: usize,
@@ -357,6 +367,7 @@ pub mod async_defs {
 
         let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
         let req = crate::runtime::CallbackRequest {
+            instance_ptr: d.instance_ptr,
             task_id: d.task_id,
             cb_index: d.cb_index,
             args: cb_args,
@@ -397,6 +408,7 @@ pub mod async_defs {
         arg_types: Vec<OwnedFfiType>,
         ret_type: OwnedFfiType,
         callback_tx: mpsc::Sender<crate::runtime::CallbackRequest>,
+        instance_ptr: usize,
         task_id: u64,
         cb_index: usize,
         _timeout_ms: u64,
@@ -412,6 +424,7 @@ pub mod async_defs {
             arg_types,
             ret_type,
             callback_tx,
+            instance_ptr,
             task_id,
             cb_index,
             ret_size,

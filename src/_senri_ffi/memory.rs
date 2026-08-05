@@ -5,6 +5,7 @@
 // "非本软件模块的源代码公开义务例外"
 
 use std::alloc::{self, Layout};
+use std::ffi::c_void;
 
 use boa_engine::{
     js_string, object::ObjectInitializer, JsNativeError, JsValue, NativeFunction,
@@ -31,8 +32,16 @@ pub fn free_impl(ptr: *mut u8, size: usize) {
     unsafe { alloc::dealloc(ptr, layout) };
 }
 
-pub fn register_memory_methods(obj: &mut ObjectInitializer) {
+pub fn register_memory_methods(obj: &mut ObjectInitializer, instance_ptr: *mut c_void) {
     let alloc_fn = NativeFunction::from_copy_closure(move |_this, args, ctx| {
+        let instance = unsafe { &*(instance_ptr as *mut crate::runtime::KossInstance) };
+        crate::runtime::authorize_operation(
+            instance,
+            crate::sandbox::FFI_ALLOC,
+            "ffi.alloc",
+            args,
+            ctx,
+        )?;
         let size = args
             .first()
             .and_then(|v| v.as_number())
@@ -46,12 +55,20 @@ pub fn register_memory_methods(obj: &mut ObjectInitializer) {
                 .into());
         }
 
-        let ptr_obj = create_pointer_object(ptr as usize, size, ctx);
+        let ptr_obj = create_pointer_object(ptr as usize, size, instance_ptr, ctx);
         Ok(ptr_obj.into())
     });
     obj.function(alloc_fn, js_string!("alloc"), 1);
 
     let alloc_type_fn = NativeFunction::from_copy_closure(move |_this, args, ctx| {
+        let instance = unsafe { &*(instance_ptr as *mut crate::runtime::KossInstance) };
+        crate::runtime::authorize_operation(
+            instance,
+            crate::sandbox::FFI_ALLOC,
+            "ffi.allocType",
+            args,
+            ctx,
+        )?;
         let type_val = args.first().ok_or_else(|| {
             JsNativeError::error().with_message("type argument required")
         })?;
@@ -70,12 +87,20 @@ pub fn register_memory_methods(obj: &mut ObjectInitializer) {
                 .into());
         }
 
-        let ptr_obj = create_pointer_object(ptr as usize, total_size, ctx);
+        let ptr_obj = create_pointer_object(ptr as usize, total_size, instance_ptr, ctx);
         Ok(ptr_obj.into())
     });
     obj.function(alloc_type_fn, js_string!("allocType"), 2);
 
-    let free_fn = NativeFunction::from_copy_closure(move |_this, args, _ctx| {
+    let free_fn = NativeFunction::from_copy_closure(move |_this, args, ctx| {
+        let instance = unsafe { &*(instance_ptr as *mut crate::runtime::KossInstance) };
+        crate::runtime::authorize_operation(
+            instance,
+            crate::sandbox::FFI_ALLOC,
+            "ffi.free",
+            args,
+            ctx,
+        )?;
         if let Some(arg) = args.first() {
             if let Some(obj) = arg.as_object() {
                 if let Some(ptr) = obj.downcast_ref::<JsPointer>() {
@@ -93,6 +118,14 @@ pub fn register_memory_methods(obj: &mut ObjectInitializer) {
     obj.function(free_fn, js_string!("free"), 1);
 
     let address_of_fn = NativeFunction::from_copy_closure(move |_this, args, ctx| {
+        let instance = unsafe { &*(instance_ptr as *mut crate::runtime::KossInstance) };
+        crate::runtime::authorize_operation(
+            instance,
+            crate::sandbox::FFI_ALLOC,
+            "ffi.addressOf",
+            args,
+            ctx,
+        )?;
         let arg = args.first().ok_or_else(|| {
             JsNativeError::error().with_message("buffer argument required")
         })?;
@@ -111,17 +144,21 @@ pub fn register_memory_methods(obj: &mut ObjectInitializer) {
         } else {
             return Err(JsNativeError::error().with_message("ArrayBuffer is detached").into());
         };
-        let ptr_obj = create_pointer_object(addr, byte_len, ctx);
+        let ptr_obj = create_pointer_object(addr, byte_len, instance_ptr, ctx);
         Ok(ptr_obj.into())
     });
     obj.function(address_of_fn, js_string!("addressOf"), 1);
 
-    let errno_fn = NativeFunction::from_copy_closure(|_this, _args, _ctx| {
+    let errno_fn = NativeFunction::from_copy_closure(move |_this, args, ctx| {
+        let instance = unsafe { &*(instance_ptr as *mut crate::runtime::KossInstance) };
+        crate::runtime::authorize_operation(instance, crate::sandbox::FFI_CALL, "ffi.errno", args, ctx)?;
         Ok(JsValue::from(0i32))
     });
     obj.function(errno_fn, js_string!("errno"), 0);
 
-    let strerror_fn = NativeFunction::from_copy_closure(|_this, args, _ctx| {
+    let strerror_fn = NativeFunction::from_copy_closure(move |_this, args, ctx| {
+        let instance = unsafe { &*(instance_ptr as *mut crate::runtime::KossInstance) };
+        crate::runtime::authorize_operation(instance, crate::sandbox::FFI_CALL, "ffi.strerror", args, ctx)?;
         let err = args
             .first()
             .and_then(|v| v.as_number())

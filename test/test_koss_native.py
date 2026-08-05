@@ -42,25 +42,25 @@ class TestKossBuiltinFlag:
         assert KossJS.KOSS_BUILTIN_KOSS == (1 << 3)
 
     def test_koss_builtin_flag_required(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE)
+        koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_NODE)
         with pytest.raises(Exception, match="KOSS_BUILTIN_KOSS"):
             koss.eval("require('koss:io')")
         koss.destroy()
 
     def test_koss_builtin_flag_enabled(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_KOSS)
+        koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("typeof require('koss:io').readText")
         assert result == "function"
         koss.destroy()
 
     def test_koss_builtin_with_all(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_ALL)
+        koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_ALL)
         result = koss.eval("typeof require('koss:io').readText")
         assert result == "function"
         koss.destroy()
 
     def test_is_builtin_enabled_koss(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_KOSS)
+        koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_KOSS)
         assert koss.is_builtin_enabled(KossJS.KOSS_BUILTIN_KOSS) is True
         assert koss.is_builtin_enabled(KossJS.KOSS_BUILTIN_NODE) is False
         koss.destroy()
@@ -73,7 +73,7 @@ class TestKossIo:
         cleanup('koss_test_native.txt', 'koss_stat_test.txt',
                 'koss_list_test', 'koss_cp_src.txt', 'koss_cp_dst.txt',
                 'koss_mv_dst.txt', 'koss_mkdir_test', 'koss_writetext_test.txt')
-        self.koss = KossJS(builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL)
+        self.koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL)
 
     def teardown_method(self):
         self.koss.destroy()
@@ -193,7 +193,7 @@ class TestKossCrypto:
     """Test koss:crypto module - hash, hmac, random, uuid, sign, verify, encrypt, decrypt, pbkdf2."""
 
     def setup_method(self):
-        self.koss = KossJS(builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL)
+        self.koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL)
 
     def teardown_method(self):
         self.koss.destroy()
@@ -338,7 +338,7 @@ class TestKossSystem:
     """Test koss:system module - platform info, hostname, pid, cwd, versions, cpus, etc."""
 
     def setup_method(self):
-        self.koss = KossJS(builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL)
+        self.koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL)
 
     def teardown_method(self):
         self.koss.destroy()
@@ -434,7 +434,7 @@ class TestKossData:
     """Test koss:data module - buffer, encoding, hex, base64."""
 
     def setup_method(self):
-        self.koss = KossJS(builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL)
+        self.koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL)
 
     def teardown_method(self):
         self.koss.destroy()
@@ -572,13 +572,13 @@ class TestKossFfi:
     """Test koss:ffi module - foreign function interface."""
 
     def test_ffi_module_importable(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL)
+        koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL)
         result = koss.eval("typeof require('koss:ffi').open === 'function'")
         assert result == 'true' or result is True
         koss.destroy()
 
     def test_ffi_has_all_exports(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL)
+        koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL)
         result = koss.eval("""
         var ffi = require('koss:ffi');
         typeof ffi.open === 'function' &&
@@ -593,7 +593,7 @@ class TestKossFfi:
         koss.destroy()
 
     def test_ffi_dlopen_alias(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL)
+        koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL)
         result = koss.eval("""
         var ffi = require('koss:ffi');
         typeof ffi.dlopen === 'function' && typeof ffi.open === 'function';
@@ -602,7 +602,7 @@ class TestKossFfi:
         koss.destroy()
 
     def test_ffi_open_nonexistent_throws(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL,
+        koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL,
                       stable=False)
         from kossjs_interface import JsError
         with pytest.raises(JsError):
@@ -610,7 +610,7 @@ class TestKossFfi:
         koss.destroy()
 
     def test_ffi_strerror(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL)
+        koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_KOSS | KossJS.KOSS_BUILTIN_ALL)
         result = koss.eval("""
         typeof require('koss:ffi').strerror;
         """)

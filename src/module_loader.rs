@@ -21,6 +21,22 @@ use rustc_hash::FxHashMap;
 
 use crate::resolver::ModuleResolver;
 
+fn verify_module_path(root: &Path, resolved: &Path) -> Result<PathBuf, String> {
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve module root '{}': {e}", root.display()))?;
+    let canonical_resolved = resolved
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve module '{}': {e}", resolved.display()))?;
+    if !canonical_resolved.starts_with(&canonical_root) {
+        return Err(format!(
+            "module '{}' resolves outside root directory",
+            resolved.display()
+        ));
+    }
+    Ok(canonical_resolved)
+}
+
 /// A BOA-compatible module loader that uses [ModuleResolver] for Node.js-style
 /// module resolution (bare specifiers, node_modules lookup, extension completion),
 /// and intercepts `koss:` protocol specifiers for builtin module resolution.
@@ -150,53 +166,15 @@ impl ModuleLoader for KossModuleLoader {
                     }
                 }
             } else {
-                // Security: verify the resolved path is within the root directory
-                let canonical_root = self.root.canonicalize().unwrap_or_else(|_| self.root.clone());
-                let canonical_resolved = match resolved.canonicalize() {
-                    Ok(p) => p,
-                    Err(_) => {
-                        // Resolved path doesn't exist — still verify it's within root
-                        // by ensuring no `..` escapes above root
-                        let normalized = crate::resolver::ModuleResolver::normalize_path_static(&resolved);
-                        match normalized {
-                            Some(p) => {
-                                if !p.starts_with(&canonical_root) {
-                                    return Err(JsError::from(
-                                        JsNativeError::typ().with_message(format!(
-                                            "module '{}' resolves outside root directory",
-                                            spec,
-                                        )),
-                                    ));
-                                }
-                                resolved.clone()
-                            }
-                            None => {
-                                return Err(JsError::from(
-                                    JsNativeError::typ().with_message(format!(
-                                        "module '{}' path traversal detected",
-                                        spec,
-                                    )),
-                                ));
-                            }
-                        }
-                    }
-                };
-                if canonical_resolved.starts_with(&canonical_root) {
-                    std::fs::read(&resolved).map_err(|err| {
-                        JsError::from(JsNativeError::typ().with_message(format!(
-                            "cannot read module '{}': {}",
-                            resolved.display(),
-                            err
-                        )))
-                    })?
-                } else {
-                    return Err(JsError::from(
-                        JsNativeError::typ().with_message(format!(
-                            "module '{}' resolves outside root directory",
-                            spec,
-                        )),
-                    ));
-                }
+                let verified = verify_module_path(&self.root, &resolved)
+                    .map_err(|e| JsError::from(JsNativeError::typ().with_message(e)))?;
+                std::fs::read(&verified).map_err(|err| {
+                    JsError::from(JsNativeError::typ().with_message(format!(
+                        "cannot read module '{}': {}",
+                        verified.display(),
+                        err
+                    )))
+                })?
             };
             // Wrap CJS source for ESM import compatibility
             let source_str = String::from_utf8_lossy(&source_bytes).to_string();
@@ -292,4 +270,38 @@ fn wrap_cjs_for_esm(source: &str) -> String {
     wrapped.push_str("globalThis.__koss_esm_result = module.exports;\n");
 
     wrapped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verified_module_path_returns_canonical_file() {
+        let root = std::env::temp_dir().join(format!(
+            "kossjs-module-loader-{}",
+            std::process::id()
+        ));
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let module = nested.join("module.js");
+        std::fs::write(&module, "export default 1;").unwrap();
+
+        let verified = verify_module_path(&root, &nested.join(".").join("module.js")).unwrap();
+        assert_eq!(verified, module.canonicalize().unwrap());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn verified_module_path_rejects_missing_file() {
+        let root = std::env::temp_dir();
+        let missing = root.join(format!(
+            "kossjs-missing-module-{}-{}.js",
+            std::process::id(),
+            u64::MAX
+        ));
+
+        assert!(verify_module_path(&root, &missing).is_err());
+    }
 }

@@ -31,6 +31,7 @@ struct CallbackEntry {
 struct CallbackData {
     alive: AtomicBool,
     engine_ctx: *mut Context,
+    instance_ptr: *mut c_void,
     ret_type: Rc<FfiType>,
     arg_types: Vec<Rc<FfiType>>,
     func: RefCell<Option<boa_engine::object::builtins::JsFunction>>,
@@ -40,6 +41,7 @@ pub fn create_callback(
     ret_type: Rc<FfiType>,
     arg_types: Vec<Rc<FfiType>>,
     js_func: boa_engine::object::builtins::JsFunction,
+    instance_ptr: *mut c_void,
     ctx: &mut Context,
 ) -> Result<JsObject, JsError> {
     let middle_arg_types: Vec<middle::Type> = arg_types.iter()
@@ -52,6 +54,7 @@ pub fn create_callback(
     let data = Box::new(CallbackData {
         alive: AtomicBool::new(true),
         engine_ctx: ctx as *mut Context,
+        instance_ptr,
         ret_type: Rc::clone(&ret_type),
         arg_types: arg_types.clone(),
         func: RefCell::new(Some(js_func)),
@@ -72,7 +75,7 @@ pub fn create_callback(
         reg.borrow_mut().insert(addr, CallbackEntry { _closure: closure, data_ptr });
     });
 
-    let ptr_obj = create_pointer_object(addr, 0, ctx);
+    let ptr_obj = create_pointer_object(addr, 0, instance_ptr, ctx);
 
     Ok(ptr_obj)
 }
@@ -109,6 +112,22 @@ unsafe extern "C" fn trampoline<R>(
     }
 
     let ctx = unsafe { &mut *userdata.engine_ctx };
+    let instance = unsafe { &*(userdata.instance_ptr as *mut crate::runtime::KossInstance) };
+    if crate::runtime::authorize_operation(
+        instance,
+        crate::sandbox::FFI_CALLBACK,
+        "ffi.callbackInvoke",
+        &[],
+        ctx,
+    )
+    .is_err()
+    {
+        let ret_size = userdata.ret_type.sizeof().min(std::mem::size_of::<R>());
+        unsafe {
+            std::ptr::write_bytes(result as *mut R as *mut u8, 0, ret_size);
+        }
+        return;
+    }
     let func_opt = userdata.func.borrow_mut().take();
     if func_opt.is_none() {
         return;

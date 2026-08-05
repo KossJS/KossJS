@@ -60,6 +60,14 @@ pub fn register_senri_ffi(context: &mut Context, instance_ptr: *mut c_void) {
 
     let open_fn = NativeFunction::from_copy_closure(
         move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let instance = unsafe { &*(instance_ptr as *mut crate::runtime::KossInstance) };
+            crate::runtime::authorize_operation(
+                instance,
+                crate::sandbox::FFI_OPEN,
+                "ffi.open",
+                args,
+                ctx,
+            )?;
             let path = args
                 .first()
                 .and_then(|v| v.as_string())
@@ -73,7 +81,7 @@ pub fn register_senri_ffi(context: &mut Context, instance_ptr: *mut c_void) {
                     .with_message(format!("failed to open library '{path}': {e}"))
             })?;
 
-            let handle = create_library_handle(lib, &path, ctx);
+            let handle = create_library_handle(lib, &path, instance_ptr, ctx);
 
             // Add funcAsync method
             add_func_async_to_handle(&handle, instance_ptr, ctx);
@@ -87,6 +95,14 @@ pub fn register_senri_ffi(context: &mut Context, instance_ptr: *mut c_void) {
 
     let struct_fn = NativeFunction::from_copy_closure(
         move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let instance = unsafe { &*(instance_ptr as *mut crate::runtime::KossInstance) };
+            crate::runtime::authorize_operation(
+                instance,
+                crate::sandbox::FFI_STRUCT,
+                "ffi.struct",
+                args,
+                ctx,
+            )?;
             let fields_obj = args
                 .first()
                 .and_then(|v| v.as_object())
@@ -157,7 +173,7 @@ pub fn register_senri_ffi(context: &mut Context, instance_ptr: *mut c_void) {
                     .collect();
             }
 
-            let ctor = struct_def::create_struct_constructor(&field_list, packed, ctx);
+            let ctor = struct_def::create_struct_constructor(&field_list, packed, instance_ptr, ctx);
             Ok(ctor.into())
         },
     );
@@ -214,6 +230,14 @@ pub fn register_senri_ffi(context: &mut Context, instance_ptr: *mut c_void) {
 
     let callback_fn = NativeFunction::from_copy_closure(
         move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let instance = unsafe { &*(instance_ptr as *mut crate::runtime::KossInstance) };
+            crate::runtime::authorize_operation(
+                instance,
+                crate::sandbox::FFI_CALLBACK,
+                "ffi.callback",
+                args,
+                ctx,
+            )?;
             let ret_type = types::type_from_js(
                 args.first().unwrap_or(&JsValue::undefined()),
             )?;
@@ -249,6 +273,14 @@ pub fn register_senri_ffi(context: &mut Context, instance_ptr: *mut c_void) {
 
     let create_cb_fn = NativeFunction::from_copy_closure(
         move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let instance = unsafe { &*(instance_ptr as *mut crate::runtime::KossInstance) };
+            crate::runtime::authorize_operation(
+                instance,
+                crate::sandbox::FFI_CALLBACK,
+                "ffi.createCallback",
+                args,
+                ctx,
+            )?;
             let ret_type = types::type_from_js(
                 args.first().unwrap_or(&JsValue::undefined()),
             )?;
@@ -278,7 +310,7 @@ pub fn register_senri_ffi(context: &mut Context, instance_ptr: *mut c_void) {
                     JsNativeError::error().with_message("not a valid function")
                 })?;
 
-            let ptr_obj = callback::create_callback(ret_type, arg_types, js_func, ctx)?;
+            let ptr_obj = callback::create_callback(ret_type, arg_types, js_func, instance_ptr, ctx)?;
             Ok(ptr_obj.into())
         },
     );
@@ -288,7 +320,15 @@ pub fn register_senri_ffi(context: &mut Context, instance_ptr: *mut c_void) {
     // createCallback, reclaiming its libffi closure and CallbackData. Without
     // this the callback allocation would live for the entire process.
     let free_cb_fn = NativeFunction::from_copy_closure(
-        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let instance = unsafe { &*(instance_ptr as *mut crate::runtime::KossInstance) };
+            crate::runtime::authorize_operation(
+                instance,
+                crate::sandbox::FFI_CALLBACK,
+                "ffi.freeCallback",
+                args,
+                ctx,
+            )?;
             let addr = args
                 .first()
                 .and_then(|v| {
@@ -305,7 +345,7 @@ pub fn register_senri_ffi(context: &mut Context, instance_ptr: *mut c_void) {
     );
     builder.function(free_cb_fn, js_string!("freeCallback"), 1);
 
-    register_memory_methods(&mut builder);
+    register_memory_methods(&mut builder, instance_ptr);
 
     let senri_obj = builder.build();
 
@@ -329,6 +369,14 @@ fn add_func_async_to_handle(
     let func_async = unsafe {
         NativeFunction::from_closure(
         move |_this: &JsValue, args: &[JsValue], call_ctx: &mut Context| -> Result<JsValue, JsError> {
+            let instance = &*(instance_ptr as *mut crate::runtime::KossInstance);
+            crate::runtime::authorize_operation(
+                instance,
+                crate::sandbox::FFI_CALL,
+                "ffi.funcAsync",
+                args,
+                call_ctx,
+            )?;
             let lib_handle = handle_clone.downcast_ref::<LibraryHandle>().ok_or_else(|| {
                 JsNativeError::error().with_message("not a LibraryHandle")
             })?;
@@ -440,6 +488,13 @@ fn add_func_async_to_handle(
                         }
 
                         let inst = &mut *(instance_ptr as *mut crate::runtime::KossInstance);
+                        crate::runtime::authorize_operation(
+                            inst,
+                            crate::sandbox::FFI_CALL,
+                            "ffi.call",
+                            call_args,
+                            ctx2,
+                        )?;
                         let event_loop = match inst.event_loop.as_mut() {
                             Some(el) => el,
                             None => return Err(JsNativeError::error().with_message("no event loop available").into()),
@@ -490,6 +545,7 @@ fn add_func_async_to_handle(
                         let io_tx = event_loop.io_tx.clone();
                         let callback_tx = event_loop.callback_tx_clone();
                         let ffi_data_clone = ffi_async.clone();
+                        let callback_instance_ptr = instance_ptr as usize;
                         let active_tasks_spawn = active_tasks.clone();
                         active_tasks.fetch_add(1, Ordering::SeqCst);
                         let active_tasks_err = active_tasks.clone();
@@ -498,7 +554,12 @@ fn add_func_async_to_handle(
                             .name(format!("koss-ffi-async-{task_id}"))
                             .spawn(move || {
                                 let result = invoke_ffi_call_async(
-                                    &ffi_data_clone, &arg_buffers, task_id, &callback_tx, callback_timeout_ms,
+                                    &ffi_data_clone,
+                                    &arg_buffers,
+                                    callback_instance_ptr,
+                                    task_id,
+                                    &callback_tx,
+                                    callback_timeout_ms,
                                 );
                                 active_tasks_spawn.fetch_sub(1, Ordering::SeqCst);
                                 let _ = io_tx.send(crate::runtime::AsyncIoResult {
@@ -548,7 +609,15 @@ fn add_close_async_to_handle(
 
     let close_async = unsafe {
         NativeFunction::from_closure(
-        move |_this: &JsValue, _args: &[JsValue], call_ctx: &mut Context| -> Result<JsValue, JsError> {
+        move |_this: &JsValue, args: &[JsValue], call_ctx: &mut Context| -> Result<JsValue, JsError> {
+            let instance = &*(instance_ptr as *mut crate::runtime::KossInstance);
+            crate::runtime::authorize_operation(
+                instance,
+                crate::sandbox::FFI_CALL,
+                "ffi.closeAsync",
+                args,
+                call_ctx,
+            )?;
             let obj = _this.as_object().map(|o| o.clone()).unwrap_or_else(|| handle_clone.clone());
             let mut lib_handle = obj.downcast_mut::<LibraryHandle>().ok_or_else(|| {
                 JsNativeError::error().with_message("not a LibraryHandle")

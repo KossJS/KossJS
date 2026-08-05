@@ -48,13 +48,13 @@ class TestDenoBuiltinFlag:
         assert KossJS.KOSS_BUILTIN_DENO == (1 << 2)
 
     def test_deno_import_requires_flag(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_NODE)
+        koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_NODE)
         with pytest.raises(Exception, match="KOSS_BUILTIN_DENO"):
             koss.eval("require('koss:deno')")
         koss.destroy()
 
     def test_deno_import_with_flag(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
+        koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("typeof require('koss:deno').version")
         assert result == "object"
         koss.destroy()
@@ -65,7 +65,7 @@ class TestDenoBuiltinFlag:
 class TestDenoProperties:
     @pytest.fixture(autouse=True)
     def setup(self):
-        self.koss = KossJS(builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
+        self.koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
         yield
         self.koss.destroy()
 
@@ -107,7 +107,7 @@ class TestDenoFilesystem:
     @pytest.fixture(autouse=True)
     def setup(self):
         _cleanup("deno_test.txt", "deno_test2.txt", "deno_json.txt")
-        self.koss = KossJS(builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
+        self.koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
         yield
         self.koss.destroy()
         _cleanup("deno_test.txt", "deno_test2.txt", "deno_json.txt")
@@ -212,7 +212,7 @@ f"""
 class TestDenoProcess:
     @pytest.fixture(autouse=True)
     def setup(self):
-        self.koss = KossJS(builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
+        self.koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
         yield
         self.koss.destroy()
 
@@ -265,7 +265,7 @@ class TestDenoProcess:
 class TestDenoCrypto:
     @pytest.fixture(autouse=True)
     def setup(self):
-        self.koss = KossJS(builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
+        self.koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
         yield
         self.koss.destroy()
 
@@ -299,25 +299,25 @@ class TestDenoCrypto:
 
 class TestDenoNetwork:
     def test_serve_exists(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
+        koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("typeof require('koss:deno').serve")
         assert result == "function"
         koss.destroy()
 
     def test_listen_exists(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
+        koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("typeof require('koss:deno').listen")
         assert result == "function"
         koss.destroy()
 
     def test_connect_exists(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
+        koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("typeof require('koss:deno').connect")
         assert result == "function"
         koss.destroy()
 
     def test_serve_throws_ssrf_in_sandbox(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
+        koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("""
             var Deno = require('koss:deno');
             try {
@@ -335,19 +335,19 @@ class TestDenoNetwork:
 
 class TestDenoNotImplemented:
     def test_run_throws(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
+        koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
         with pytest.raises(JsError, match="not implemented"):
             koss.eval("require('koss:deno').run()")
         koss.destroy()
 
     def test_spawn_throws(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
+        koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
         with pytest.raises(JsError, match="not implemented"):
             koss.eval("require('koss:deno').spawn()")
         koss.destroy()
 
     def test_permissions_throws(self):
-        koss = KossJS(builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
+        koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
         with pytest.raises(JsError, match="not implemented"):
             koss.eval("require('koss:deno').permissions()")
         koss.destroy()

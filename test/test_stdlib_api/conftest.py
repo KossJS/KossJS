@@ -8,7 +8,7 @@ from kossjs_interface import KossJS
 
 @pytest.fixture
 def koss():
-    instance = KossJS()
+    instance = KossJS(capabilities=KossJS.KOSS_CAP_ALL)
     yield instance
     instance.destroy()
 

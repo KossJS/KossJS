@@ -109,12 +109,13 @@ bool          koss_is_stable(KossInstance *inst);
 uint32_t      koss_get_builtins(KossInstance *inst);
 bool          koss_is_builtin_enabled(KossInstance *inst, uint32_t flag);
 
-/* Backward-compatible wrappers — default stable=true, builtins=ALL */
+/* Safe convenience wrappers — default to no host capabilities.
+   Trusted callers must explicitly use koss_create_with_* and KOSS_CAP_ALL. */
 static inline KossInstance *koss_create(void) {
-    return koss_create_with_builtins(KOSS_CAP_ALL, KOSS_BUILTIN_ALL, true);
+    return koss_create_with_builtins(KOSS_CAP_SANDBOX, KOSS_BUILTIN_ALL, true);
 }
 static inline KossInstance *koss_create_with_modules(const char *root_dir) {
-    return koss_create_with_modules_and_builtins(root_dir, KOSS_CAP_ALL, KOSS_BUILTIN_ALL, true);
+    return koss_create_with_modules_and_builtins(root_dir, KOSS_CAP_SANDBOX, KOSS_BUILTIN_ALL, true);
 }
 
 void koss_destroy(KossInstance *inst);

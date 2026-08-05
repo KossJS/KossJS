@@ -35,7 +35,7 @@ def test_stable_true_preserves_other_caps():
 
 def test_stable_true_ffi_call_throws_error():
     """In stable mode, calling FFI should throw an explicit error."""
-    instance = KossJS(stable=True)
+    instance = KossJS(capabilities=KossJS.KOSS_CAP_ALL, stable=True)
     # _senri_ffi.func is defined as a stub, calling it should throw
     try:
         result = instance.eval("_senri_ffi.func()") # pyright: ignore[reportUnusedVariable]
@@ -99,4 +99,10 @@ def test_default_creation_is_stable():
     assert instance.is_stable is True
     caps = instance.get_capabilities()
     assert caps & KossJS.KOSS_CAP_ALL_FFI == 0
+    instance.destroy()
+
+
+def test_default_creation_uses_sandbox_capabilities():
+    instance = KossJS()
+    assert instance.get_capabilities() == KossJS.KOSS_CAP_SANDBOX
     instance.destroy()

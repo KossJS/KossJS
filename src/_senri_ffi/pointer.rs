@@ -11,6 +11,7 @@ use boa_engine::{
     Context, JsData, JsError, JsNativeError, JsObject, JsValue, NativeFunction,
 };
 use boa_gc::{Finalize, Trace};
+use std::ffi::c_void;
 
 #[derive(Debug, Clone, Trace, Finalize, JsData)]
 pub struct JsPointer {
@@ -18,15 +19,17 @@ pub struct JsPointer {
     pub address: usize,
     #[unsafe_ignore_trace]
     pub size: usize,
+    #[unsafe_ignore_trace]
+    pub instance_ptr: *mut c_void,
 }
 
 impl JsPointer {
-    pub fn new(address: usize, size: usize) -> Self {
-        Self { address, size }
+    pub fn new(address: usize, size: usize, instance_ptr: *mut c_void) -> Self {
+        Self { address, size, instance_ptr }
     }
 }
 
-fn get_ptr_info(this: &JsValue) -> Result<(usize, usize), JsError> {
+fn get_ptr_info(this: &JsValue) -> Result<(usize, usize, *mut c_void), JsError> {
     let obj = this
         .as_object()
         .ok_or_else(|| JsNativeError::error().with_message("'this' is not a Pointer object"))?;
@@ -35,8 +38,27 @@ fn get_ptr_info(this: &JsValue) -> Result<(usize, usize), JsError> {
         .ok_or_else(|| JsError::from(JsNativeError::error().with_message("'this' is not a Pointer object")))?;
     let addr = ptr.address;
     let sz = ptr.size;
+    let instance_ptr = ptr.instance_ptr;
     drop(ptr);
-    Ok((addr, sz))
+    Ok((addr, sz, instance_ptr))
+}
+
+fn authorize_pointer(
+    this: &JsValue,
+    target: &str,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> Result<(usize, usize, *mut c_void), JsError> {
+    let info = get_ptr_info(this)?;
+    let instance = unsafe { &*(info.2 as *mut crate::runtime::KossInstance) };
+    crate::runtime::authorize_operation(
+        instance,
+        crate::sandbox::FFI_ALLOC,
+        target,
+        args,
+        ctx,
+    )?;
+    Ok(info)
 }
 
 fn read_bytes(address: usize, offset: isize, len: usize) -> Result<Vec<u8>, JsError> {
@@ -69,9 +91,9 @@ fn write_bytes(address: usize, offset: isize, data: &[u8]) -> Result<(), JsError
 }
 
 macro_rules! define_read_method {
-    ($rust_type:ty, $from_fn:expr) => {
-        |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
-            let (addr, _) = get_ptr_info(_this)?;
+    ($name:literal, $rust_type:ty, $from_fn:expr) => {
+        |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let (addr, _, _) = authorize_pointer(_this, concat!("ffi.pointer.", $name), args, ctx)?;
             let offset: isize = args
                 .first()
                 .and_then(|v| v.as_number())
@@ -85,9 +107,9 @@ macro_rules! define_read_method {
 }
 
 macro_rules! define_write_method {
-    ($rust_type:ty, $to_fn:expr) => {
-        |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
-            let (addr, _) = get_ptr_info(_this)?;
+    ($name:literal, $rust_type:ty, $to_fn:expr) => {
+        |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let (addr, _, _) = authorize_pointer(_this, concat!("ffi.pointer.", $name), args, ctx)?;
             let offset: isize = if args.len() > 1 {
                 args[0].as_number().map(|n| n as isize).unwrap_or(0)
             } else {
@@ -105,12 +127,25 @@ macro_rules! define_write_method {
     };
 }
 
-pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> JsObject {
+pub fn create_pointer_object(
+    address: usize,
+    size: usize,
+    instance_ptr: *mut c_void,
+    ctx: &mut Context,
+) -> JsObject {
+    let address_fn = NativeFunction::from_copy_closure(
+        |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let (addr, _, _) = authorize_pointer(_this, "ffi.pointer.address", args, ctx)?;
+            Ok(JsValue::from(addr as f64))
+        },
+    )
+    .to_js_function(ctx.realm());
     let mut builder =
-        ObjectInitializer::with_native_data(JsPointer::new(address, size), ctx);
+        ObjectInitializer::with_native_data(JsPointer::new(address, size, instance_ptr), ctx);
 
     builder.function(
         NativeFunction::from_copy_closure(define_read_method!(
+            "readInt8",
             i8,
             |b: Vec<u8>| i8::from_le_bytes(b.try_into().unwrap()) as f64
         )),
@@ -118,7 +153,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
         1,
     );
     builder.function(
-        NativeFunction::from_copy_closure(define_write_method!(i8, |v: &JsValue| {
+        NativeFunction::from_copy_closure(define_write_method!("writeInt8", i8, |v: &JsValue| {
             v.as_number()
                 .map(|n| n as i8)
                 .ok_or_else(|| JsError::from(JsNativeError::error().with_message("expected number")))
@@ -129,6 +164,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
 
     builder.function(
         NativeFunction::from_copy_closure(define_read_method!(
+            "readUint8",
             u8,
             |b: Vec<u8>| u8::from_le_bytes(b.try_into().unwrap()) as f64
         )),
@@ -136,7 +172,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
         1,
     );
     builder.function(
-        NativeFunction::from_copy_closure(define_write_method!(u8, |v: &JsValue| {
+        NativeFunction::from_copy_closure(define_write_method!("writeUint8", u8, |v: &JsValue| {
             v.as_number()
                 .map(|n| n as u8)
                 .ok_or_else(|| JsError::from(JsNativeError::error().with_message("expected number")))
@@ -147,6 +183,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
 
     builder.function(
         NativeFunction::from_copy_closure(define_read_method!(
+            "readInt16",
             i16,
             |b: Vec<u8>| i16::from_le_bytes(b.try_into().unwrap()) as f64
         )),
@@ -154,7 +191,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
         1,
     );
     builder.function(
-        NativeFunction::from_copy_closure(define_write_method!(i16, |v: &JsValue| {
+        NativeFunction::from_copy_closure(define_write_method!("writeInt16", i16, |v: &JsValue| {
             v.as_number()
                 .map(|n| n as i16)
                 .ok_or_else(|| JsError::from(JsNativeError::error().with_message("expected number")))
@@ -165,6 +202,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
 
     builder.function(
         NativeFunction::from_copy_closure(define_read_method!(
+            "readUint16",
             u16,
             |b: Vec<u8>| u16::from_le_bytes(b.try_into().unwrap()) as f64
         )),
@@ -172,7 +210,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
         1,
     );
     builder.function(
-        NativeFunction::from_copy_closure(define_write_method!(u16, |v: &JsValue| {
+        NativeFunction::from_copy_closure(define_write_method!("writeUint16", u16, |v: &JsValue| {
             v.as_number()
                 .map(|n| n as u16)
                 .ok_or_else(|| JsError::from(JsNativeError::error().with_message("expected number")))
@@ -183,6 +221,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
 
     builder.function(
         NativeFunction::from_copy_closure(define_read_method!(
+            "readInt32",
             i32,
             |b: Vec<u8>| i32::from_le_bytes(b.try_into().unwrap()) as f64
         )),
@@ -190,7 +229,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
         1,
     );
     builder.function(
-        NativeFunction::from_copy_closure(define_write_method!(i32, |v: &JsValue| {
+        NativeFunction::from_copy_closure(define_write_method!("writeInt32", i32, |v: &JsValue| {
             v.as_number()
                 .map(|n| n as i32)
                 .ok_or_else(|| JsError::from(JsNativeError::error().with_message("expected number")))
@@ -201,6 +240,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
 
     builder.function(
         NativeFunction::from_copy_closure(define_read_method!(
+            "readUint32",
             u32,
             |b: Vec<u8>| u32::from_le_bytes(b.try_into().unwrap()) as f64
         )),
@@ -208,7 +248,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
         1,
     );
     builder.function(
-        NativeFunction::from_copy_closure(define_write_method!(u32, |v: &JsValue| {
+        NativeFunction::from_copy_closure(define_write_method!("writeUint32", u32, |v: &JsValue| {
             v.as_number()
                 .map(|n| n as u32)
                 .ok_or_else(|| JsError::from(JsNativeError::error().with_message("expected number")))
@@ -219,6 +259,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
 
     builder.function(
         NativeFunction::from_copy_closure(define_read_method!(
+            "readInt64",
             i64,
             |b: Vec<u8>| i64::from_le_bytes(b.try_into().unwrap()) as f64
         )),
@@ -226,7 +267,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
         1,
     );
     builder.function(
-        NativeFunction::from_copy_closure(define_write_method!(i64, |v: &JsValue| {
+        NativeFunction::from_copy_closure(define_write_method!("writeInt64", i64, |v: &JsValue| {
             v.as_number()
                 .map(|n| n as i64)
                 .ok_or_else(|| JsError::from(JsNativeError::error().with_message("expected number")))
@@ -237,6 +278,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
 
     builder.function(
         NativeFunction::from_copy_closure(define_read_method!(
+            "readUint64",
             u64,
             |b: Vec<u8>| u64::from_le_bytes(b.try_into().unwrap()) as f64
         )),
@@ -244,7 +286,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
         1,
     );
     builder.function(
-        NativeFunction::from_copy_closure(define_write_method!(u64, |v: &JsValue| {
+        NativeFunction::from_copy_closure(define_write_method!("writeUint64", u64, |v: &JsValue| {
             v.as_number()
                 .map(|n| n as u64)
                 .ok_or_else(|| JsError::from(JsNativeError::error().with_message("expected number")))
@@ -255,6 +297,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
 
     builder.function(
         NativeFunction::from_copy_closure(define_read_method!(
+            "readFloat32",
             f32,
             |b: Vec<u8>| f32::from_le_bytes(b.try_into().unwrap()) as f64
         )),
@@ -262,7 +305,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
         1,
     );
     builder.function(
-        NativeFunction::from_copy_closure(define_write_method!(f32, |v: &JsValue| {
+        NativeFunction::from_copy_closure(define_write_method!("writeFloat32", f32, |v: &JsValue| {
             v.as_number()
                 .map(|n| n as f32)
                 .ok_or_else(|| JsError::from(JsNativeError::error().with_message("expected number")))
@@ -273,6 +316,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
 
     builder.function(
         NativeFunction::from_copy_closure(define_read_method!(
+            "readFloat64",
             f64,
             |b: Vec<u8>| f64::from_le_bytes(b.try_into().unwrap())
         )),
@@ -280,7 +324,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
         1,
     );
     builder.function(
-        NativeFunction::from_copy_closure(define_write_method!(f64, |v: &JsValue| {
+        NativeFunction::from_copy_closure(define_write_method!("writeFloat64", f64, |v: &JsValue| {
             v.as_number()
                 .ok_or_else(|| JsError::from(JsNativeError::error().with_message("expected number")))
         })),
@@ -290,8 +334,8 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
 
     builder.function(
         NativeFunction::from_copy_closure(
-            |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
-                let (addr, _) = get_ptr_info(_this)?;
+            |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+                let (addr, _, _) = authorize_pointer(_this, "ffi.pointer.readPointer", args, ctx)?;
                 let offset: isize = args
                     .first()
                     .and_then(|v| v.as_number())
@@ -307,8 +351,8 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
     );
     builder.function(
         NativeFunction::from_copy_closure(
-            |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
-                let (addr, _) = get_ptr_info(_this)?;
+            |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+                let (addr, _, _) = authorize_pointer(_this, "ffi.pointer.writePointer", args, ctx)?;
                 let offset: isize = if args.len() > 1 {
                     args[0].as_number().map(|n| n as isize).unwrap_or(0)
                 } else {
@@ -344,8 +388,8 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
 
     builder.function(
         NativeFunction::from_copy_closure(
-            |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
-                let (addr, _) = get_ptr_info(_this)?;
+            |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+                let (addr, _, _) = authorize_pointer(_this, "ffi.pointer.readCString", args, ctx)?;
                 let offset: isize = args
                     .first()
                     .and_then(|v| v.as_number())
@@ -375,8 +419,8 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
     );
     builder.function(
         NativeFunction::from_copy_closure(
-            |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
-                let (addr, _) = get_ptr_info(_this)?;
+            |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+                let (addr, _, _) = authorize_pointer(_this, "ffi.pointer.writeCString", args, ctx)?;
                 let offset: isize = if args.len() > 1 {
                     args[0].as_number().map(|n| n as isize).unwrap_or(0)
                 } else {
@@ -410,7 +454,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
     builder.function(
         NativeFunction::from_copy_closure(
             |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
-                let (addr, _) = get_ptr_info(_this)?;
+                let (addr, _, instance_ptr) = authorize_pointer(_this, "ffi.pointer.add", args, ctx)?;
                 let offset: isize = args
                     .first()
                     .and_then(|v| v.as_number())
@@ -422,7 +466,7 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
                 if new_addr < 0 {
                     return Err(JsNativeError::error().with_message("negative pointer").into());
                 }
-                let new_ptr = create_pointer_object(new_addr as usize, 0, ctx);
+                let new_ptr = create_pointer_object(new_addr as usize, 0, instance_ptr, ctx);
                 Ok(new_ptr.into())
             },
         ),
@@ -432,8 +476,8 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
 
     builder.function(
         NativeFunction::from_copy_closure(
-            |_this: &JsValue, _args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
-                let (addr, _) = get_ptr_info(_this)?;
+            |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+                let (addr, _, _) = authorize_pointer(_this, "ffi.pointer.toBigInt", args, ctx)?;
                 Ok(JsValue::from(addr as f64))
             },
         ),
@@ -441,10 +485,11 @@ pub fn create_pointer_object(address: usize, size: usize, ctx: &mut Context) -> 
         0,
     );
 
-    builder.property(
+    builder.accessor(
         js_string!("address"),
-        JsValue::from(address as f64),
-        Attribute::READONLY | Attribute::NON_ENUMERABLE,
+        Some(address_fn),
+        None,
+        Attribute::NON_ENUMERABLE,
     );
 
     builder.build()

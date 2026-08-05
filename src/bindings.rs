@@ -1702,7 +1702,7 @@ pub mod trace_events {
 pub mod fetch {
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
-    use std::net::{IpAddr, ToSocketAddrs};
+    use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 
     #[derive(Debug, Serialize, Deserialize)]
     pub struct FetchRequest {
@@ -1721,7 +1721,7 @@ pub mod fetch {
 
     /// Validate a URL against SSRF attacks: block non-http/https schemes,
     /// private/internal IP ranges, and unsafe hosts.
-    fn validate_url(url: &str) -> Result<(), String> {
+    fn resolve_url(url: &str) -> Result<(String, Vec<SocketAddr>), String> {
         let parsed = url::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
 
         // Block non-http/https schemes
@@ -1732,24 +1732,36 @@ pub mod fetch {
 
         // Resolve hostname to IP and check against blocked ranges
         let host = parsed.host_str().ok_or("missing host")?;
+        let port = parsed.port_or_known_default().ok_or("missing port")?;
 
-        // Direct IP check
-        if let Ok(ip) = host.parse::<IpAddr>() {
-            if is_blocked_ip(&ip) {
-                return Err(format!("blocked IP address: {ip}"));
+        let addresses = if let Ok(ip) = host.parse::<IpAddr>() {
+            vec![SocketAddr::new(ip, port)]
+        } else {
+            format!("{host}:{port}")
+                .to_socket_addrs()
+                .map_err(|e| format!("DNS error: {e}"))?
+                .collect()
+        };
+        let addresses = validate_resolved_addresses(addresses)?;
+        Ok((host.to_string(), addresses))
+    }
+
+    pub(crate) fn validate_resolved_addresses(
+        addresses: impl IntoIterator<Item = SocketAddr>,
+    ) -> Result<Vec<SocketAddr>, String> {
+        let mut validated = Vec::new();
+        for address in addresses {
+            if is_blocked_ip(&address.ip()) {
+                return Err(format!("target resolves to blocked IP: {}", address.ip()));
             }
-            return Ok(());
-        }
-
-        // DNS resolution check for hostnames
-        let lookup = format!("{host}:0").to_socket_addrs().map_err(|e| format!("DNS error: {e}"))?;
-        for addr in lookup {
-            if is_blocked_ip(&addr.ip()) {
-                return Err(format!("host {host} resolves to blocked IP: {}", addr.ip()));
+            if !validated.contains(&address) {
+                validated.push(address);
             }
         }
-
-        Ok(())
+        if validated.is_empty() {
+            return Err("target did not resolve to any address".to_string());
+        }
+        Ok(validated)
     }
 
     fn is_blocked_ip(ip: &IpAddr) -> bool {
@@ -1794,7 +1806,7 @@ pub mod fetch {
     }
 
     /// Build a reqwest client (async) with both webpki roots and platform native certs.
-    fn build_client() -> Result<reqwest::Client, String> {
+    fn build_client(host: &str, addresses: &[SocketAddr]) -> Result<reqwest::Client, String> {
         // Ensure a rustls crypto provider is installed before first use
         // (rustls 0.23+ no longer auto-installs a crypto provider).
         use std::sync::OnceLock;
@@ -1823,6 +1835,7 @@ pub mod fetch {
             .with_no_client_auth();
         reqwest::Client::builder()
             .use_preconfigured_tls(tls_config)
+            .resolve_to_addrs(host, addresses)
             .timeout(std::time::Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::none()) // Manual redirect handling for SSRF safety
             .build()
@@ -1836,9 +1849,8 @@ pub mod fetch {
     }
 
     async fn do_fetch(url: String, request: FetchRequest) -> Result<FetchResponse, String> {
-        validate_url(&url)?;
-
-        let client = build_client()?;
+        let (host, addresses) = resolve_url(&url)?;
+        let client = build_client(&host, &addresses)?;
 
         let method = reqwest::Method::from_bytes(request.method.to_uppercase().as_bytes())
             .unwrap_or(reqwest::Method::GET);
@@ -1911,6 +1923,28 @@ mod tests {
         assert_eq!(buffer::byte_length_utf8("hello"), 5);
         assert_eq!(buffer::byte_length_utf8(""), 0);
         assert_eq!(buffer::byte_length_utf8("你好"), 6); // 3 bytes per char in UTF-8
+    }
+
+    #[test]
+    fn test_fetch_rejects_mixed_public_and_private_dns_results() {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let addresses = [
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443),
+        ];
+
+        assert!(fetch::validate_resolved_addresses(addresses).is_err());
+    }
+
+    #[test]
+    fn test_fetch_accepts_and_deduplicates_public_dns_results() {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
+        let validated = fetch::validate_resolved_addresses([address, address]).unwrap();
+
+        assert_eq!(validated, vec![address]);
     }
 
     #[test]

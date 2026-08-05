@@ -230,7 +230,7 @@ export class KossJS {
    *
    * @param libPath  - Path to the kossjs shared library. Auto-detected if omitted.
    * @param stable   - If true (default), disables FFI and Worker capabilities.
-   * @param caps     - Capability bitmask. Defaults to KOSS_CAP_ALL.
+   * @param caps     - Capability bitmask. Defaults to KOSS_CAP_SANDBOX.
    * @param builtins - Builtin module flags. Defaults to KOSS_BUILTIN_ALL.
    *
    * Examples:
@@ -246,7 +246,7 @@ export class KossJS {
   constructor(libPath?: string, stable: boolean = true, caps?: number, builtins?: number) {
     const dllPath = libPath || findLibrary();
     this._lib = koffi.load(dllPath);
-    const effectiveCaps = caps ?? KOSS_CAP_ALL;
+    const effectiveCaps = caps ?? KOSS_CAP_SANDBOX;
     const effectiveBuiltins = builtins ?? KOSS_BUILTIN_ALL;
 
     // 创建实例 (with module support)
