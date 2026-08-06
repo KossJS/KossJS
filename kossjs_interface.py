@@ -724,7 +724,11 @@ class KossJS:
         return self._lib.koss_version().decode("utf-8")
 
     def set_audit_mask(self, mask: int) -> None:
-        """设置审核掩码（只能审核已授予的能力位）"""
+        """设置审核掩码（只能审核已授予的能力位）
+
+        注意：若审核掩码≠0 但未注册审核回调，被掩码覆盖的操作将被拒绝并抛出
+        KossConfigError（消息：Audit mask is set but no callback is registered）。
+        """
         result = self._lib.koss_set_audit_mask(self._ptr, mask)
         self._check_result(result)
 
@@ -739,6 +743,10 @@ class KossJS:
         the operation or False to block it (which throws KossSecurityError).
 
         Pass None to clear the audit callback.
+
+        Note: while the audit mask is non-zero, clearing the callback will cause
+        masked operations to be DENIED with KossConfigError ("Audit mask is set
+        but no callback is registered").
         """
         if not hasattr(self, '_AUDIT_CALLBACK'):
             self._AUDIT_CALLBACK = ctypes.CFUNCTYPE(

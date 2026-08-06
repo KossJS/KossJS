@@ -259,14 +259,17 @@ def test_audit_callback_with_allow_and_deny():
         js.destroy()
 
 def test_no_audit_when_callback_not_registered():
-    """测试没有注册审核回调时，API 调用直接放行"""
+    """测试设置了审核掩码但未注册审核回调时，API 调用被拒绝并抛出 KossConfigError"""
     js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.MODULE_LOAD)
     try:
         # 设置审核掩码但不注册审核回调
         js.set_audit_mask(KossJS.KOSS_CAP_ALL_FS)
 
-        # API 调用应该直接放行
-        js.eval("const binding = internalBinding('fs');")
+        # API 调用应该被拒绝并抛出 KossConfigError
+        with pytest.raises(JsError) as exc:
+            js.eval("const binding = internalBinding('fs');")
+        assert "KossConfigError" in str(exc.value)
+        assert "Audit mask is set but no callback is registered" in str(exc.value)
     finally:
         js.destroy()
 

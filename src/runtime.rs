@@ -952,24 +952,26 @@ fn register_native_bindings(instance: &mut KossInstance) {
             }
             AuditDecision::Allow => {}
             AuditDecision::NeedAudit => {
-                if let Some(audit_fn) = inst.sandbox.sync_audit {
-                    let target = match CString::new(name_str.clone()) {
-                        Ok(c) => c,
-                        Err(_) => return Ok(JsValue::from(boa_engine::js_string!("{}"))),
-                    };
-                    let allowed = unsafe {
-                        audit_fn(
-                            target.as_ptr(),
-                            std::ptr::null(),
-                            0,
-                            std::ptr::null(),
-                            inst.sandbox.sync_userdata,
-                        )
-                    };
-                    if !allowed {
-                        let msg = security_error_message(&name_str, debug);
-                        return Err(JsError::from(JsNativeError::error().with_message(msg)));
-                    }
+                let Some(audit_fn) = inst.sandbox.sync_audit else {
+                    let msg = config_error_message(&name_str, debug);
+                    return Err(JsError::from(JsNativeError::error().with_message(msg)));
+                };
+                let target = match CString::new(name_str.clone()) {
+                    Ok(c) => c,
+                    Err(_) => return Ok(JsValue::from(boa_engine::js_string!("{}"))),
+                };
+                let allowed = unsafe {
+                    audit_fn(
+                        target.as_ptr(),
+                        std::ptr::null(),
+                        0,
+                        std::ptr::null(),
+                        inst.sandbox.sync_userdata,
+                    )
+                };
+                if !allowed {
+                    let msg = security_error_message(&name_str, debug);
+                    return Err(JsError::from(JsNativeError::error().with_message(msg)));
                 }
             }
         }
@@ -1396,7 +1398,9 @@ pub(crate) fn authorize_operation(
             .into()),
         AuditDecision::NeedAudit => {
             let Some(audit_fn) = instance.sandbox.sync_audit else {
-                return Ok(());
+                return Err(JsNativeError::error()
+                    .with_message(config_error_message(target, instance.sandbox.audit_debug))
+                    .into());
             };
             let c_target = CString::new(target)
                 .map_err(|_| JsNativeError::error().with_message("invalid audit target"))?;
@@ -3501,22 +3505,24 @@ pub unsafe extern "C" fn koss_get_binding(
             }
             AuditDecision::Allow => {}
             AuditDecision::NeedAudit => {
-                if let Some(audit_fn) = instance.sandbox.sync_audit {
-                    let target = match CString::new(name_str) {
-                        Ok(c) => c,
-                        Err(_) => return KossResult::ok("{}"),
-                    };
-                    let allowed = audit_fn(
-                        target.as_ptr(),
-                        std::ptr::null(),
-                        0,
-                        std::ptr::null(),
-                        instance.sandbox.sync_userdata,
-                    );
-                    if !allowed {
-                        let msg = security_error_message(name_str, debug);
-                        return KossResult::err(4, &msg);
-                    }
+                let Some(audit_fn) = instance.sandbox.sync_audit else {
+                    let msg = config_error_message(name_str, debug);
+                    return KossResult::err(4, &msg);
+                };
+                let target = match CString::new(name_str) {
+                    Ok(c) => c,
+                    Err(_) => return KossResult::ok("{}"),
+                };
+                let allowed = audit_fn(
+                    target.as_ptr(),
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    instance.sandbox.sync_userdata,
+                );
+                if !allowed {
+                    let msg = security_error_message(name_str, debug);
+                    return KossResult::err(4, &msg);
                 }
             }
         }
@@ -3852,6 +3858,16 @@ pub fn security_error_message(target: &str, debug: bool) -> String {
         format!("KossSecurityError: sandbox audit denied for {target}")
     } else {
         "KossSecurityError: Access denied".to_string()
+    }
+}
+
+pub fn config_error_message(target: &str, debug: bool) -> String {
+    if debug {
+        format!(
+            "KossConfigError: Audit mask is set but no callback is registered for {target}"
+        )
+    } else {
+        "KossConfigError: Audit mask is set but no callback is registered".to_string()
     }
 }
 
@@ -4829,6 +4845,35 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(AUDIT_CALLS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_audit_mask_without_callback_denies_with_config_error() {
+        let context = Context::default();
+        let mut instance = KossInstance::new(
+            context,
+            crate::sandbox::FS_READ,
+            true,
+            crate::builtins::KOSS_BUILTIN_ALL,
+        );
+        instance.sandbox.audit_mask = crate::sandbox::FS_READ;
+        register_fs_functions(&mut instance);
+
+        let result = instance
+            .context
+            .eval(Source::from_bytes(b"__koss_fs_exists('.')"));
+
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        let msg = js_error_to_string(&err, &mut instance.context);
+        assert!(
+            msg.contains("KossConfigError"),
+            "expected KossConfigError, got: {msg}"
+        );
+        assert!(
+            msg.contains("Audit mask is set but no callback is registered"),
+            "expected config error message, got: {msg}"
+        );
     }
 
     #[test]

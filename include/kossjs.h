@@ -124,9 +124,16 @@ void koss_destroy(KossInstance *inst);
 uint32_t koss_get_capabilities(KossInstance *inst);
 
 /* ── Audit mask ─────────────────────────────────────────────────────── */
+/* Audit mask / audit callback relationship (v0.1.0-dev.10):
+ *   1. Audit Mask == 0        -> no audit; operations are decided solely
+ *                                by the capability bits.
+ *   2. Audit Mask != 0 AND callback registered -> the audit callback is
+ *      invoked; the host decides allow/deny.
+ *   3. Audit Mask != 0 AND callback == NULL   -> the engine treats this as
+ *      an incomplete security policy and DENIES the operation, throwing a
+ *      KossConfigError ("Audit mask is set but no callback is registered"). */
 KossResult koss_set_audit_mask(KossInstance *inst, uint32_t mask);
 uint32_t koss_get_audit_mask(KossInstance *inst);
-
 /* ── Audit debug mode ──────────────────────────────────────────────── */
 /* Enable or disable audit debug mode. When enabled, error messages include
    detailed information about denials, timeouts, and callback failures.
@@ -141,7 +148,10 @@ void koss_enable_audit_debug(KossInstance *inst, bool enable);
 typedef bool (*AuditCallback)(const char* target, const char** args, int argc, const char* pwd, void* userdata);
 
 /* Register or clear the synchronous audit callback.
-   Pass NULL for callback to clear the audit callback. */
+   Pass NULL for callback to clear the audit callback.
+   WARNING: while the audit mask is non-zero, clearing the callback will
+   cause masked operations to be DENIED with KossConfigError instead of
+   being allowed (see audit mask notes above). */
 KossResult koss_check_sandbox(KossInstance *inst, AuditCallback callback, void* userdata);
 
 /* ── Code execution ─────────────────────────────────────────────────── */

@@ -2,6 +2,16 @@
 
 本项目所有重要变更都将记录在此文件中。
 
+## 0.1.0-dev.10 - 2026-08-06
+
+### 安全强化 (Security)
+
+- **审核掩码与审核回调的关系强化** — 新增 `KossConfigError` 错误类型，明确 "Audit Mask ≠ 0 但未注册审核回调" 时的行为：
+  - `Audit Mask = 0`：不触发审核，直接依据 Capability 放行或拒绝
+  - `Audit Mask ≠ 0` 且 `Callback ≠ NULL`：调用回调，由宿主逻辑决定放行或拒绝
+  - `Audit Mask ≠ 0` 且 `Callback = NULL`：视为安全策略配置不完整，直接拒绝（Deny），并抛出 `KossConfigError`，消息为 `Audit mask is set but no callback is registered`
+  - 修复：此前"掩码≠0 但无回调"会静默放行，形成潜在的安全绕过
+
 ## 0.1.0-dev.5.fix - 2026-05-15
 
 ### 新增 (Added)

@@ -590,6 +590,11 @@ export class KossJS {
 
   // --- 审核与沙箱 ---
 
+  /**
+   * 设置审核掩码（只能审核已授予的能力位）。
+   * 注意：若审核掩码≠0 但未注册审核回调，被掩码覆盖的操作将被拒绝并抛出
+   * KossConfigError（消息：Audit mask is set but no callback is registered）。
+   */
   setAuditMask(mask: number): void {
     this._ensurePtr();
     this._checkResult(this._fnSetAuditMask(this._ptr, mask));
@@ -605,6 +610,11 @@ export class KossJS {
     this._fnEnableAuditDebug(this._ptr, enable);
   }
 
+  /**
+   * 注册或清除同步审核回调。
+   * 注意：审核掩码≠0 时清除回调会导致被掩码覆盖的操作被拒绝并抛出
+   * KossConfigError（Audit mask is set but no callback is registered）。
+   */
   checkSandbox(func: ((target: string, args: string[], pwd: string | null) => boolean) | null): void {
     this._ensurePtr();
 

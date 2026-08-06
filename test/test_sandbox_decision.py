@@ -81,13 +81,16 @@ def test_decision_flow_no_audit_when_mask_not_set():
         js.destroy()
 
 def test_decision_flow_allow_when_no_callback():
-    """测试决策流程：审核掩码已设置但没有审核回调时，直接放行"""
+    """测试决策流程：审核掩码已设置但没有审核回调时，直接拒绝并抛出 KossConfigError"""
     js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.MODULE_LOAD)
     try:
         js.set_audit_mask(KossJS.KOSS_CAP_ALL_FS)
 
-        # API 调用应该直接放行
-        js.eval("const binding = internalBinding('fs');")
+        # API 调用应该被拒绝并抛出 KossConfigError
+        with pytest.raises(JsError) as exc:
+            js.eval("const binding = internalBinding('fs');")
+        assert "KossConfigError" in str(exc.value)
+        assert "Audit mask is set but no callback is registered" in str(exc.value)
     finally:
         js.destroy()
 
@@ -281,7 +284,7 @@ def test_decision_flow_dynamic_callback_change():
         js.destroy()
 
 def test_decision_flow_callback_cleared_then_api_call():
-    """测试决策流程：清除审核回调后调用 API"""
+    """测试决策流程：清除审核回调后调用 API 被拒绝并抛出 KossConfigError"""
     js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.MODULE_LOAD)
     try:
         js.check_sandbox(lambda target, args, pwd: False)
@@ -290,8 +293,11 @@ def test_decision_flow_callback_cleared_then_api_call():
         # 清除审核回调
         js.check_sandbox(None)
 
-        # API 调用应该直接放行
-        js.eval("const binding = internalBinding('fs');")
+        # API 调用应该被拒绝并抛出 KossConfigError
+        with pytest.raises(JsError) as exc:
+            js.eval("const binding = internalBinding('fs');")
+        assert "KossConfigError" in str(exc.value)
+        assert "Audit mask is set but no callback is registered" in str(exc.value)
     finally:
         js.destroy()
 
@@ -311,5 +317,97 @@ def test_fetch_capability_enabled():
     try:
         result = js.eval("typeof fetch")
         assert result == "function"
+    finally:
+        js.destroy()
+
+
+# ============================================================================
+# v0.1.0-dev.10 强化规则：审核掩码 ↔ 审核回调
+#   规则1：Audit Mask = 0 → 不触发审核，直接依据 Capability 放行/拒绝
+#   规则2：Audit Mask ≠ 0 且 Callback ≠ NULL → 调用回调，宿主决定
+#   规则3：Audit Mask ≠ 0 且 Callback = NULL → 拒绝（KossConfigError）
+# ============================================================================
+
+def test_rule1_mask_zero_no_callback_allows_by_capability():
+    """规则1：掩码为 0 且无回调时，直接依据能力位放行"""
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.MODULE_LOAD)
+    try:
+        assert js.get_audit_mask() == 0
+        # 能力位已授予 → 放行
+        js.eval("const binding = internalBinding('fs');")
+    finally:
+        js.destroy()
+
+def test_rule1_mask_zero_with_callback_not_called():
+    """规则1：掩码为 0 时，即使注册了回调也不触发审核"""
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.MODULE_LOAD)
+    calls: list[str] = []
+    try:
+        def audit(target: str, args: list[str], pwd: str | None):
+            calls.append(target)
+            return True
+
+        js.check_sandbox(audit)
+        js.eval("const binding = internalBinding('fs');")
+        assert len(calls) == 0
+    finally:
+        js.destroy()
+
+def test_rule2_mask_set_with_callback_calls_host_logic():
+    """规则2：掩码≠0 且回调已注册时，调用回调由宿主决定"""
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.MODULE_LOAD)
+    calls: list[str] = []
+    try:
+        def audit(target: str, args: list[str], pwd: str | None):
+            calls.append(target)
+            return True
+
+        js.check_sandbox(audit)
+        js.set_audit_mask(KossJS.KOSS_CAP_ALL_FS)
+
+        js.eval("const binding = internalBinding('fs');")
+        assert "fs" in calls
+    finally:
+        js.destroy()
+
+def test_rule2_mask_set_with_rejecting_callback_denies():
+    """规则2：掩码≠0 且回调返回 false 时，拒绝并抛出 KossSecurityError"""
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.MODULE_LOAD)
+    try:
+        js.check_sandbox(lambda target, args, pwd: False)
+        js.set_audit_mask(KossJS.KOSS_CAP_ALL_FS)
+
+        with pytest.raises(JsError) as exc:
+            js.eval("const binding = internalBinding('fs');")
+        assert "KossSecurityError" in str(exc.value)
+    finally:
+        js.destroy()
+
+def test_rule3_mask_set_without_callback_denies_with_config_error():
+    """规则3：掩码≠0 但未注册回调时，拒绝并抛出 KossConfigError"""
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.MODULE_LOAD)
+    try:
+        js.set_audit_mask(KossJS.KOSS_CAP_ALL_FS)
+
+        with pytest.raises(JsError) as exc:
+            js.eval("const binding = internalBinding('fs');")
+        assert "KossConfigError" in str(exc.value)
+        assert "Audit mask is set but no callback is registered" in str(exc.value)
+    finally:
+        js.destroy()
+
+def test_rule3_config_error_only_for_masked_operations():
+    """规则3：仅掩码覆盖的操作被拒绝，未覆盖的操作仍依据能力位放行"""
+    js = KossJS(capabilities=KossJS.KOSS_CAP_ALL_FS | KossJS.KOSS_CAP_ALL_NET | KossJS.MODULE_LOAD)
+    try:
+        js.set_audit_mask(KossJS.KOSS_CAP_ALL_FS)
+
+        # fs 在掩码中且无回调 → KossConfigError
+        with pytest.raises(JsError) as exc:
+            js.eval("const binding = internalBinding('fs');")
+        assert "KossConfigError" in str(exc.value)
+
+        # net 不在掩码中 → 无审核，能力位已授予则放行
+        js.eval("const net_binding = internalBinding('net');")
     finally:
         js.destroy()
