@@ -108,16 +108,16 @@ class KossJS:
         :param with_modules: Enable ES module loading.
         :param root_dir: Base directory for module resolution.
         :param capabilities: Capability bitmask. None defaults to KOSS_CAP_SANDBOX.
-        :param stable: If True (default), disables FFI and Worker capabilities.
+        :param stable: If True (default), disables FFI capabilities.
                        If False, enables these experimental features and prints
                        warnings to stderr. Production environments should keep
                        the default.
 
         Examples:
-            # Production (stable mode, FFI/Worker disabled)
+            # Production (stable mode, FFI disabled)
             runtime = KossJS(stable=True)  # default
 
-            # Development/debugging (unstable mode, FFI/Worker enabled)
+            # Development/debugging (unstable mode, FFI enabled)
             runtime = KossJS(stable=False)
 
             # Only Node.js compat layer, no Bun/Deno
@@ -795,6 +795,17 @@ class KossJS:
         """
         self._lib.koss_enable_audit_debug(self._ptr, bool(enable))
 
+    def clear_js_audit(self) -> str:
+        """Clear the JS-layer audit callback registered via `__koss_set_audit_callback`.
+
+        After clearing, operations matching the audit mask are decided by the host
+        audit callback alone. If the audit mask is non-zero and the host callback
+        is also NULL, masked operations are denied with KossConfigError.
+        """
+        self._lib.koss_clear_js_audit.restype = KossResult
+        self._lib.koss_clear_js_audit.argtypes = [ctypes.c_void_p]
+        return self._check_result(self._lib.koss_clear_js_audit(self._ptr))
+
     def destroy(self) -> None:
         """Destroy the JavaScript instance and free memory."""
         if self._ptr and hasattr(self, '_lib') and self._lib:
@@ -838,7 +849,7 @@ def koss_module_loader(module_path: str) -> dict[str, Any] | None:
         'module', 'net', 'os', 'path', 'process', 'punycode', 'querystring',
         'readline', 'repl', 'stream', 'string_decoder', 'sys', 'timers',
         'tls', 'trace_events', 'tty', 'url', 'util', 'v8', 'vm', 'wasi',
-        'worker_threads', 'zlib', 'async_hooks', 'diagnostics_channel',
+        'zlib', 'async_hooks', 'diagnostics_channel',
         'perf_hooks', 'http2', 'http3', 'sqlite', 'test', 'wasi', 'sea'
     ]
     

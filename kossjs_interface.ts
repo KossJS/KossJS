@@ -82,7 +82,6 @@ const KOSS_CAP_ALL = 0xFFFFFFFF;
 const KOSS_CAP_FS = KOSS_CAP_ALL_FS;
 const KOSS_CAP_NET = KOSS_CAP_ALL_NET;
 const KOSS_CAP_CRYPTO = KOSS_CAP_ALL_CRYPTO;
-const KOSS_CAP_WORKER = 1 << 3;
 const KOSS_CAP_EXTERNAL_LOADER = MODULE_LOAD;
 
 // --- Builtin Flags (must match KossBuiltin in include/kossjs.h) ---
@@ -170,7 +169,6 @@ export class KossJS {
   static readonly KOSS_CAP_FS = KOSS_CAP_FS;
   static readonly KOSS_CAP_NET = KOSS_CAP_NET;
   static readonly KOSS_CAP_CRYPTO = KOSS_CAP_CRYPTO;
-  static readonly KOSS_CAP_WORKER = KOSS_CAP_WORKER;
   static readonly KOSS_CAP_EXTERNAL_LOADER = KOSS_CAP_EXTERNAL_LOADER;
 
   // Builtin flags
@@ -217,24 +215,19 @@ export class KossJS {
   private _fnGetAuditMask: Function;
   private _fnEnableAuditDebug: Function;
   private _fnCheckSandbox: Function;
+  private _fnClearJsAudit: Function;
   private _fnFetch: Function;
-  private _fnCreateWorkerPool: Function;
-  private _fnWorkerPostMessage: Function;
-  private _fnWorkerExecute: Function;
-  private _fnWorkerTryRecv: Function;
-  private _fnWorkerTerminate: Function;
-  private _fnWorkerShutdown: Function;
 
   /**
    * Create a KossJS instance.
    *
    * @param libPath  - Path to the kossjs shared library. Auto-detected if omitted.
-   * @param stable   - If true (default), disables FFI and Worker capabilities.
+   * @param stable   - If true (default), disables FFI capabilities.
    * @param caps     - Capability bitmask. Defaults to KOSS_CAP_SANDBOX.
    * @param builtins - Builtin module flags. Defaults to KOSS_BUILTIN_ALL.
    *
    * Examples:
-   *   // Production (stable mode, FFI/Worker disabled)
+   *   // Production (stable mode, FFI disabled)
    *   const koss = new KossJS();
    *
    *   // Only Node.js compat layer
@@ -296,17 +289,10 @@ export class KossJS {
     this._fnGetAuditMask = this._lib.func('koss_get_audit_mask', 'uint32', ['void *']);
     this._fnEnableAuditDebug = this._lib.func('koss_enable_audit_debug', 'void', ['void *', 'bool']);
     this._fnCheckSandbox = this._lib.func('koss_check_sandbox', KossResult, ['void *', 'void *', 'void *']);
+    this._fnClearJsAudit = this._lib.func('koss_clear_js_audit', KossResult, ['void *']);
 
     // 网络
     this._fnFetch = this._lib.func('koss_fetch', KossResult, ['void *', 'string']);
-
-    // Worker
-    this._fnCreateWorkerPool = this._lib.func('koss_create_worker_pool', KossResult, ['void *', 'int32']);
-    this._fnWorkerPostMessage = this._lib.func('koss_worker_post_message', KossResult, ['void *', 'int32', 'string']);
-    this._fnWorkerExecute = this._lib.func('koss_worker_execute', KossResult, ['void *', 'int32', 'string']);
-    this._fnWorkerTryRecv = this._lib.func('koss_worker_try_recv', KossResult, ['void *']);
-    this._fnWorkerTerminate = this._lib.func('koss_worker_terminate', KossResult, ['void *', 'int32']);
-    this._fnWorkerShutdown = this._lib.func('koss_worker_shutdown', KossResult, ['void *']);
   }
 
   /** Check if this instance is running in stable mode. */
@@ -657,41 +643,9 @@ export class KossJS {
     return this._checkResult(this._fnFetch(this._ptr, url));
   }
 
-  // --- Worker ---
-
-  createWorkerPool(size: number): string {
+  /** Clear the JS-layer audit callback registered via `__koss_set_audit_callback`. */
+  clearJsAudit(): string {
     this._ensurePtr();
-    return this._checkResult(this._fnCreateWorkerPool(this._ptr, size));
-  }
-
-  workerPostMessage(workerId: number, data: string): string {
-    this._ensurePtr();
-    return this._checkResult(this._fnWorkerPostMessage(this._ptr, workerId, data));
-  }
-
-  workerExecute(workerId: number, code: string): string {
-    this._ensurePtr();
-    return this._checkResult(this._fnWorkerExecute(this._ptr, workerId, code));
-  }
-
-  workerTryRecv(): string | null {
-    this._ensurePtr();
-    try {
-      const val = this._checkResult(this._fnWorkerTryRecv(this._ptr));
-      if (val === 'null' || !val) return null;
-      return val;
-    } catch {
-      return null;
-    }
-  }
-
-  workerTerminate(workerId: number): string {
-    this._ensurePtr();
-    return this._checkResult(this._fnWorkerTerminate(this._ptr, workerId));
-  }
-
-  workerShutdown(): string {
-    this._ensurePtr();
-    return this._checkResult(this._fnWorkerShutdown(this._ptr));
+    return this._checkResult(this._fnClearJsAudit(this._ptr));
   }
 }

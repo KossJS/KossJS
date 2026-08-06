@@ -11,6 +11,50 @@
   - `Audit Mask ≠ 0` 且 `Callback ≠ NULL`：调用回调，由宿主逻辑决定放行或拒绝
   - `Audit Mask ≠ 0` 且 `Callback = NULL`：视为安全策略配置不完整，直接拒绝（Deny），并抛出 `KossConfigError`，消息为 `Audit mask is set but no callback is registered`
   - 修复：此前"掩码≠0 但无回调"会静默放行，形成潜在的安全绕过
+- **JS 层审核回调（两级审核链）** — 新增 `__koss_set_audit_callback(fn)` 全局函数与 `koss_clear_js_audit()` C ABI：
+  - 宿主审核回调返回 `true` 后，可选的 JS 策略函数 `(target, args[], pwd) => boolean` 做进一步限制
+  - JS 回调只能进一步拒绝（返回 `false`/抛异常 → `KossSecurityError`），不能放行宿主已拒绝的操作或绕过能力位
+  - 宿主回调为 `NULL` 时（即使已注册 JS 回调），掩码覆盖的操作仍抛 `KossConfigError`
+  - JS 回调执行期间再次触发审核（重入）直接拒绝，防止死循环
+- **审核回调 `pwd` 修正** — `pwd` 由进程 `current_dir()` 改为「当前执行模块的目录」；`eval`/`run_string`/`run_module_string` 时为 `NULL`
+- **`process.dlopen` 能力位门控** — 增加 `NATIVE_ADDON` 门控，防止绕过稳定模式加载原生插件
+- **FFI 审核路径统一** — `open`/`call`/`alloc`/`callback` 等 FFI 操作统一经过审核回调路径，支持动态策略变更
+- **TOCTOU 修复** — 模块加载路径校验后使用 verified 路径读取
+- **细粒度能力位注册** — 网络、加密、文件系统操作按细粒度能力位独立注册与校验
+- **TCP socket 表生命周期** — 全局 TCP socket 表移入实例生命周期管理
+
+### 移除 (Removed)
+
+- **Worker 线程池** — 删除 `src/worker.rs`、`koss_shim/worker.js`、`__koss_worker_*` C ABI 与 Python 绑定、`KOSS_CAP_WORKER` 能力位、`koss:worker` 模块；`FS_MKDIR` 恢复自身门控（此前与 `KOSS_CAP_WORKER` 位冲突）
+- **默认构造器能力变更** — `koss_create()` / `koss_create_with_modules()` 默认能力由 `KOSS_CAP_ALL` 改为 `KOSS_CAP_SANDBOX`，需显式传入 `KOSS_CAP_ALL`
+
+### 新增 (Added)
+
+- **Node 内置模块 shim 扩充** — 新增 `koss:assert`、`koss:buffer`、`koss:constants`、`koss:querystring`、`koss:zlib` 等模块
+- **os shim 增强** — 新增 `version()`/`machine()` 与 `os.constants`（信号、errno 表）
+- **crypto shim 调整** — `hash`/`hmac` 直接返回 hex；`sign`/`verify` 改用 HMAC-SHA256 加密钥派生
+- **buffer shim 增强** — 支持索引访问与 `Array` 构造，`toString` 改为不可枚举
+- **path shim** — 兼容 Windows 分隔符
+- **Deno shim** — `Deno.mkdir` 幂等处理 `EEXIST`
+- **全平台 shim 迁移** — shim 迁移到 koss 标准库，扩充 Rust 原生实现
+- **ESM `koss:/*` 协议** — ESM import 支持 `koss:/*` 协议模块 + Rust 单元测试补全
+- **删除 `src/stdlib` 目录** — 正式移除（不影响编译）
+- **Python 接口** — 优化动态库寻找逻辑；新增 `clear_js_audit()`
+- **TypeScript 接口** — 清理 Worker 绑定；新增 `clearJsAudit()`
+
+### 修复 (Fixed)
+
+- FFI 按 FS 能力位门控 `__koss_fs_*` + 无损二进制写入（C1/H6）
+- FFI struct `char*` 字段 CString 生命周期（C2）
+- N-API 统一 tagged value 表示（C3/H1-H5）
+- FFI 回调分配回收不泄漏（H7）
+- 跨平台 CI：macOS dylib 产物名、CI 无法测试
+- 所有源代码文件添加头部版权标识
+
+### 测试
+
+- Rust 单元测试 156 passed（新增 JS 审核回调 / pwd 相关 7 个）
+- Python 集成测试 744 passed, 8 skipped（新增 `test_sandbox_js_audit.py` 11 个）
 
 ## 0.1.0-dev.5.fix - 2026-05-15
 

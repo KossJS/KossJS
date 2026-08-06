@@ -87,7 +87,6 @@ typedef enum {
 #define KOSS_CAP_FS              KOSS_CAP_ALL_FS
 #define KOSS_CAP_NET             KOSS_CAP_ALL_NET
 #define KOSS_CAP_CRYPTO          KOSS_CAP_ALL_CRYPTO
-#define KOSS_CAP_WORKER          (1u << 3)
 #define KOSS_CAP_EXTERNAL_LOADER MODULE_LOAD
 
 /* ── Builtin module flags ──────────────────────────────────────────── */
@@ -131,7 +130,14 @@ uint32_t koss_get_capabilities(KossInstance *inst);
  *      invoked; the host decides allow/deny.
  *   3. Audit Mask != 0 AND callback == NULL   -> the engine treats this as
  *      an incomplete security policy and DENIES the operation, throwing a
- *      KossConfigError ("Audit mask is set but no callback is registered"). */
+ *      KossConfigError ("Audit mask is set but no callback is registered").
+ *
+ * JS-layer audit (v0.1.0-dev.10): after the host callback returns TRUE,
+ * an optional JS audit callback registered via `__koss_set_audit_callback`
+ * (globalThis) is invoked as a further restriction. It receives
+ * (target, args[], pwd) and can only DENY (return false); it cannot allow
+ * an operation the host denied or bypass capability bits. When the host
+ * callback is NULL, masked operations are denied regardless of the JS callback. */
 KossResult koss_set_audit_mask(KossInstance *inst, uint32_t mask);
 uint32_t koss_get_audit_mask(KossInstance *inst);
 /* ── Audit debug mode ──────────────────────────────────────────────── */
@@ -153,6 +159,9 @@ typedef bool (*AuditCallback)(const char* target, const char** args, int argc, c
    cause masked operations to be DENIED with KossConfigError instead of
    being allowed (see audit mask notes above). */
 KossResult koss_check_sandbox(KossInstance *inst, AuditCallback callback, void* userdata);
+
+/* Clear the JS-layer audit callback registered via `__koss_set_audit_callback`. */
+KossResult koss_clear_js_audit(KossInstance *inst);
 
 /* ── Code execution ─────────────────────────────────────────────────── */
 KossResult koss_eval(KossInstance *inst, const char *code);
@@ -178,14 +187,6 @@ KossResult koss_register_function(KossInstance *inst, const char *name, KossNati
 KossResult koss_register_module_loader(KossInstance *inst, KossNativeFn callback);
 KossResult koss_register_class(KossInstance *inst, const char *class_name,
                                 const char *methods_json, KossNativeFn callback);
-
-/* ── Worker thread pool ─────────────────────────────────────────────── */
-KossResult koss_create_worker_pool(KossInstance *inst, int32_t size);
-KossResult koss_worker_post_message(KossInstance *inst, int32_t worker_id, const char *data);
-KossResult koss_worker_execute(KossInstance *inst, int32_t worker_id, const char *code);
-KossResult koss_worker_try_recv(KossInstance *inst);
-KossResult koss_worker_terminate(KossInstance *inst, int32_t worker_id);
-KossResult koss_worker_shutdown(KossInstance *inst);
 
 /* ── Internal bindings & fetch ──────────────────────────────────────── */
 KossResult koss_get_binding(KossInstance *inst, const char *binding_name);

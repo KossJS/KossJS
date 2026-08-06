@@ -4,6 +4,7 @@
 // with the TT23XR Studio Additional Permission:
 // "非本软件模块的源代码公开义务例外"
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -714,6 +715,14 @@ pub struct KossInstance {
     /// See KOSS_BUILTIN_* constants in builtins.rs.
     pub builtins: u32,
     socket_state: Mutex<SocketState>,
+    /// JS 层审核回调：宿主审核回调放行后，进一步由 JS 策略函数限制。
+    /// JS 回调只能进一步收紧（返回 false → 拒绝），无法放行宿主已拒绝的操作。
+    pub js_audit: Option<JsFunction>,
+    /// 审核重入保护：JS 审核回调执行期间再次触发审核时直接拒绝。
+    pub audit_in_progress: Cell<bool>,
+    /// 当前执行模块的目录。`eval`/`run_string` 时为 `None`（审核回调 pwd 传 NULL），
+    /// `run_file`/`run_module` 时为对应文件所在目录。
+    pub current_module_dir: RefCell<Option<String>>,
     /// Context MUST be the last field: Rust drops struct fields in declaration
     /// order, and other fields (event_loop.ffi_callback_fns) hold JsFunction
     /// handles that reference the Context. Dropping Context first causes
@@ -731,6 +740,9 @@ impl KossInstance {
             stable,
             builtins,
             socket_state: Mutex::new(SocketState::new()),
+            js_audit: None,
+            audit_in_progress: Cell::new(false),
+            current_module_dir: RefCell::new(None),
             context,
         }
     }
@@ -960,12 +972,18 @@ fn register_native_bindings(instance: &mut KossInstance) {
                     Ok(c) => c,
                     Err(_) => return Ok(JsValue::from(boa_engine::js_string!("{}"))),
                 };
+                // pwd = 当前执行模块的目录；eval 时为 NULL
+                let pwd = inst
+                    .current_module_dir
+                    .borrow()
+                    .clone()
+                    .and_then(|dir| CString::new(dir).ok());
                 let allowed = unsafe {
                     audit_fn(
                         target.as_ptr(),
                         std::ptr::null(),
                         0,
-                        std::ptr::null(),
+                        pwd.as_ref().map_or(std::ptr::null(), |path| path.as_ptr()),
                         inst.sandbox.sync_userdata,
                     )
                 };
@@ -973,6 +991,8 @@ fn register_native_bindings(instance: &mut KossInstance) {
                     let msg = security_error_message(&name_str, debug);
                     return Err(JsError::from(JsNativeError::error().with_message(msg)));
                 }
+                // 宿主审核放行后，交给 JS 层审核回调做进一步限制
+                call_js_audit(inst, &name_str, &[], ctx)?;
             }
         }
         match handle_binding(&name_str) {
@@ -992,6 +1012,50 @@ fn register_native_bindings(instance: &mut KossInstance) {
                 | boa_engine::property::Attribute::CONFIGURABLE,
         )
         .ok();
+}
+
+/// Register `__koss_set_audit_callback` so JS code can register a JS-layer
+/// audit callback. `fn` must be a callable `(target, args, pwd) => boolean`.
+/// Pass `null`/`undefined` to clear it.
+///
+/// JS callbacks run AFTER the host audit callback allowed the operation, and
+/// can only further restrict (return `false` → deny). They cannot allow an
+/// operation the host denied, and cannot bypass capability bits.
+fn register_js_audit_api(instance: &mut KossInstance) {
+    let instance_ptr = instance as *mut KossInstance;
+
+    let native = NativeFunction::from_copy_closure(move |_this, args, _ctx| {
+        let inst = unsafe { &mut *instance_ptr };
+        let Some(value) = args.first() else {
+            return Ok(JsValue::undefined());
+        };
+        if value.is_null_or_undefined() {
+            inst.js_audit = None;
+            return Ok(JsValue::from(true));
+        }
+        let Some(obj) = value.as_object() else {
+            return Err(JsError::from(
+                JsNativeError::typ()
+                    .with_message("__koss_set_audit_callback: expected a function or null"),
+            ));
+        };
+        match JsFunction::from_object(obj.clone()) {
+            Some(f) => {
+                inst.js_audit = Some(f);
+                Ok(JsValue::from(true))
+            }
+            None => Err(JsError::from(JsNativeError::typ().with_message(
+                "__koss_set_audit_callback: expected a callable function or null",
+            ))),
+        }
+    });
+
+    let js_func = native.to_js_function(instance.context.realm());
+    let _ = instance.context.register_global_property(
+        boa_engine::js_string!("__koss_set_audit_callback"),
+        js_func,
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    );
 }
 
 /// Register `__koss_load_module` for CommonJS `require()`.
@@ -1380,6 +1444,55 @@ fn register_fs_functions(instance: &mut KossInstance) {
     });
 }
 
+/// 调用 JS 层审核回调（若已注册）。在宿主审核回调返回 `true` 之后调用，
+/// 由 JS 策略函数对操作做进一步的限制。
+///
+/// JS 回调签名：`(target: string, args: string[], pwd: string|null) => boolean`
+/// - 返回 `true` → 放行
+/// - 返回 `false` → 拒绝（`KossSecurityError`）
+/// - 抛异常 → 拒绝（传播异常）
+/// - 回调重入（回调执行期间再次触发审核）→ 拒绝
+fn call_js_audit(
+    instance: &KossInstance,
+    target: &str,
+    args: &[JsValue],
+    ctx: &mut Context,
+) -> Result<(), JsError> {
+    let Some(js_fn) = instance.js_audit.as_ref() else {
+        return Ok(());
+    };
+    if instance.audit_in_progress.get() {
+        return Err(JsNativeError::error()
+            .with_message("KossSecurityError: audit callback re-entrancy denied")
+            .into());
+    }
+    instance.audit_in_progress.set(true);
+    let result = (|| -> Result<bool, JsError> {
+        let target_js = JsValue::from(boa_engine::js_string!(target));
+        let arg_strings: Vec<JsValue> = args
+            .iter()
+            .map(|a| JsValue::from(boa_engine::js_string!(js_value_to_string(a, ctx))))
+            .collect();
+        let args_array = boa_engine::object::builtins::JsArray::from_iter(arg_strings, ctx);
+        let pwd_js = match instance.current_module_dir.borrow().clone() {
+            Some(dir) => JsValue::from(boa_engine::js_string!(dir)),
+            None => JsValue::null(),
+        };
+        let js_args = [target_js, JsValue::from(args_array), pwd_js];
+        let js_object: JsObject = js_fn.clone().into();
+        let ret = js_object.call(&JsValue::undefined(), &js_args, ctx)?;
+        Ok(ret.to_boolean())
+    })();
+    instance.audit_in_progress.set(false);
+    match result {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(JsNativeError::error()
+            .with_message(security_error_message(target, instance.sandbox.audit_debug))
+            .into()),
+        Err(e) => Err(e),
+    }
+}
+
 pub(crate) fn authorize_operation(
     instance: &KossInstance,
     required_cap: u32,
@@ -1409,9 +1522,12 @@ pub(crate) fn authorize_operation(
                 .map(|arg| CString::new(js_value_to_string(arg, ctx)).unwrap_or_default())
                 .collect();
             let arg_ptrs: Vec<*const c_char> = c_args.iter().map(|arg| arg.as_ptr()).collect();
-            let pwd = std::env::current_dir()
-                .ok()
-                .and_then(|path| CString::new(path.to_string_lossy().as_bytes()).ok());
+            // pwd = 当前执行模块的目录；eval 时为 NULL
+            let pwd = instance
+                .current_module_dir
+                .borrow()
+                .clone()
+                .and_then(|dir| CString::new(dir).ok());
             let allowed = unsafe {
                 audit_fn(
                     c_target.as_ptr(),
@@ -1421,13 +1537,13 @@ pub(crate) fn authorize_operation(
                     instance.sandbox.sync_userdata,
                 )
             };
-            if allowed {
-                Ok(())
-            } else {
-                Err(JsNativeError::error()
+            if !allowed {
+                return Err(JsNativeError::error()
                     .with_message(security_error_message(target, instance.sandbox.audit_debug))
-                    .into())
+                    .into());
             }
+            // 宿主审核放行后，交给 JS 层审核回调做进一步限制
+            call_js_audit(instance, target, args, ctx)
         }
     }
 }
@@ -2596,6 +2712,7 @@ fn create_instance_internal(
     register_koss_global(&mut instance.context, stable);
     buffer::register_buffer_globals(&mut instance.context);
     register_native_bindings(&mut instance);
+    register_js_audit_api(&mut instance);
     register_fs_functions(&mut instance);
     register_nodejs_globals(&mut instance.context);
     if !stable && crate::sandbox::has_cap(effective_caps, crate::sandbox::NATIVE_ADDON) {
@@ -2785,6 +2902,9 @@ pub unsafe extern "C" fn koss_eval(ptr: *mut KossInstance, code: *const c_char) 
             Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
         };
 
+        // eval 代码没有模块上下文，审核回调的 pwd 应为 NULL
+        *instance.current_module_dir.borrow_mut() = None;
+
         let source = Source::from_bytes(code_str.as_bytes());
         match instance.context.eval(source) {
             Ok(val) => {
@@ -2892,6 +3012,11 @@ pub unsafe extern "C" fn koss_run_file(ptr: *mut KossInstance, path: *const c_ch
             return KossResult::err(2, "path is not a file");
         }
 
+        // 设置当前模块目录：审核回调的 pwd 为该文件所在目录
+        *instance.current_module_dir.borrow_mut() = canonical
+            .parent()
+            .map(|p| p.to_string_lossy().to_string());
+
         let source = match Source::from_filepath(&canonical) {
             Ok(s) => s,
             Err(e) => return KossResult::err(2, &format!("cannot read file: {e}")),
@@ -2935,6 +3060,10 @@ pub unsafe extern "C" fn koss_run_module(
     };
 
     let file_path = std::path::Path::new(path_str);
+    // 设置当前模块目录：审核回调的 pwd 为该模块所在目录
+    *instance.current_module_dir.borrow_mut() = file_path
+        .parent()
+        .map(|p| p.to_string_lossy().to_string());
     let source = match Source::from_filepath(file_path) {
         Ok(s) => s,
         Err(e) => return KossResult::err(2, &format!("cannot read file: {e}")),
@@ -2995,6 +3124,9 @@ pub unsafe extern "C" fn koss_run_module_string(
         Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
     };
 
+    // 模块字符串没有文件上下文，审核回调的 pwd 应为 NULL
+    *instance.current_module_dir.borrow_mut() = None;
+
     let source = Source::from_bytes(code_str.as_bytes());
 
     // Parse as ES Module
@@ -3048,6 +3180,9 @@ pub unsafe extern "C" fn koss_run_string(
             Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
         };
 
+        // run_string 没有模块上下文，审核回调的 pwd 应为 NULL
+        *instance.current_module_dir.borrow_mut() = None;
+
         let source = Source::from_bytes(code_str.as_bytes());
 
         match instance.context.eval(source) {
@@ -3088,6 +3223,9 @@ pub unsafe extern "C" fn koss_run_async(
             Ok(s) => s,
             Err(e) => return KossResult::err(2, &format!("invalid UTF-8: {e}")),
         };
+
+        // 异步代码字符串没有模块上下文，审核回调的 pwd 应为 NULL
+        *instance.current_module_dir.borrow_mut() = None;
 
         let source = Source::from_bytes(code_str.as_bytes());
         let val = match instance.context.eval(source) {
@@ -3473,6 +3611,28 @@ pub unsafe extern "C" fn koss_check_sandbox(
     }
 }
 
+/// Clear the JS-layer audit callback registered via `__koss_set_audit_callback`.
+///
+/// After this call, operations matching the audit mask are decided by the host
+/// audit callback alone. If the audit mask is non-zero and the host callback is
+/// also NULL, masked operations are denied with `KossConfigError`.
+///
+/// # Safety
+/// - `ptr` must be a valid pointer from `koss_create`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn koss_clear_js_audit(ptr: *mut KossInstance) -> KossResult {
+    output_license_once();
+    unsafe {
+        if ptr.is_null() {
+            return KossResult::err(2, "null pointer");
+        }
+        let _api_guard = api_guard_result!(ptr);
+        let instance = &mut *ptr;
+        instance.js_audit = None;
+        KossResult::ok("js audit callback cleared")
+    }
+}
+
 // ===========================================================================
 // C ABI — Internal Bindings
 // ===========================================================================
@@ -3513,15 +3673,27 @@ pub unsafe extern "C" fn koss_get_binding(
                     Ok(c) => c,
                     Err(_) => return KossResult::ok("{}"),
                 };
+                // pwd = 当前执行模块的目录；eval 时为 NULL
+                let pwd = instance
+                    .current_module_dir
+                    .borrow()
+                    .clone()
+                    .and_then(|dir| CString::new(dir).ok());
                 let allowed = audit_fn(
                     target.as_ptr(),
                     std::ptr::null(),
                     0,
-                    std::ptr::null(),
+                    pwd.as_ref().map_or(std::ptr::null(), |path| path.as_ptr()),
                     instance.sandbox.sync_userdata,
                 );
                 if !allowed {
                     let msg = security_error_message(name_str, debug);
+                    return KossResult::err(4, &msg);
+                }
+                // 宿主审核放行后，交给 JS 层审核回调做进一步限制
+                let inst_ref = &*(instance as *mut KossInstance);
+                if let Err(e) = call_js_audit(inst_ref, name_str, &[], &mut instance.context) {
+                    let msg = js_error_to_string(&e, &mut instance.context);
                     return KossResult::err(4, &msg);
                 }
             }
@@ -4611,6 +4783,27 @@ mod tests {
         false
     }
 
+    unsafe extern "C" fn allow_audit(
+        _target: *const c_char,
+        _args: *const *const c_char,
+        _argc: i32,
+        _pwd: *const c_char,
+        _userdata: *mut c_void,
+    ) -> bool {
+        true
+    }
+
+    // 拒绝回调但不动 AUDIT_CALLS（避免与其他测试并行时竞态）
+    unsafe extern "C" fn deny_audit_quiet(
+        _target: *const c_char,
+        _args: *const *const c_char,
+        _argc: i32,
+        _pwd: *const c_char,
+        _userdata: *mut c_void,
+    ) -> bool {
+        false
+    }
+
     #[test]
     fn test_capability_error_message_debug_enabled() {
         let msg = capability_error_message("fs", true);
@@ -4873,6 +5066,240 @@ mod tests {
         assert!(
             msg.contains("Audit mask is set but no callback is registered"),
             "expected config error message, got: {msg}"
+        );
+    }
+
+    /// 就地配置一个带 FS_READ 审核、宿主回调放行、并已注册 JS 审核 API 的实例。
+    /// 注意：不可把实例从函数返回（移动会使闭包捕获的 instance 指针失效）。
+    fn setup_js_audit(instance: &mut KossInstance) {
+        instance.sandbox.audit_mask = crate::sandbox::FS_READ;
+        instance.sandbox.audit_debug = true;
+        instance.sandbox.sync_audit = Some(allow_audit);
+        register_fs_functions(instance);
+        register_js_audit_api(instance);
+    }
+
+    #[test]
+    fn test_js_audit_callback_denies_operation() {
+        let context = Context::default();
+        let mut instance = KossInstance::new(
+            context,
+            crate::sandbox::FS_READ,
+            true,
+            crate::builtins::KOSS_BUILTIN_ALL,
+        );
+        setup_js_audit(&mut instance);
+        instance
+            .context
+            .eval(Source::from_bytes(
+                b"__koss_set_audit_callback(function(t, a, p) { return false; })",
+            ))
+            .expect("register js audit callback should succeed");
+
+        let result = instance
+            .context
+            .eval(Source::from_bytes(b"__koss_fs_exists('.')"));
+        assert!(result.is_err());
+        let msg = js_error_to_string(&result.err().unwrap(), &mut instance.context);
+        assert!(
+            msg.contains("KossSecurityError"),
+            "JS audit denial should produce KossSecurityError, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_js_audit_callback_allows_operation() {
+        let context = Context::default();
+        let mut instance = KossInstance::new(
+            context,
+            crate::sandbox::FS_READ,
+            true,
+            crate::builtins::KOSS_BUILTIN_ALL,
+        );
+        setup_js_audit(&mut instance);
+        instance
+            .context
+            .eval(Source::from_bytes(
+                b"__koss_set_audit_callback(function(t, a, p) { return true; })",
+            ))
+            .expect("register js audit callback should succeed");
+
+        let result = instance
+            .context
+            .eval(Source::from_bytes(b"__koss_fs_exists('.')"));
+        assert!(
+            result.is_ok(),
+            "JS audit allow should permit the operation, got: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_js_audit_callback_exception_denies_operation() {
+        let context = Context::default();
+        let mut instance = KossInstance::new(
+            context,
+            crate::sandbox::FS_READ,
+            true,
+            crate::builtins::KOSS_BUILTIN_ALL,
+        );
+        setup_js_audit(&mut instance);
+        instance
+            .context
+            .eval(Source::from_bytes(
+                b"__koss_set_audit_callback(function(t, a, p) { throw new Error('js policy error'); })",
+            ))
+            .expect("register js audit callback should succeed");
+
+        let result = instance
+            .context
+            .eval(Source::from_bytes(b"__koss_fs_exists('.')"));
+        assert!(result.is_err());
+        let msg = js_error_to_string(&result.err().unwrap(), &mut instance.context);
+        assert!(
+            msg.contains("js policy error"),
+            "JS audit exception should propagate and deny, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_js_audit_callback_reentrancy_is_denied() {
+        let context = Context::default();
+        let mut instance = KossInstance::new(
+            context,
+            crate::sandbox::FS_READ,
+            true,
+            crate::builtins::KOSS_BUILTIN_ALL,
+        );
+        setup_js_audit(&mut instance);
+        instance
+            .context
+            .eval(Source::from_bytes(
+                b"__koss_set_audit_callback(function(t, a, p) { globalThis.__reentry = __koss_fs_exists('.'); return true; })",
+            ))
+            .expect("register js audit callback should succeed");
+
+        let result = instance
+            .context
+            .eval(Source::from_bytes(b"__koss_fs_exists('.')"));
+        assert!(
+            result.is_err(),
+            "re-entrant audit from within the JS callback should be denied"
+        );
+        let msg = js_error_to_string(&result.err().unwrap(), &mut instance.context);
+        assert!(
+            msg.contains("re-entrancy"),
+            "expected re-entrancy denial, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_host_denial_skips_js_audit_callback() {
+        let context = Context::default();
+        let mut instance = KossInstance::new(
+            context,
+            crate::sandbox::FS_READ,
+            true,
+            crate::builtins::KOSS_BUILTIN_ALL,
+        );
+        setup_js_audit(&mut instance);
+        // 宿主回调改为拒绝（不依赖 AUDIT_CALLS，避免并行竞态）
+        instance.sandbox.sync_audit = Some(deny_audit_quiet);
+        instance
+            .context
+            .eval(Source::from_bytes(
+                b"__koss_set_audit_callback(function(t, a, p) { globalThis.__js_audit_called = true; return true; })",
+            ))
+            .expect("register js audit callback should succeed");
+
+        let result = instance
+            .context
+            .eval(Source::from_bytes(b"__koss_fs_exists('.')"));
+        assert!(result.is_err());
+        let called = instance
+            .context
+            .eval(Source::from_bytes(b"typeof globalThis.__js_audit_called"))
+            .expect("query should succeed");
+        let called_str = js_value_to_string(&called, &mut instance.context);
+        assert_eq!(
+            called_str, "undefined",
+            "JS audit callback must not run when the host callback denies"
+        );
+    }
+
+    #[test]
+    fn test_js_audit_without_host_callback_denies_with_config_error() {
+        let context = Context::default();
+        let mut instance = KossInstance::new(
+            context,
+            crate::sandbox::FS_READ,
+            true,
+            crate::builtins::KOSS_BUILTIN_ALL,
+        );
+        setup_js_audit(&mut instance);
+        // 宿主回调未注册（即便 JS 回调已注册），mask≠0 时直接抛 KossConfigError
+        instance.sandbox.sync_audit = None;
+        instance
+            .context
+            .eval(Source::from_bytes(
+                b"__koss_set_audit_callback(function(t, a, p) { return true; })",
+            ))
+            .expect("register js audit callback should succeed");
+
+        let result = instance
+            .context
+            .eval(Source::from_bytes(b"__koss_fs_exists('.')"));
+        assert!(result.is_err());
+        let msg = js_error_to_string(&result.err().unwrap(), &mut instance.context);
+        assert!(
+            msg.contains("KossConfigError"),
+            "missing host callback must raise KossConfigError even with JS audit, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_audit_pwd_is_module_dir_for_file_and_null_for_eval() {
+        let context = Context::default();
+        let mut instance = KossInstance::new(
+            context,
+            crate::sandbox::FS_READ,
+            true,
+            crate::builtins::KOSS_BUILTIN_ALL,
+        );
+        setup_js_audit(&mut instance);
+        instance
+            .context
+            .eval(Source::from_bytes(
+                b"__koss_set_audit_callback(function(t, a, p) { globalThis.__audit_pwd = p; return true; })",
+            ))
+            .expect("register js audit callback should succeed");
+
+        // eval 场景：current_module_dir 为 None → pwd 为 null
+        let result = instance
+            .context
+            .eval(Source::from_bytes(b"__koss_fs_exists('.')"));
+        assert!(result.is_ok());
+        let pwd = instance
+            .context
+            .eval(Source::from_bytes(b"globalThis.__audit_pwd"))
+            .expect("query should succeed");
+        let pwd_str = js_value_to_string(&pwd, &mut instance.context);
+        assert_eq!(pwd_str, "null", "eval 场景 pwd 应为 NULL，got: {pwd_str}");
+
+        // 模块场景：current_module_dir 有值 → pwd 为该目录
+        *instance.current_module_dir.borrow_mut() = Some("/tmp/some/module".to_string());
+        let result = instance
+            .context
+            .eval(Source::from_bytes(b"__koss_fs_exists('.')"));
+        assert!(result.is_ok());
+        let pwd = instance
+            .context
+            .eval(Source::from_bytes(b"globalThis.__audit_pwd"))
+            .expect("query should succeed");
+        let pwd_str = js_value_to_string(&pwd, &mut instance.context);
+        assert_eq!(
+            pwd_str, "/tmp/some/module",
+            "模块场景 pwd 应为模块目录，got: {pwd_str}"
         );
     }
 
