@@ -877,11 +877,41 @@ fn register_console(ctx: &mut Context) {
     );
 }
 
-fn register_koss_global(ctx: &mut Context, stable: bool) {
+fn register_koss_global(instance: &mut KossInstance, stable: bool) {
+    // 通过裸指针拆分借用：闭包捕获 instance 指针，同时可在本函数内使用 context
+    let instance_ptr = instance as *mut KossInstance;
+    let ctx = unsafe { &mut (*instance_ptr).context };
     let version = match std::str::from_utf8(get_version()) {
         Ok(s) => s.trim_end_matches('\0').to_string(),
         Err(_) => "unknown".to_string(),
     };
+
+    // 先构造 set_audit_callback 函数对象，避免与 ObjectInitializer 的 ctx 借用冲突
+    let audit_fn_obj = NativeFunction::from_copy_closure(move |_this, args, _ctx| {
+        let inst = unsafe { &mut *instance_ptr };
+        let Some(value) = args.first() else {
+            return Ok(JsValue::undefined());
+        };
+        if value.is_null_or_undefined() {
+            inst.js_audit = None;
+            return Ok(JsValue::from(true));
+        }
+        let Some(callable) = value.as_object() else {
+            return Err(JsError::from(JsNativeError::typ().with_message(
+                "KossJS.set_audit_callback: expected a function or null",
+            )));
+        };
+        match JsFunction::from_object(callable.clone()) {
+            Some(f) => {
+                inst.js_audit = Some(f);
+                Ok(JsValue::from(true))
+            }
+            None => Err(JsError::from(JsNativeError::typ().with_message(
+                "KossJS.set_audit_callback: expected a callable function or null",
+            ))),
+        }
+    })
+    .to_js_function(ctx.realm());
 
     // Rust 层创建对象
     let mut obj = boa_engine::object::ObjectInitializer::new(ctx);
@@ -906,6 +936,12 @@ fn register_koss_global(ctx: &mut Context, stable: bool) {
             | boa_engine::property::Attribute::ENUMERABLE
             | boa_engine::property::Attribute::PERMANENT,
     );
+    // KossJS.set_audit_callback(fn)：注册/清除 JS 层审核回调
+    obj.property(
+        boa_engine::js_string!("set_audit_callback"),
+        JsValue::from(audit_fn_obj),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    );
     let koss_obj = obj.build();
 
     // Rust 层注册到 globalThis（不设 PERMANENT，让 JS 层能替换并做最终保护）
@@ -923,6 +959,7 @@ fn register_koss_global(ctx: &mut Context, stable: bool) {
         safe.version = globalThis.KossJS.version;
         safe.runtime = globalThis.KossJS.runtime;
         safe.isStable = globalThis.KossJS.isStable;
+        safe.set_audit_callback = globalThis.KossJS.set_audit_callback;
         Object.freeze(safe);
         Object.defineProperty(globalThis, 'KossJS', {
             value: safe,
@@ -1012,50 +1049,6 @@ fn register_native_bindings(instance: &mut KossInstance) {
                 | boa_engine::property::Attribute::CONFIGURABLE,
         )
         .ok();
-}
-
-/// Register `__koss_set_audit_callback` so JS code can register a JS-layer
-/// audit callback. `fn` must be a callable `(target, args, pwd) => boolean`.
-/// Pass `null`/`undefined` to clear it.
-///
-/// JS callbacks run AFTER the host audit callback allowed the operation, and
-/// can only further restrict (return `false` → deny). They cannot allow an
-/// operation the host denied, and cannot bypass capability bits.
-fn register_js_audit_api(instance: &mut KossInstance) {
-    let instance_ptr = instance as *mut KossInstance;
-
-    let native = NativeFunction::from_copy_closure(move |_this, args, _ctx| {
-        let inst = unsafe { &mut *instance_ptr };
-        let Some(value) = args.first() else {
-            return Ok(JsValue::undefined());
-        };
-        if value.is_null_or_undefined() {
-            inst.js_audit = None;
-            return Ok(JsValue::from(true));
-        }
-        let Some(obj) = value.as_object() else {
-            return Err(JsError::from(
-                JsNativeError::typ()
-                    .with_message("__koss_set_audit_callback: expected a function or null"),
-            ));
-        };
-        match JsFunction::from_object(obj.clone()) {
-            Some(f) => {
-                inst.js_audit = Some(f);
-                Ok(JsValue::from(true))
-            }
-            None => Err(JsError::from(JsNativeError::typ().with_message(
-                "__koss_set_audit_callback: expected a callable function or null",
-            ))),
-        }
-    });
-
-    let js_func = native.to_js_function(instance.context.realm());
-    let _ = instance.context.register_global_property(
-        boa_engine::js_string!("__koss_set_audit_callback"),
-        js_func,
-        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
-    );
 }
 
 /// Register `__koss_load_module` for CommonJS `require()`.
@@ -2709,10 +2702,9 @@ fn create_instance_internal(
 
     let mut instance = Box::new(KossInstance::new(context, effective_caps, stable, builtins));
     register_console(&mut instance.context);
-    register_koss_global(&mut instance.context, stable);
+    register_koss_global(&mut instance, stable);
     buffer::register_buffer_globals(&mut instance.context);
     register_native_bindings(&mut instance);
-    register_js_audit_api(&mut instance);
     register_fs_functions(&mut instance);
     register_nodejs_globals(&mut instance.context);
     if !stable && crate::sandbox::has_cap(effective_caps, crate::sandbox::NATIVE_ADDON) {
@@ -3611,7 +3603,7 @@ pub unsafe extern "C" fn koss_check_sandbox(
     }
 }
 
-/// Clear the JS-layer audit callback registered via `__koss_set_audit_callback`.
+/// Clear the JS-layer audit callback registered via `KossJS.set_audit_callback`.
 ///
 /// After this call, operations matching the audit mask are decided by the host
 /// audit callback alone. If the audit mask is non-zero and the host callback is
@@ -5076,7 +5068,8 @@ mod tests {
         instance.sandbox.audit_debug = true;
         instance.sandbox.sync_audit = Some(allow_audit);
         register_fs_functions(instance);
-        register_js_audit_api(instance);
+        // 注册 KossJS 全局对象（含 set_audit_callback）
+        register_koss_global(instance, true);
     }
 
     #[test]
@@ -5092,7 +5085,7 @@ mod tests {
         instance
             .context
             .eval(Source::from_bytes(
-                b"__koss_set_audit_callback(function(t, a, p) { return false; })",
+                b"KossJS.set_audit_callback(function(t, a, p) { return false; })",
             ))
             .expect("register js audit callback should succeed");
 
@@ -5120,7 +5113,7 @@ mod tests {
         instance
             .context
             .eval(Source::from_bytes(
-                b"__koss_set_audit_callback(function(t, a, p) { return true; })",
+                b"KossJS.set_audit_callback(function(t, a, p) { return true; })",
             ))
             .expect("register js audit callback should succeed");
 
@@ -5147,7 +5140,7 @@ mod tests {
         instance
             .context
             .eval(Source::from_bytes(
-                b"__koss_set_audit_callback(function(t, a, p) { throw new Error('js policy error'); })",
+                b"KossJS.set_audit_callback(function(t, a, p) { throw new Error('js policy error'); })",
             ))
             .expect("register js audit callback should succeed");
 
@@ -5175,7 +5168,7 @@ mod tests {
         instance
             .context
             .eval(Source::from_bytes(
-                b"__koss_set_audit_callback(function(t, a, p) { globalThis.__reentry = __koss_fs_exists('.'); return true; })",
+                b"KossJS.set_audit_callback(function(t, a, p) { globalThis.__reentry = __koss_fs_exists('.'); return true; })",
             ))
             .expect("register js audit callback should succeed");
 
@@ -5208,7 +5201,7 @@ mod tests {
         instance
             .context
             .eval(Source::from_bytes(
-                b"__koss_set_audit_callback(function(t, a, p) { globalThis.__js_audit_called = true; return true; })",
+                b"KossJS.set_audit_callback(function(t, a, p) { globalThis.__js_audit_called = true; return true; })",
             ))
             .expect("register js audit callback should succeed");
 
@@ -5242,7 +5235,7 @@ mod tests {
         instance
             .context
             .eval(Source::from_bytes(
-                b"__koss_set_audit_callback(function(t, a, p) { return true; })",
+                b"KossJS.set_audit_callback(function(t, a, p) { return true; })",
             ))
             .expect("register js audit callback should succeed");
 
@@ -5270,7 +5263,7 @@ mod tests {
         instance
             .context
             .eval(Source::from_bytes(
-                b"__koss_set_audit_callback(function(t, a, p) { globalThis.__audit_pwd = p; return true; })",
+                b"KossJS.set_audit_callback(function(t, a, p) { globalThis.__audit_pwd = p; return true; })",
             ))
             .expect("register js audit callback should succeed");
 

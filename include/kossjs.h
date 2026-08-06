@@ -133,7 +133,7 @@ uint32_t koss_get_capabilities(KossInstance *inst);
  *      KossConfigError ("Audit mask is set but no callback is registered").
  *
  * JS-layer audit (v0.1.0-dev.10): after the host callback returns TRUE,
- * an optional JS audit callback registered via `__koss_set_audit_callback`
+ * an optional JS audit callback registered via `KossJS.set_audit_callback`
  * (globalThis) is invoked as a further restriction. It receives
  * (target, args[], pwd) and can only DENY (return false); it cannot allow
  * an operation the host denied or bypass capability bits. When the host
@@ -160,7 +160,7 @@ typedef bool (*AuditCallback)(const char* target, const char** args, int argc, c
    being allowed (see audit mask notes above). */
 KossResult koss_check_sandbox(KossInstance *inst, AuditCallback callback, void* userdata);
 
-/* Clear the JS-layer audit callback registered via `__koss_set_audit_callback`. */
+/* Clear the JS-layer audit callback registered via `KossJS.set_audit_callback`. */
 KossResult koss_clear_js_audit(KossInstance *inst);
 
 /* ── Code execution ─────────────────────────────────────────────────── */

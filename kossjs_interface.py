@@ -796,7 +796,7 @@ class KossJS:
         self._lib.koss_enable_audit_debug(self._ptr, bool(enable))
 
     def clear_js_audit(self) -> str:
-        """Clear the JS-layer audit callback registered via `__koss_set_audit_callback`.
+        """Clear the JS-layer audit callback registered via `KossJS.set_audit_callback`.
 
         After clearing, operations matching the audit mask are decided by the host
         audit callback alone. If the audit mask is non-zero and the host callback

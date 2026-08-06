@@ -11,7 +11,7 @@
   - `Audit Mask ≠ 0` 且 `Callback ≠ NULL`：调用回调，由宿主逻辑决定放行或拒绝
   - `Audit Mask ≠ 0` 且 `Callback = NULL`：视为安全策略配置不完整，直接拒绝（Deny），并抛出 `KossConfigError`，消息为 `Audit mask is set but no callback is registered`
   - 修复：此前"掩码≠0 但无回调"会静默放行，形成潜在的安全绕过
-- **JS 层审核回调（两级审核链）** — 新增 `__koss_set_audit_callback(fn)` 全局函数与 `koss_clear_js_audit()` C ABI：
+- **JS 层审核回调（两级审核链）** — 新增 `KossJS.set_audit_callback(fn)` 全局对象方法与 `koss_clear_js_audit()` C ABI：
   - 宿主审核回调返回 `true` 后，可选的 JS 策略函数 `(target, args[], pwd) => boolean` 做进一步限制
   - JS 回调只能进一步拒绝（返回 `false`/抛异常 → `KossSecurityError`），不能放行宿主已拒绝的操作或绕过能力位
   - 宿主回调为 `NULL` 时（即使已注册 JS 回调），掩码覆盖的操作仍抛 `KossConfigError`

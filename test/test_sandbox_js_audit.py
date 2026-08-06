@@ -23,7 +23,7 @@ def _audit_fs(js: KossJS) -> None:
 
 
 def _register_js_audit(js: KossJS, body: str) -> None:
-    js.eval(f"__koss_set_audit_callback(function(t, a, p) {{ {body} }})")
+    js.eval(f"KossJS.set_audit_callback(function(t, a, p) {{ {body} }})")
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +192,7 @@ def test_js_audit_can_be_cleared_via_js():
         assert "KossSecurityError" in str(exc.value)
 
         # JS 通过传 null 清除审核回调
-        js.eval("__koss_set_audit_callback(null);")
+        js.eval("KossJS.set_audit_callback(null);")
         js.eval("internalBinding('fs');")  # 放行
     finally:
         js.destroy()

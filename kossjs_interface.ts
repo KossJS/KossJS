@@ -643,7 +643,7 @@ export class KossJS {
     return this._checkResult(this._fnFetch(this._ptr, url));
   }
 
-  /** Clear the JS-layer audit callback registered via `__koss_set_audit_callback`. */
+  /** Clear the JS-layer audit callback registered via `KossJS.set_audit_callback`. */
   clearJsAudit(): string {
     this._ensurePtr();
     return this._checkResult(this._fnClearJsAudit(this._ptr));
