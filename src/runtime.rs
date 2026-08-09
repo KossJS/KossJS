@@ -2334,16 +2334,21 @@ fn reverse_dns_lookup(addr: &str) -> Option<String> {
         let sockaddr = SocketAddr::new(ip, 0);
         // 借用 libc 的 getnameinfo
         unsafe {
-            let mut host = [0i8; 256];
+            let mut host = [0 as libc::c_char; 256];
             let (sa_ptr, sa_len) = match &sockaddr {
                 SocketAddr::V4(v4) => (v4 as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t),
                 SocketAddr::V6(v6) => (v6 as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t),
             };
+            // Android 的 getnameinfo hostlen 用 size_t，其他 unix 用 socklen_t
+            #[cfg(target_os = "android")]
+            let host_len = host.len();
+            #[cfg(not(target_os = "android"))]
+            let host_len = host.len() as libc::socklen_t;
             let ret = libc::getnameinfo(
                 sa_ptr,
                 sa_len,
                 host.as_mut_ptr(),
-                host.len() as libc::socklen_t,
+                host_len,
                 std::ptr::null_mut(),
                 0,
                 libc::NI_NAMEREQD,
