@@ -2,7 +2,7 @@
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -17,7 +17,7 @@ use std::sync::Arc;
 #[cfg(any(target_os = "windows", all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))]
 use std::sync::atomic::AtomicUsize;
 use std::sync::Mutex;
-use std::net::{TcpListener, TcpStream, ToSocketAddrs, IpAddr};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs, IpAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
 use boa_engine::object::builtins::{JsFunction, JsPromise};
@@ -100,6 +100,7 @@ macro_rules! api_guard_result {
 
 const MAX_TCP_CONNECTIONS: usize = 256;
 const MAX_TCP_SERVERS: usize = 64;
+const MAX_OPEN_FILES: usize = 1024;
 
 #[derive(Default)]
 struct SocketState {
@@ -107,6 +108,41 @@ struct SocketState {
     next_server_fd: u32,
     connections: HashMap<u32, TcpStream>,
     servers: HashMap<u32, TcpListener>,
+}
+
+#[derive(Default)]
+struct FileState {
+    next_fd: u32,
+    files: HashMap<u32, std::fs::File>,
+}
+
+impl FileState {
+    fn new() -> Self {
+        Self {
+            next_fd: 5001,
+            files: HashMap::new(),
+        }
+    }
+}
+
+const MAX_UDP_SOCKETS: usize = 64;
+
+#[derive(Default)]
+struct UdpState {
+    next_fd: u32,
+    sockets: HashMap<u32, UdpSocket>,
+    /// 每个 socket 最近一次 recv 到的来源地址
+    pending_from: HashMap<u32, String>,
+}
+
+impl UdpState {
+    fn new() -> Self {
+        Self {
+            next_fd: 7001,
+            sockets: HashMap::new(),
+            pending_from: HashMap::new(),
+        }
+    }
 }
 
 impl SocketState {
@@ -715,6 +751,8 @@ pub struct KossInstance {
     /// See KOSS_BUILTIN_* constants in builtins.rs.
     pub builtins: u32,
     socket_state: Mutex<SocketState>,
+    file_state: Mutex<FileState>,
+    udp_state: Mutex<UdpState>,
     /// JS 层审核回调：宿主审核回调放行后，进一步由 JS 策略函数限制。
     /// JS 回调只能进一步收紧（返回 false → 拒绝），无法放行宿主已拒绝的操作。
     pub js_audit: Option<JsFunction>,
@@ -740,6 +778,8 @@ impl KossInstance {
             stable,
             builtins,
             socket_state: Mutex::new(SocketState::new()),
+            file_state: Mutex::new(FileState::new()),
+            udp_state: Mutex::new(UdpState::new()),
             js_audit: None,
             audit_in_progress: Cell::new(false),
             current_module_dir: RefCell::new(None),
@@ -1435,6 +1475,475 @@ fn register_fs_functions(instance: &mut KossInstance) {
             Err(e) => Err(JsNativeError::error().with_message(format!("realpath failed: {e}")).into()),
         }
     });
+
+    // __koss_fs_append(path, data, is_base64) -> { code: 0 }
+    // 真正的 append（追加写），不读全文件再整体写回。
+    let instance_ptr2 = instance as *mut KossInstance;
+    let append_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &*instance_ptr2 };
+            authorize_operation(inst, crate::sandbox::FS_WRITE, "fs.append", args, ctx)?;
+            if args.len() < 2 {
+                return Err(JsNativeError::error().with_message("append: path and data required").into());
+            }
+            let path = args[0].to_string(ctx).map_err(|_| JsNativeError::error().with_message("append: path must be string"))?;
+            let data_val = args[1].to_string(ctx).map_err(|_| JsNativeError::error().with_message("append: data must be string"))?;
+            let is_base64 = args.get(2).map(|v| v.to_boolean()).unwrap_or(false);
+            let path_str = path.to_std_string_escaped();
+            let data_str = data_val.to_std_string_escaped();
+            let bytes: Vec<u8> = if is_base64 {
+                use base64::Engine;
+                match base64::engine::general_purpose::STANDARD.decode(data_str.as_bytes()) {
+                    Ok(b) => b,
+                    Err(_) => return Ok(JsValue::from(boa_engine::js_string!("{\"code\":1,\"value\":\"invalid base64 data\"}"))),
+                }
+            } else {
+                data_str.into_bytes()
+            };
+            use std::io::Write;
+            let result = std::fs::OpenOptions::new().append(true).create(true).open(&path_str)
+                .and_then(|mut f| f.write_all(&bytes));
+            match result {
+                Ok(()) => Ok(JsValue::from(boa_engine::js_string!("{\"code\":0}"))),
+                Err(e) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":1,\"value\":\"{}\"}}", e)))),
+            }
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_fs_append"),
+        append_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+}
+
+/// 注册 fd 级文件系统操作（open/read/write/close/fsync/ftruncate）。
+/// 这些函数维护一个 per-instance 的文件描述符表，供 fs.openSync / readSync /
+/// writeSync / createReadStream / createWriteStream 使用。
+fn register_fd_functions(instance: &mut KossInstance) {
+    let instance_ptr = instance as *mut KossInstance;
+
+    // __koss_fd_open(path, flags) -> fd
+    let open_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &mut *instance_ptr };
+            authorize_operation(inst, crate::sandbox::FS_READ | crate::sandbox::FS_WRITE, "fs.open", args, ctx)?;
+            if args.len() < 2 {
+                return Err(JsNativeError::error().with_message("open: path and flags required").into());
+            }
+            let path = args[0].to_string(ctx).map_err(|_| JsNativeError::error().with_message("open: path must be string"))?;
+            let flags = args[1].as_number().unwrap_or(0.0) as i32;
+            let path_str = path.to_std_string_escaped();
+
+            let mut opts = std::fs::OpenOptions::new();
+            // Node 风格 flags: O_RDONLY=0, O_WRONLY=1, O_RDWR=2, O_CREAT=64, O_EXCL=128, O_TRUNC=512, O_APPEND=1024
+            let access = flags & 0x3;
+            opts.read(access == 0 || access == 2);
+            opts.write(access == 1 || access == 2);
+            if flags & 0x200 != 0 { opts.truncate(true); }
+            if flags & 0x400 != 0 { opts.append(true); }
+            if flags & 0x40 != 0 { opts.create(true); }
+            if flags & 0x80 != 0 { opts.create_new(true); }
+            opts.create(flags & 0x40 != 0);
+
+            match opts.open(&path_str) {
+                Ok(file) => {
+                    let mut fs = inst.file_state.lock().map_err(|_| JsNativeError::error().with_message("file state unavailable"))?;
+                    if fs.files.len() >= MAX_OPEN_FILES {
+                        return Err(JsNativeError::error().with_message("open file limit reached").into());
+                    }
+                    let fd = fs.next_fd;
+                    fs.next_fd = fs.next_fd.checked_add(1).ok_or_else(|| JsNativeError::error().with_message("fd space exhausted"))?;
+                    fs.files.insert(fd, file);
+                    Ok(JsValue::from(fd as i32))
+                }
+                Err(e) => Err(JsNativeError::error().with_message(format!("open failed: {e}")).into()),
+            }
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_fd_open"),
+        open_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_fd_read(fd, length) -> { code: 0, value: base64 }（EOF 时 code:2）
+    let read_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &mut *instance_ptr };
+            authorize_operation(inst, crate::sandbox::FS_READ, "fs.read", args, ctx)?;
+            if args.len() < 2 {
+                return Err(JsNativeError::error().with_message("read: fd and length required").into());
+            }
+            let fd = args[0].as_number().ok_or_else(|| JsNativeError::error().with_message("read: fd must be number"))? as u32;
+            let length = args[1].as_number().unwrap_or(65536.0) as usize;
+            use std::io::Read;
+            let mut buf = vec![0u8; length];
+            let read_result = {
+                let mut fs = inst.file_state.lock().map_err(|_| JsNativeError::error().with_message("file state unavailable"))?;
+                let file = fs.files.get_mut(&fd).ok_or_else(|| JsNativeError::error().with_message("read: invalid fd"))?;
+                file.read(&mut buf)
+            };
+            match read_result {
+                Ok(0) => Ok(JsValue::from(boa_engine::js_string!("{\"code\":2}"))),
+                Ok(n) => {
+                    use base64::Engine;
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
+                    Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":0,\"value\":\"{}\"}}", encoded))))
+                }
+                Err(e) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":1,\"value\":\"{}\"}}", e)))),
+            }
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_fd_read"),
+        read_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_fd_write(fd, data, is_base64) -> { code: 0, value: n }
+    let write_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &mut *instance_ptr };
+            authorize_operation(inst, crate::sandbox::FS_WRITE, "fs.write", args, ctx)?;
+            if args.len() < 2 {
+                return Err(JsNativeError::error().with_message("write: fd and data required").into());
+            }
+            let fd = args[0].as_number().ok_or_else(|| JsNativeError::error().with_message("write: fd must be number"))? as u32;
+            let data_val = args[1].to_string(ctx).map_err(|_| JsNativeError::error().with_message("write: data must be string"))?;
+            let is_base64 = args.get(2).map(|v| v.to_boolean()).unwrap_or(false);
+            let data_str = data_val.to_std_string_escaped();
+            let bytes: Vec<u8> = if is_base64 {
+                use base64::Engine;
+                match base64::engine::general_purpose::STANDARD.decode(data_str.as_bytes()) {
+                    Ok(b) => b,
+                    Err(_) => return Ok(JsValue::from(boa_engine::js_string!("{\"code\":1,\"value\":\"invalid base64 data\"}"))),
+                }
+            } else {
+                data_str.into_bytes()
+            };
+            use std::io::Write;
+            let write_result = {
+                let mut fs = inst.file_state.lock().map_err(|_| JsNativeError::error().with_message("file state unavailable"))?;
+                let file = fs.files.get_mut(&fd).ok_or_else(|| JsNativeError::error().with_message("write: invalid fd"))?;
+                file.write_all(&bytes)
+            };
+            match write_result {
+                Ok(()) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":0,\"value\":{}}}", bytes.len())))),
+                Err(e) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":1,\"value\":\"{}\"}}", e)))),
+            }
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_fd_write"),
+        write_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_fd_close(fd)
+    let close_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &mut *instance_ptr };
+            let fd = args.first().and_then(|v| v.as_number()).unwrap_or(-1.0) as u32;
+            if let Ok(mut fs) = inst.file_state.lock() {
+                fs.files.remove(&fd);
+            }
+            Ok(JsValue::undefined())
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_fd_close"),
+        close_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_fd_sync(fd) -> { code: 0 }
+    let sync_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &mut *instance_ptr };
+            let fd = args.first().and_then(|v| v.as_number()).unwrap_or(-1.0) as u32;
+            let result = {
+                let mut fs = inst.file_state.lock().map_err(|_| JsNativeError::error().with_message("file state unavailable"))?;
+                match fs.files.get_mut(&fd) {
+                    Some(file) => file.sync_all(),
+                    None => return Err(JsNativeError::error().with_message("fsync: invalid fd").into()),
+                }
+            };
+            match result {
+                Ok(()) => Ok(JsValue::from(boa_engine::js_string!("{\"code\":0}"))),
+                Err(e) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":1,\"value\":\"{}\"}}", e)))),
+            }
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_fd_sync"),
+        sync_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_fd_truncate(fd, len) -> { code: 0 }
+    let truncate_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &mut *instance_ptr };
+            let fd = args.first().and_then(|v| v.as_number()).unwrap_or(-1.0) as u32;
+            let len = args.get(1).and_then(|v| v.as_number()).unwrap_or(0.0) as u64;
+            let result = {
+                let mut fs = inst.file_state.lock().map_err(|_| JsNativeError::error().with_message("file state unavailable"))?;
+                match fs.files.get_mut(&fd) {
+                    Some(file) => file.set_len(len),
+                    None => return Err(JsNativeError::error().with_message("ftruncate: invalid fd").into()),
+                }
+            };
+            match result {
+                Ok(()) => Ok(JsValue::from(boa_engine::js_string!("{\"code\":0}"))),
+                Err(e) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":1,\"value\":\"{}\"}}", e)))),
+            }
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_fd_truncate"),
+        truncate_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_fd_fstat(fd) -> { code: 0, value: stat_json }
+    let fstat_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &mut *instance_ptr };
+            let fd = args.first().and_then(|v| v.as_number()).unwrap_or(-1.0) as u32;
+            let result = {
+                let mut fs = inst.file_state.lock().map_err(|_| JsNativeError::error().with_message("file state unavailable"))?;
+                match fs.files.get_mut(&fd) {
+                    Some(file) => file.metadata(),
+                    None => return Err(JsNativeError::error().with_message("fstat: invalid fd").into()),
+                }
+            };
+            match result {
+                Ok(meta) => {
+                    let mtime = meta.modified().ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_millis() as i64).unwrap_or(0);
+                    let ctime = meta.created().ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_millis() as i64).unwrap_or(0);
+                    let json = format!(
+                        "{{\"size\":{},\"mtime\":{},\"ctime\":{},\"isFile\":{},\"isDirectory\":{},\"isSymlink\":false}}",
+                        meta.len(), mtime, ctime, meta.is_file(), meta.is_dir()
+                    );
+                    Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":0,\"value\":{}}}", json))))
+                }
+                Err(e) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":1,\"value\":\"{}\"}}", e)))),
+            }
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_fd_fstat"),
+        fstat_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+}
+
+/// 注册 UDP 原生函数。dgram 模块通过 __koss_udp_* 实现真实的 UDP 收发。
+fn register_udp_functions(instance: &mut KossInstance) {
+    let instance_ptr = instance as *mut KossInstance;
+
+    // __koss_udp_create(type) -> fd
+    let create_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &mut *instance_ptr };
+            authorize_operation(inst, crate::sandbox::NET_UDP, "net.udpCreate", args, ctx)?;
+            let sock_type = args.first().map(|v| v.to_string(ctx).map(|s| s.to_std_string_escaped())).transpose()
+                .map_err(|_| JsNativeError::error().with_message("udp_create: invalid type"))?
+                .unwrap_or_else(|| "udp4".to_string());
+            let socket = if sock_type == "udp6" {
+                let addr = std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0));
+                UdpSocket::bind(addr)
+            } else {
+                let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, 0));
+                UdpSocket::bind(addr)
+            };
+            match socket {
+                Ok(s) => {
+                    let _ = s.set_nonblocking(true);
+                    let mut state = inst.udp_state.lock().map_err(|_| JsNativeError::error().with_message("udp state unavailable"))?;
+                    if state.sockets.len() >= MAX_UDP_SOCKETS {
+                        return Err(JsNativeError::error().with_message("UDP socket limit reached").into());
+                    }
+                    let fd = state.next_fd;
+                    state.next_fd = state.next_fd.checked_add(1).ok_or_else(|| JsNativeError::error().with_message("UDP descriptor space exhausted"))?;
+                    state.sockets.insert(fd, s);
+                    Ok(JsValue::from(fd as i32))
+                }
+                Err(e) => Err(JsNativeError::error().with_message(format!("udp create failed: {e}")).into()),
+            }
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_udp_create"),
+        create_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_udp_bind(fd, address, port) -> { code: 0 } / throws
+    let bind_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &mut *instance_ptr };
+            authorize_operation(inst, crate::sandbox::NET_UDP, "net.udpBind", args, ctx)?;
+            if args.len() < 3 {
+                return Err(JsNativeError::error().with_message("udp_bind: fd, address, port required").into());
+            }
+            let fd = args[0].as_number().ok_or_else(|| JsNativeError::error().with_message("udp_bind: fd must be number"))? as u32;
+            let address = args[1].to_string(ctx).map_err(|_| JsNativeError::error().with_message("udp_bind: address must be string"))?;
+            let port = args[2].as_number().ok_or_else(|| JsNativeError::error().with_message("udp_bind: port must be number"))? as u16;
+            let addr_str = format!("{}:{}", address.to_std_string_escaped(), port);
+            let addr: std::net::SocketAddr = addr_str.parse()
+                .map_err(|e| JsNativeError::error().with_message(format!("udp_bind: invalid address: {e}")))?;
+            // bind 是关联函数：为保持 fd 稳定，先用临时 socket 绑定成功后替换状态中的 socket
+            let bound = UdpSocket::bind(addr);
+            match bound {
+                Ok(new_sock) => {
+                    let _ = new_sock.set_nonblocking(true);
+                    let mut state = inst.udp_state.lock().map_err(|_| JsNativeError::error().with_message("udp state unavailable"))?;
+                    state.sockets.insert(fd, new_sock);
+                    Ok(JsValue::from(boa_engine::js_string!("{\"code\":0}")))
+                }
+                Err(e) => Err(JsNativeError::error().with_message(format!("udp bind failed: {e}")).into()),
+            }
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_udp_bind"),
+        bind_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_udp_send(fd, data, is_base64, address, port) -> { code: 0, value: n }
+    let send_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &mut *instance_ptr };
+            authorize_operation(inst, crate::sandbox::NET_UDP, "net.udpSend", args, ctx)?;
+            if args.len() < 5 {
+                return Err(JsNativeError::error().with_message("udp_send: fd, data, is_base64, address, port required").into());
+            }
+            let fd = args[0].as_number().ok_or_else(|| JsNativeError::error().with_message("udp_send: fd must be number"))? as u32;
+            let data_val = args[1].to_string(ctx).map_err(|_| JsNativeError::error().with_message("udp_send: data must be string"))?;
+            let is_base64 = args[2].to_boolean();
+            let address = args[3].to_string(ctx).map_err(|_| JsNativeError::error().with_message("udp_send: address must be string"))?;
+            let port = args[4].as_number().ok_or_else(|| JsNativeError::error().with_message("udp_send: port must be number"))? as u16;
+            let data_str = data_val.to_std_string_escaped();
+            let bytes: Vec<u8> = if is_base64 {
+                use base64::Engine;
+                match base64::engine::general_purpose::STANDARD.decode(data_str.as_bytes()) {
+                    Ok(b) => b,
+                    Err(_) => return Ok(JsValue::from(boa_engine::js_string!("{\"code\":1,\"value\":\"invalid base64 data\"}"))),
+                }
+            } else {
+                data_str.into_bytes()
+            };
+
+            if is_ssrf_blocked(&address.to_std_string_escaped()) {
+                return Err(JsNativeError::error().with_message(format!("SSRF blocked: {}", address.to_std_string_escaped())).into());
+            }
+
+            let addr_str = format!("{}:{}", address.to_std_string_escaped(), port);
+            let target: std::net::SocketAddr = addr_str.parse()
+                .map_err(|e| JsNativeError::error().with_message(format!("udp_send: invalid address: {e}")))?;
+
+            let result = {
+                let state = inst.udp_state.lock().map_err(|_| JsNativeError::error().with_message("udp state unavailable"))?;
+                let sock = state.sockets.get(&fd).ok_or_else(|| JsNativeError::error().with_message("udp_send: invalid fd"))?;
+                sock.send_to(&bytes, target)
+            };
+            match result {
+                Ok(n) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":0,\"value\":{}}}", n)))),
+                Err(e) => Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":1,\"value\":\"{}\"}}", e)))),
+            }
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_udp_send"),
+        send_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_udp_recv(fd, max_len) -> { code:0, value:"base64", from:"addr:port" } | { code:2 } (无数据) | { code:1 }
+    let recv_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &mut *instance_ptr };
+            authorize_operation(inst, crate::sandbox::NET_UDP, "net.udpRecv", args, ctx)?;
+            let fd = args.first().and_then(|v| v.as_number()).unwrap_or(-1.0) as u32;
+            let max_len = args.get(1).and_then(|v| v.as_number()).unwrap_or(65536.0) as usize;
+            let mut buf = vec![0u8; max_len];
+            let result = {
+                let mut state = inst.udp_state.lock().map_err(|_| JsNativeError::error().with_message("udp state unavailable"))?;
+                let sock = state.sockets.get_mut(&fd).ok_or_else(|| JsNativeError::error().with_message("udp_recv: invalid fd"))?;
+                match sock.recv_from(&mut buf) {
+                    Ok((n, from)) => {
+                        state.pending_from.insert(fd, from.to_string());
+                        Ok(Some(n))
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+                    Err(e) => Err(JsNativeError::error().with_message(format!("udp recv failed: {e}"))),
+                }
+            };
+            match result {
+                Ok(Some(n)) => {
+                    use base64::Engine;
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
+                    let from = {
+                        let state = inst.udp_state.lock().map_err(|_| JsNativeError::error().with_message("udp state unavailable"))?;
+                        state.pending_from.get(&fd).cloned().unwrap_or_default()
+                    };
+                    Ok(JsValue::from(boa_engine::js_string!(format!("{{\"code\":0,\"value\":\"{}\",\"from\":\"{}\"}}", encoded, from))))
+                }
+                Ok(None) => Ok(JsValue::from(boa_engine::js_string!("{\"code\":2}"))),
+                Err(e) => Err(e.into()),
+            }
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_udp_recv"),
+        recv_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_udp_close(fd)
+    let close_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &mut *instance_ptr };
+            let fd = args.first().and_then(|v| v.as_number()).unwrap_or(-1.0) as u32;
+            if let Ok(mut state) = inst.udp_state.lock() {
+                state.sockets.remove(&fd);
+                state.pending_from.remove(&fd);
+            }
+            Ok(JsValue::undefined())
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_udp_close"),
+        close_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    // __koss_udp_address(fd) -> "addr:port" | undefined
+    let address_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &mut *instance_ptr };
+            let fd = args.first().and_then(|v| v.as_number()).unwrap_or(-1.0) as u32;
+            let state = inst.udp_state.lock().map_err(|_| JsNativeError::error().with_message("udp state unavailable"))?;
+            match state.sockets.get(&fd) {
+                Some(sock) => match sock.local_addr() {
+                    Ok(addr) => Ok(JsValue::from(js_string!(addr.to_string()))),
+                    Err(_) => Ok(JsValue::undefined()),
+                },
+                None => Ok(JsValue::undefined()),
+            }
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_udp_address"),
+        address_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
 }
 
 /// 调用 JS 层审核回调（若已注册）。在宿主审核回调返回 `true` 之后调用，
@@ -1596,10 +2105,14 @@ fn register_net_functions(instance: &mut KossInstance) {
             let data = args[1].to_string(ctx).map_err(|_| JsNativeError::error().with_message("tcp_write: data must be string"))?;
             let data_str = data.to_std_string_escaped();
 
+            // 按 latin1 解释 JS 字符串（每个 char code 对应一个字节），
+            // 保证 >= 0x80 的二进制数据无损传输。
+            let bytes: Vec<u8> = data_str.chars().map(|c| c as u8).collect();
+
             if let Ok(mut sockets) = inst.socket_state.lock() {
                 if let Some(stream) = sockets.connections.get_mut(&fd) {
                     use std::io::Write;
-                    match stream.write(data_str.as_bytes()) {
+                    match stream.write(&bytes) {
                         Ok(n) => return Ok(JsValue::from(n as i32)),
                         Err(e) => return Err(JsNativeError::error().with_message(format!("write failed: {e}")).into()),
                     }
@@ -1631,7 +2144,8 @@ fn register_net_functions(instance: &mut KossInstance) {
                     match stream.read(&mut buf) {
                         Ok(0) => return Ok(JsValue::null()),
                         Ok(n) => {
-                            let s = String::from_utf8_lossy(&buf[..n]).to_string();
+                            // 按 latin1 编码返回，保证二进制数据无损（JS 侧按 charCode 还原字节）
+                            let s: String = buf[..n].iter().map(|&b| b as char).collect();
                             return Ok(JsValue::from(js_string!(s)));
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -1784,6 +2298,108 @@ fn register_net_functions(instance: &mut KossInstance) {
         boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
     ).ok();
     }
+
+    // __koss_dns_lookup_service(addr) -> hostname string | undefined
+    if crate::sandbox::has_cap(caps, crate::sandbox::NET_DNS) {
+    let lookup_service_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, args: &[JsValue], ctx: &mut Context| -> Result<JsValue, JsError> {
+            let inst = unsafe { &*instance_ptr };
+            authorize_operation(inst, crate::sandbox::NET_DNS, "net.dnsLookupService", args, ctx)?;
+            if args.is_empty() {
+                return Err(JsNativeError::error().with_message("dns_lookup_service: address required").into());
+            }
+            let addr = args[0].to_string(ctx).map_err(|_| JsNativeError::error().with_message("dns_lookup_service: address must be string"))?;
+            let addr_str = addr.to_std_string_escaped();
+            match reverse_dns_lookup(&addr_str) {
+                Some(host) => Ok(JsValue::from(js_string!(host))),
+                None => Ok(JsValue::null()),
+            }
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_dns_lookup_service"),
+        lookup_service_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+    }
+}
+
+/// 反向 DNS 查询：给定 IP 地址返回主机名。
+/// Unix 使用 libc getnameinfo，Windows 使用 WinSock getnameinfo。
+fn reverse_dns_lookup(addr: &str) -> Option<String> {
+    let ip: IpAddr = addr.parse().ok()?;
+    #[cfg(unix)]
+    {
+        use std::net::SocketAddr;
+        let sockaddr = SocketAddr::new(ip, 0);
+        // 借用 libc 的 getnameinfo
+        unsafe {
+            let mut host = [0i8; 256];
+            let (sa_ptr, sa_len) = match &sockaddr {
+                SocketAddr::V4(v4) => (v4 as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t),
+                SocketAddr::V6(v6) => (v6 as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t),
+            };
+            let ret = libc::getnameinfo(
+                sa_ptr,
+                sa_len,
+                host.as_mut_ptr(),
+                host.len() as libc::socklen_t,
+                std::ptr::null_mut(),
+                0,
+                libc::NI_NAMEREQD,
+            );
+            if ret == 0 {
+                let cstr = std::ffi::CStr::from_ptr(host.as_ptr());
+                let s = cstr.to_string_lossy().to_string();
+                if !s.is_empty() && s != addr {
+                    return Some(s);
+                }
+            }
+        }
+        None
+    }
+    #[cfg(windows)]
+    {
+        use std::net::SocketAddr;
+        use winapi::shared::ws2def::SOCKADDR;
+        use winapi::um::ws2tcpip::GetNameInfoW;
+        const NI_NAMEREQD: i32 = 0x04;
+        let sockaddr = SocketAddr::new(ip, 0);
+        unsafe {
+            let mut host_buf: Vec<u16> = vec![0u16; 256];
+            let sa_ptr: *const SOCKADDR = match &sockaddr {
+                SocketAddr::V4(v4) => v4 as *const _ as *const SOCKADDR,
+                SocketAddr::V6(v6) => v6 as *const _ as *const SOCKADDR,
+            };
+            let sa_len = std::mem::size_of::<SocketAddr>() as i32;
+            let ret = GetNameInfoW(
+                sa_ptr,
+                sa_len,
+                host_buf.as_mut_ptr(),
+                host_buf.len() as u32,
+                std::ptr::null_mut(),
+                0,
+                NI_NAMEREQD,
+            );
+            if ret == 0 {
+                let mut host = String::new();
+                let mut idx = 0usize;
+                while idx < host_buf.len() && host_buf[idx] != 0 {
+                    host.push(char::from_u32(host_buf[idx] as u32)?);
+                    idx += 1;
+                }
+                if !host.is_empty() && host != addr {
+                    return Some(host);
+                }
+            }
+        }
+        None
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = ip;
+        None
+    }
 }
 
 fn register_runtime_capabilities(instance: &mut KossInstance) {
@@ -1801,7 +2417,59 @@ fn register_runtime_capabilities(instance: &mut KossInstance) {
     if caps & KOSS_CAP_ALL_CRYPTO != 0 {
         register_crypto_functions(instance);
     }
+    if caps & (crate::sandbox::FS_READ | crate::sandbox::FS_WRITE) != 0 {
+        register_fd_functions(instance);
+    }
+    if caps & crate::sandbox::NET_UDP != 0 {
+        register_udp_functions(instance);
+    }
+    register_perf_functions(instance);
     register_zlib_functions_all(instance);
+}
+
+/// 注册性能相关原生函数。
+/// __koss_performance_now 提供单调递增的高精度时钟（不受系统时间调整影响）。
+fn register_perf_functions(instance: &mut KossInstance) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::OnceLock;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // 进程启动时的 UNIX 时间戳（毫秒），作为 performance.timeOrigin 基准。
+    static START_MONO: OnceLock<Instant> = OnceLock::new();
+    static START_UNIX_MS: AtomicU64 = AtomicU64::new(0);
+
+    let _ = START_MONO.set(Instant::now());
+    if START_UNIX_MS.load(Ordering::Relaxed) == 0 {
+        let unix_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        START_UNIX_MS.store(unix_ms, Ordering::Relaxed);
+    }
+
+    let now_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, _args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            let start = START_MONO.get_or_init(Instant::now);
+            let elapsed_ms = start.elapsed().as_nanos() as f64 / 1_000_000.0;
+            Ok(JsValue::from(elapsed_ms))
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_performance_now"),
+        now_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
+
+    let origin_fn = NativeFunction::from_copy_closure(
+        move |_this: &JsValue, _args: &[JsValue], _ctx: &mut Context| -> Result<JsValue, JsError> {
+            Ok(JsValue::from(START_UNIX_MS.load(Ordering::Relaxed) as f64))
+        },
+    );
+    instance.context.register_global_property(
+        js_string!("__koss_performance_timeorigin"),
+        origin_fn.to_js_function(instance.context.realm()),
+        boa_engine::property::Attribute::WRITABLE | boa_engine::property::Attribute::CONFIGURABLE,
+    ).ok();
 }
 
 fn register_crypto_functions(instance: &mut KossInstance) {
@@ -2442,55 +3110,75 @@ fn register_nodejs_globals(ctx: &mut Context) {
     };
     globalThis.getLinkedBinding = getLinkedBinding;
 
-    // Simple setTimeout/clearTimeout using nextTick
-    var _timerCounter = 0;
-    var _timers = {};
+    // Simple setTimeout/clearTimeout using microtask polling
+    globalThis.__koss_timers__ = globalThis.__koss_timers__ || { counter: 0, map: {} };
+    var _timerCounterObj = globalThis.__koss_timers__;
+    function __koss_schedule_tick(ticker) {
+        if (typeof queueMicrotask === 'function') {
+            queueMicrotask(ticker);
+        } else {
+            Promise.resolve().then(ticker);
+        }
+    }
+    globalThis.__koss_schedule_tick = __koss_schedule_tick;
     globalThis.setTimeout = function(fn, ms) {
         if (typeof fn !== 'function') return 0;
         ms = ms || 0;
-        var id = ++_timerCounter;
+        var id = ++_timerCounterObj.counter;
         var start = Date.now();
         var ticker = function() {
-            if (!_timers[id]) return;
+            if (!_timerCounterObj.map[id]) return;
             if (Date.now() - start >= ms) {
-                delete _timers[id];
+                delete _timerCounterObj.map[id];
                 try { fn(); } catch(e) {}
             } else {
-                process.nextTick(ticker);
+                __koss_schedule_tick(ticker);
             }
         };
-        _timers[id] = true;
+        _timerCounterObj.map[id] = true;
         if (ms === 0) {
-            process.nextTick(function() {
-                if (_timers[id]) { delete _timers[id]; try { fn(); } catch(e) {} }
+            __koss_schedule_tick(function() {
+                if (_timerCounterObj.map[id]) { delete _timerCounterObj.map[id]; try { fn(); } catch(e) {} }
             });
         } else {
-            process.nextTick(ticker);
+            __koss_schedule_tick(ticker);
         }
         return id;
     };
     globalThis.clearTimeout = function(id) {
-        delete _timers[id];
+        delete _timerCounterObj.map[id];
     };
     globalThis.setInterval = function(fn, ms) {
         if (typeof fn !== 'function') return 0;
         ms = ms || 0;
-        var id = ++_timerCounter;
+        var id = ++_timerCounterObj.counter;
         var next_run = Date.now() + ms;
         var ticker = function() {
-            if (!_timers[id]) return;
+            if (!_timerCounterObj.map[id]) return;
             if (Date.now() >= next_run) {
                 try { fn(); } catch(e) {}
                 next_run = Date.now() + ms;
             }
-            process.nextTick(ticker);
+            __koss_schedule_tick(ticker);
         };
-        _timers[id] = true;
-        process.nextTick(ticker);
+        _timerCounterObj.map[id] = true;
+        __koss_schedule_tick(ticker);
         return id;
     };
     globalThis.clearInterval = function(id) {
-        delete _timers[id];
+        delete _timerCounterObj.map[id];
+    };
+    globalThis.setImmediate = function(fn) {
+        if (typeof fn !== 'function') return 0;
+        var id = ++_timerCounterObj.counter;
+        _timerCounterObj.map[id] = true;
+        __koss_schedule_tick(function() {
+            if (_timerCounterObj.map[id]) { delete _timerCounterObj.map[id]; try { fn(); } catch(e) {} }
+        });
+        return id;
+    };
+    globalThis.clearImmediate = function(id) {
+        delete _timerCounterObj.map[id];
     };
     "#;
 
@@ -2537,7 +3225,7 @@ const process = {
     uptime: () => 0,
     memoryUsage: () => ({ rss: 0, heapTotal: 0, heapUsed: 0, external: 0 }),
     cpuUsage: () => ({ user: 0, system: 0 }),
-    nextTick: (fn) => setTimeout(fn, 0),
+    nextTick: (fn) => { if (typeof queueMicrotask === 'function') queueMicrotask(fn); else Promise.resolve().then(fn); },
     release: {
         name: 'node',
     },
@@ -2761,7 +3449,70 @@ fn create_instance_internal(
             eprintln!("Warning: Failed to register FFI stub: {:?}", e);
         }
     }
+    // 用完整的 koss:buffer 实现覆盖残缺的 Rust 原生 Buffer 全局。
+    // 这样用户代码与所有内部 shim 使用一致的 Buffer API（hex/base64 解码、toString 等）。
+    if effective_caps & crate::sandbox::MODULE_LOAD != 0 {
+        let buffer_override_code = r#"
+        (function() {
+            try {
+                var result = globalThis.__koss_load_module('koss:buffer');
+                if (result) {
+                    var parsed = JSON.parse(result);
+                    if (parsed.type === 'module' && typeof parsed.code === 'string') {
+                        var origModule = globalThis.module;
+                        var origExports = globalThis.exports;
+                        var origBuffer = globalThis.Buffer;
+                        globalThis.module = { exports: {} };
+                        globalThis.exports = globalThis.module.exports;
+                        globalThis.Buffer = undefined;
+                        eval(parsed.code);
+                        var kbuf = globalThis.module.exports;
+                        if (kbuf && typeof kbuf.Buffer === 'function') {
+                            globalThis.Buffer = kbuf.Buffer;
+                            if (globalThis.Blob === undefined && kbuf.Blob) globalThis.Blob = kbuf.Blob;
+                            if (typeof globalThis.atob !== 'function' && typeof kbuf.atob === 'function') globalThis.atob = kbuf.atob;
+                            if (typeof globalThis.btoa !== 'function' && typeof kbuf.btoa === 'function') globalThis.btoa = kbuf.btoa;
+                            if (typeof globalThis.TextEncoder !== 'function' && typeof kbuf.TextEncoder === 'function') globalThis.TextEncoder = kbuf.TextEncoder;
+                            if (typeof globalThis.TextDecoder !== 'function' && typeof kbuf.TextDecoder === 'function') globalThis.TextDecoder = kbuf.TextDecoder;
+                        }
+                        globalThis.module = origModule;
+                        globalThis.exports = origExports;
+                        globalThis.Buffer = (kbuf && typeof kbuf.Buffer === 'function') ? kbuf.Buffer : origBuffer;
+                    }
+                }
+            } catch (e) {
+                // 静默失败，保留 Rust 原生 Buffer
+            }
+        })();
+        "#;
+        if let Err(e) = instance.context.eval(boa_parser::Source::from_bytes(buffer_override_code.as_bytes())) {
+            eprintln!("Warning: Failed to override global Buffer: {:?}", e);
+        }
+    }
     register_runtime_capabilities(&mut instance);
+    // 加载 Web API 引导模块：将 URL/URLSearchParams/AbortController/Event/FormData/File/
+    // queueMicrotask/structuredClone/Request 等 Web 标准 API 安装到 globalThis。
+    // 必须在 register_runtime_capabilities 之后，因为其中会补齐 fetch/Headers/Response。
+    if effective_caps & crate::sandbox::MODULE_LOAD != 0 {
+        let web_api_code = r#"
+        (function() {
+            try {
+                var result = globalThis.__koss_load_module('web_api');
+                if (result) {
+                    var parsed = JSON.parse(result);
+                    if (parsed.type === 'module' && typeof parsed.code === 'string') {
+                        eval(parsed.code);
+                    }
+                }
+            } catch (e) {
+                eprintln ? eprintln('Warning: Failed to load Web API module: ' + (e && e.message)) : console.warn('Failed to load Web API module');
+            }
+        })();
+        "#;
+        if let Err(e) = instance.context.eval(boa_parser::Source::from_bytes(web_api_code.as_bytes())) {
+            eprintln!("Warning: Failed to eval Web API bootstrap: {:?}", e);
+        }
+    }
     let ptr = Box::into_raw(instance);
     register_api_instance(ptr as usize);
     ptr

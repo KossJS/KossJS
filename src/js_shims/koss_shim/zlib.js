@@ -2,7 +2,7 @@
 //
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:zlib — Koss 标准库压缩模块
 // gzip, gunzip, inflate, deflate, brotli 压缩/解压缩
@@ -314,29 +314,30 @@ var _deflateDistLengths = [
 ];
 
 function _getDeflateLenCode(len) {
+  // len 落在 [_deflateLengthBase[i], 下一个 base) 区间
   for (var i = 0; i < _deflateLengthBase.length; i++) {
-    if (_deflateLengthBase[i] === len) return 257 + i;
+    if (len < _deflateLengthBase[i]) return 256 + i;
   }
-  return 258;
+  return 285;
 }
 
 function _getDeflateLenExtra(len) {
   for (var i = 0; i < _deflateLengthBase.length; i++) {
-    if (_deflateLengthBase[i] === len) return _deflateLengthExtra[i];
+    if (len < _deflateLengthBase[i]) return _deflateLengthExtra[i];
   }
   return 0;
 }
 
 function _getDeflateDistCode(dist) {
   for (var i = 0; i < _deflateDistBase.length; i++) {
-    if (_deflateDistBase[i] === dist) return i;
+    if (dist < _deflateDistBase[i]) return i;
   }
   return 29;
 }
 
 function _getDeflateDistExtra(dist) {
   for (var i = 0; i < _deflateDistBase.length; i++) {
-    if (_deflateDistBase[i] === dist) return _deflateDistExtra[i];
+    if (dist < _deflateDistBase[i]) return _deflateDistExtra[i];
   }
   return 0;
 }
@@ -476,7 +477,23 @@ function _deflateCompress(input, level) {
   var writer = _createBitWriter();
   var windowSize = 32768;
 
+  // Fixed Huffman 编码的码字（MSB-first 规范码），通过标准构造算法生成。
+  var litInfo = _buildHuffmanCodes(_deflateLitLenLengths);
+  var distInfo = _buildHuffmanCodes(_deflateDistLengths);
+
+  function writeLitLen(sym) {
+    var bits = _deflateLitLenLengths[sym];
+    writer.writeBits(_reverseBits(litInfo.codes[sym], bits), bits);
+  }
+
+  function writeDist(sym) {
+    var bits = _deflateDistLengths[sym];
+    writer.writeBits(_reverseBits(distInfo.codes[sym], bits), bits);
+  }
+
+  // BFINAL=1, BTYPE=01 (fixed Huffman)
   writer.writeBits(1, 1);
+  writer.writeBits(1, 2);
 
   var pos = 0;
   while (pos < data.length) {
@@ -484,29 +501,28 @@ function _deflateCompress(input, level) {
 
     if (match) {
       var lenCode = _getDeflateLenCode(match.len);
+      var lenIdx = lenCode - 256;
+      var lenBase = lenIdx >= 0 ? _deflateLengthBase[lenIdx] : 0;
       var lenExtra = _getDeflateLenExtra(match.len);
-      var lenIdx = lenCode - 257;
-      writer.writeBits(_deflateLitLenLengths[lenCode], 7);
-      writer.writeBits(lenIdx, 7);
-      if (lenExtra > 0) writer.writeBits(match.len - _deflateLengthBase[lenIdx], lenExtra);
+      writeLitLen(lenCode);
+      if (lenExtra > 0) writer.writeBits(match.len - lenBase, lenExtra);
 
       var distCode = _getDeflateDistCode(match.dist);
+      var distBase = _deflateDistBase[distCode];
       var distExtra = _getDeflateDistExtra(match.dist);
-      writer.writeBits(_deflateDistLengths[distCode], 5);
-      writer.writeBits(distCode, 5);
-      if (distExtra > 0) writer.writeBits(match.dist - _deflateDistBase[distCode], distExtra);
+      writeDist(distCode);
+      if (distExtra > 0) writer.writeBits(match.dist - distBase, distExtra);
 
       pos += match.len;
     } else {
-      var litLenCode = data[pos];
-      writer.writeBits(_deflateLitLenLengths[litLenCode], 7);
-      writer.writeBits(litLenCode, litLenCode < 144 ? 7 : 8);
+      var lit = data[pos];
+      writeLitLen(lit);
       pos++;
     }
   }
 
-  writer.writeBits(_deflateLitLenLengths[256], 7);
-  writer.writeBits(256, 7);
+  // 结束符号 256
+  writeLitLen(256);
   writer.flush();
 
   return writer.toBytes();

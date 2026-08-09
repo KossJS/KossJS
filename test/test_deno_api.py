@@ -316,18 +316,30 @@ class TestDenoNetwork:
         assert result == "function"
         koss.destroy()
 
-    def test_serve_throws_ssrf_in_sandbox(self):
+    def test_serve_creates_server_with_capability(self):
         koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
         result = koss.eval("""
             var Deno = require('koss:deno');
+            var server = Deno.serve(function(req) { return new Response('ok'); }, { port: 19880 });
+            server && typeof server.close === 'function' && server.port > 0;
+        """)
+        assert str(result).strip() == "true"
+        koss.destroy()
+
+    def test_serve_handler_wired(self):
+        koss = KossJS(capabilities=KossJS.KOSS_CAP_ALL, builtins=KossJS.KOSS_BUILTIN_DENO+KossJS.KOSS_BUILTIN_KOSS)
+        # serve 现在会接线 handler 到 koss:http，不应抛错
+        result = koss.eval("""
+            var Deno = require('koss:deno');
             try {
-                Deno.serve(function() {}, { port: 19880 });
+                var server = Deno.serve(function(req) { return 'ok'; }, { port: 19881 });
+                server.close();
                 'no error';
             } catch(e) {
                 'error';
             }
         """)
-        assert result == "error"
+        assert result == "no error"
         koss.destroy()
 
 

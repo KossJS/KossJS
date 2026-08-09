@@ -2,7 +2,7 @@
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:io — Koss 原生统一 I/O 模块
 // 文件操作 + 网络操作，全部同步 API
@@ -13,7 +13,7 @@ var streamModule = require('koss:internal/stream');
 var dataModule = require('koss:data');
 
 var decode = dataModule.decode;
-var Buffer = globalThis.Buffer;
+var Buffer = globalThis.Buffer || require('koss:buffer').Buffer;
 
 // ═══════════════════════════════════════════
 // 文件操作
@@ -69,13 +69,19 @@ function mkdir(path, options) {
   return internalFs.mkdirSync(path, options);
 }
 
+function _joinPath(base, name) {
+  if (!base) return name;
+  if (base.charAt(base.length - 1) === '/' || base.charAt(base.length - 1) === '\\') return base + name;
+  return base + '/' + name;
+}
+
 function rm(path, options) {
   if (options && options.recursive) {
     try {
       var entries = internalFs.readdirSync(path);
       if (Array.isArray(entries)) {
         for (var i = 0; i < entries.length; i++) {
-          rm(path + '/' + entries[i], { recursive: true });
+          rm(_joinPath(path, entries[i]), { recursive: true });
         }
       }
     } catch(e) {}
@@ -103,6 +109,16 @@ function exists(path) {
 }
 
 function append(path, data) {
+  if (typeof globalThis.__koss_fs_append === 'function') {
+    if (typeof data === 'string') {
+      globalThis.__koss_fs_append(String(path), data, false);
+      return;
+    }
+    var u8 = data instanceof Uint8Array ? data : (data && data._data instanceof Uint8Array ? data._data : new Uint8Array(0));
+    var b64 = dataModule.toBase64 ? dataModule.toBase64(u8) : _b64c(u8);
+    globalThis.__koss_fs_append(String(path), b64, true);
+    return;
+  }
   var existing = read(path);
   var newData;
   if (typeof data === 'string') {
@@ -119,6 +135,25 @@ function append(path, data) {
   combined.set(existing, 0);
   combined.set(newData, existing.length);
   write(path, combined);
+}
+
+function _b64c(bytes) {
+  var out = '';
+  var i = 0;
+  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  for (; i + 2 < bytes.length; i += 3) {
+    var n = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
+    out += chars[(n >> 18) & 63] + chars[(n >> 12) & 63] + chars[(n >> 6) & 63] + chars[n & 63];
+  }
+  var rem = bytes.length - i;
+  if (rem === 1) {
+    var m = bytes[i] << 16;
+    out += chars[(m >> 18) & 63] + chars[(m >> 12) & 63] + '==';
+  } else if (rem === 2) {
+    var k = (bytes[i] << 16) | (bytes[i + 1] << 8);
+    out += chars[(k >> 18) & 63] + chars[(k >> 12) & 63] + chars[(k >> 6) & 63] + '=';
+  }
+  return out;
 }
 
 function chmod(path, mode) {
@@ -201,6 +236,31 @@ function serve(options, handler) {
   var opts = options || {};
   var hostname = opts.hostname || '0.0.0.0';
   var port = opts.port || 3000;
+  // 如果提供了 handler，接线到 koss:http 的完整 HTTP 服务器
+  if (typeof handler === 'function') {
+    var httpMod = require('koss:http');
+    var server = httpMod.createServer(function(req, res) {
+      try {
+        var result = handler(req);
+        if (result && typeof result.then === 'function') {
+          result.then(function(val) { _sendHandlerResponse(res, val); }, function(err) {
+            res.writeHead(500); res.end(String(err && err.message || err));
+          });
+        } else {
+          _sendHandlerResponse(res, result);
+        }
+      } catch (err) {
+        res.writeHead(500); res.end(String(err && err.message || err));
+      }
+    });
+    server.listen(port, hostname);
+    return {
+      port: Number(port),
+      hostname: String(hostname),
+      accept: function() { return null; },
+      close: function() { server.close(); },
+    };
+  }
   var server = internalNet.tcpListen(hostname, Number(port));
   return {
     port: Number(port),
@@ -208,6 +268,20 @@ function serve(options, handler) {
     accept: function() { return server.accept(); },
     close: function() { server.close(); },
   };
+}
+
+function _sendHandlerResponse(res, val) {
+  if (val instanceof Response) {
+    res.writeHead(val.status || 200, val.headers);
+    var body = val._body !== undefined ? String(val._body) : '';
+    res.end(body);
+  } else if (val !== undefined && val !== null && typeof val === 'object') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(val));
+  } else {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end(val === undefined || val === null ? '' : String(val));
+  }
 }
 
 function fetch(url, options) {

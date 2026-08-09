@@ -2,7 +2,7 @@
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 /// Builtin Flags — control which compatibility layers are visible to user code.
 /// Independent from Capability bits (sandbox).
@@ -345,6 +345,30 @@ pub static BUILTIN_MODULES: &[BuiltinModule] = &[
         flag: KOSS_BUILTIN_NONE,
         source_path: "internal/stream.js",
         is_internal: true,
+    },
+    BuiltinModule {
+        name: "node/timers/promises",
+        flag: KOSS_BUILTIN_NODE,
+        source_path: "node_shim/timers_promises.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "node/stream/promises",
+        flag: KOSS_BUILTIN_NODE,
+        source_path: "node_shim/stream_promises.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "node/stream/consumers",
+        flag: KOSS_BUILTIN_NODE,
+        source_path: "node_shim/stream_consumers.js",
+        is_internal: false,
+    },
+    BuiltinModule {
+        name: "node/console",
+        flag: KOSS_BUILTIN_NODE,
+        source_path: "node_shim/console.js",
+        is_internal: false,
     },
 ];
 

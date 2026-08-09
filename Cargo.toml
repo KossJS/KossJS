@@ -47,7 +47,7 @@ libffi = "5.1.1"
 libffi-sys = "4.2.0"
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["winuser", "processthreadsapi"] }
+winapi = { version = "0.3", features = ["winuser", "processthreadsapi", "winsock2", "ws2tcpip"] }
 
 [target.'cfg(all(unix, not(any(target_os = "android", target_os = "ios", target_os = "ohos"))))'.dependencies]
 libc = "0.2.189"

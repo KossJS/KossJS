@@ -2,7 +2,7 @@
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:events — Koss 原生事件发射器标准库
 // 完整 EventEmitter 实现，支持所有标准方法与异步迭代

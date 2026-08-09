@@ -2,7 +2,7 @@
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:buffer — Koss 标准库 Buffer 模块
 // Node.js Buffer 兼容实现，纯 JS，无外部依赖
@@ -90,7 +90,36 @@ Blob.prototype.text = function() {
 };
 
 Blob.prototype.stream = function() {
-  throw new Error('Blob.stream is not supported in this environment');
+  var self = this;
+  var chunks = [];
+  for (var i = 0; i < this._parts.length; i++) chunks.push(this._parts[i]);
+  var idx = 0;
+  var Readable;
+  try { Readable = require('koss:stream').Readable; } catch (e) { Readable = null; }
+  if (Readable) {
+    var stream = new Readable({
+      read: function() {
+        if (idx >= chunks.length) { this.push(null); return; }
+        this.push(chunks[idx++]);
+      },
+    });
+    return stream;
+  }
+  // 降级：返回一个带 ReadableStream 形状的简单对象
+  var reader = {
+    read: function() {
+      return Promise.resolve({
+        done: idx >= chunks.length,
+        value: idx < chunks.length ? chunks[idx++].slice() : undefined,
+      });
+    },
+  };
+  return {
+    getReader: function() { return reader; },
+    [Symbol.asyncIterator]: async function*() {
+      for (var j = 0; j < chunks.length; j++) yield chunks[j];
+    },
+  };
 };
 
 Object.defineProperty(Blob.prototype, 'type', {
@@ -107,9 +136,9 @@ function NodeBuffer(value, encodingOrOffset, length) {
     var bytes = _encodeString(value, enc);
     this._data = bytes;
     this._length = bytes.length;
-  } else if (value instanceof Uint8Array || value instanceof ArrayBuffer || value instanceof NodeBuffer) {
+  } else if (value instanceof Uint8Array || value instanceof ArrayBuffer || _isBuf(value)) {
     var src;
-    if (value instanceof NodeBuffer) {
+    if (_isBuf(value)) {
       src = value._data;
     } else if (value instanceof ArrayBuffer) {
       src = new Uint8Array(value);
@@ -152,6 +181,10 @@ function _defineIndexAccess(buf) {
 
 NodeBuffer.prototype._isBuffer = true;
 
+function _isBuf(x) {
+  return !!(x && x._isBuffer);
+}
+
 Object.defineProperty(NodeBuffer.prototype, 'length', {
   get: function() { return this._length; }
 });
@@ -179,7 +212,7 @@ NodeBuffer.isEncoding = function(encoding) {
 
 NodeBuffer.byteLength = function(str, encoding) {
   if (typeof str === 'number') return str;
-  if (str instanceof NodeBuffer) return str._length;
+  if (str instanceof NodeBuffer || _isBuf(str)) return str._length;
   if (str instanceof Uint8Array) return str.length;
   var enc = encoding || 'utf8';
   if (enc === 'base64') {
@@ -198,7 +231,7 @@ NodeBuffer.concat = function(list, totalLength) {
     totalLength = 0;
     for (var i = 0; i < list.length; i++) {
       var item = list[i];
-      if (item instanceof NodeBuffer) totalLength += item._length;
+      if (_isBuf(item)) totalLength += item._length;
       else if (item instanceof Uint8Array) totalLength += item.length;
       else totalLength += String(item).length;
     }
@@ -208,7 +241,7 @@ NodeBuffer.concat = function(list, totalLength) {
   for (var j = 0; j < list.length; j++) {
     var item2 = list[j];
     var bytes;
-    if (item2 instanceof NodeBuffer) {
+    if (_isBuf(item2)) {
       bytes = item2._data;
     } else if (item2 instanceof Uint8Array) {
       bytes = item2;
@@ -229,7 +262,7 @@ NodeBuffer.from = function(value, encodingOrOffset, length) {
   if (typeof value === 'string') {
     return new NodeBuffer(value, encodingOrOffset, length);
   }
-  if (value instanceof NodeBuffer) {
+  if (_isBuf(value)) {
     return new NodeBuffer(value, encodingOrOffset, length);
   }
   if (value instanceof Uint8Array || value instanceof ArrayBuffer) {
@@ -272,8 +305,8 @@ NodeBuffer.allocUnsafeSlow = function(size) {
 };
 
 NodeBuffer.compare = function(a, b) {
-  var bytesA = a instanceof NodeBuffer ? a._data : (a instanceof Uint8Array ? a : new Uint8Array(0));
-  var bytesB = b instanceof NodeBuffer ? b._data : (b instanceof Uint8Array ? b : new Uint8Array(0));
+  var bytesA = _isBuf(a) ? a._data : (a instanceof Uint8Array ? a : new Uint8Array(0));
+  var bytesB = _isBuf(b) ? b._data : (b instanceof Uint8Array ? b : new Uint8Array(0));
   var minLen = Math.min(bytesA.length, bytesB.length);
   for (var i = 0; i < minLen; i++) {
     if (bytesA[i] < bytesB[i]) return -1;
@@ -285,12 +318,12 @@ NodeBuffer.compare = function(a, b) {
 };
 
 NodeBuffer.prototype.compare = function(other, start, end, thisStart, thisEnd) {
-  var otherBuf = other instanceof NodeBuffer ? other._data :
+  var otherBuf = _isBuf(other) ? other._data :
                  (other instanceof Uint8Array ? other : new Uint8Array(0));
   var oStart = start || 0;
   var oEnd = end !== undefined ? end : otherBuf.length;
   var tStart = thisStart || 0;
-  var tEnd = thisEnd !== undefined ? tEnd : this._length;
+  var tEnd = thisEnd !== undefined ? thisEnd : this._length;
   var oLen = oEnd - oStart;
   var tLen = tEnd - tStart;
   var minLen = Math.min(oLen, tLen);
@@ -365,7 +398,7 @@ NodeBuffer.prototype.slice = function(start, end) {
 NodeBuffer.prototype.subarray = NodeBuffer.prototype.slice;
 
 NodeBuffer.prototype.copy = function(target, targetStart, sourceStart, sourceEnd) {
-  var targetBuf = target instanceof NodeBuffer ? target :
+  var targetBuf = _isBuf(target) ? target :
                   (target instanceof Uint8Array ? new NodeBuffer(target) : target);
   var tStart = targetStart || 0;
   var sStart = sourceStart || 0;
@@ -395,8 +428,8 @@ NodeBuffer.prototype.fill = function(value, start, end, encoding) {
     for (var i2 = s; i2 < e; i2++) {
       this._data[i2] = value & 0xff;
     }
-  } else if (value instanceof Uint8Array || value instanceof NodeBuffer) {
-    var src = value instanceof NodeBuffer ? value._data : value;
+  } else if (value instanceof Uint8Array || _isBuf(value)) {
+    var src = _isBuf(value) ? value._data : value;
     for (var i3 = s; i3 < e; i3++) {
       this._data[i3] = src[(i3 - s) % src.length];
     }
@@ -636,6 +669,97 @@ NodeBuffer.prototype.readDoubleBE = function(offset, noAssert) {
   return view.getFloat64(off, false);
 };
 
+// ─── BigInt read/write ───
+
+function _readBigUInt64LE(data, off) {
+  var lo = ((data[off + 3] * 0x1000000) + ((data[off + 2] << 16) | (data[off + 1] << 8) | data[off])) >>> 0;
+  var hi = ((data[off + 7] * 0x1000000) + ((data[off + 6] << 16) | (data[off + 5] << 8) | data[off + 4])) >>> 0;
+  return (BigInt(hi) << 32n) | BigInt(lo);
+}
+
+function _readBigUInt64BE(data, off) {
+  var hi = (data[off] * 0x1000000) + ((data[off + 1] << 16) | (data[off + 2] << 8) | data[off + 3]);
+  var lo = (data[off + 4] * 0x1000000) + ((data[off + 5] << 16) | (data[off + 6] << 8) | data[off + 7]);
+  return (BigInt(hi) << 32n) | BigInt(lo);
+}
+
+function _readBigInt64LE(data, off) {
+  var u = _readBigUInt64LE(data, off);
+  return (u & (1n << 63n)) !== 0n ? u - (1n << 64n) : u;
+}
+
+function _readBigInt64BE(data, off) {
+  var u = _readBigUInt64BE(data, off);
+  return (u & (1n << 63n)) !== 0n ? u - (1n << 64n) : u;
+}
+
+function _writeBigUInt64LE(value, data, off) {
+  var u = BigInt(value) & ((1n << 64n) - 1n);
+  for (var i = 0; i < 8; i++) {
+    data[off + i] = Number((u >> BigInt(i * 8)) & 0xffn);
+  }
+  return off + 8;
+}
+
+function _writeBigUInt64BE(value, data, off) {
+  var u = BigInt(value) & ((1n << 64n) - 1n);
+  for (var i = 0; i < 8; i++) {
+    data[off + 7 - i] = Number((u >> BigInt(i * 8)) & 0xffn);
+  }
+  return off + 8;
+}
+
+function _writeBigInt64LE(value, data, off) {
+  var v = BigInt(value);
+  return _writeBigUInt64LE(v < 0n ? v + (1n << 64n) : v, data, off);
+}
+
+function _writeBigInt64BE(value, data, off) {
+  var v = BigInt(value);
+  return _writeBigUInt64BE(v < 0n ? v + (1n << 64n) : v, data, off);
+}
+
+NodeBuffer.prototype.readBigUInt64LE = function(offset, noAssert) {
+  var off = offset || 0;
+  if (!noAssert && (off < 0 || off + 7 >= this._length)) throw new RangeError('Index out of range');
+  return _readBigUInt64LE(this._data, off);
+};
+NodeBuffer.prototype.readBigUInt64BE = function(offset, noAssert) {
+  var off = offset || 0;
+  if (!noAssert && (off < 0 || off + 7 >= this._length)) throw new RangeError('Index out of range');
+  return _readBigUInt64BE(this._data, off);
+};
+NodeBuffer.prototype.readBigInt64LE = function(offset, noAssert) {
+  var off = offset || 0;
+  if (!noAssert && (off < 0 || off + 7 >= this._length)) throw new RangeError('Index out of range');
+  return _readBigInt64LE(this._data, off);
+};
+NodeBuffer.prototype.readBigInt64BE = function(offset, noAssert) {
+  var off = offset || 0;
+  if (!noAssert && (off < 0 || off + 7 >= this._length)) throw new RangeError('Index out of range');
+  return _readBigInt64BE(this._data, off);
+};
+NodeBuffer.prototype.writeBigUInt64LE = function(value, offset, noAssert) {
+  var off = offset || 0;
+  if (!noAssert && (off < 0 || off + 7 >= this._length)) throw new RangeError('Index out of range');
+  return _writeBigUInt64LE(value, this._data, off);
+};
+NodeBuffer.prototype.writeBigUInt64BE = function(value, offset, noAssert) {
+  var off = offset || 0;
+  if (!noAssert && (off < 0 || off + 7 >= this._length)) throw new RangeError('Index out of range');
+  return _writeBigUInt64BE(value, this._data, off);
+};
+NodeBuffer.prototype.writeBigInt64LE = function(value, offset, noAssert) {
+  var off = offset || 0;
+  if (!noAssert && (off < 0 || off + 7 >= this._length)) throw new RangeError('Index out of range');
+  return _writeBigInt64LE(value, this._data, off);
+};
+NodeBuffer.prototype.writeBigInt64BE = function(value, offset, noAssert) {
+  var off = offset || 0;
+  if (!noAssert && (off < 0 || off + 7 >= this._length)) throw new RangeError('Index out of range');
+  return _writeBigInt64BE(value, this._data, off);
+};
+
 NodeBuffer.prototype.indexOf = function(value, byteOffset, encoding) {
   var off = byteOffset || 0;
   if (off < 0) off = Math.max(0, this._length + off);
@@ -644,7 +768,7 @@ NodeBuffer.prototype.indexOf = function(value, byteOffset, encoding) {
     var searchBytes = _encodeString(value, enc);
     return _indexOfBytes(this._data, searchBytes, off);
   }
-  if (value instanceof NodeBuffer) return _indexOfBytes(this._data, value._data, off);
+  if (_isBuf(value)) return _indexOfBytes(this._data, value._data, off);
   if (value instanceof Uint8Array) return _indexOfBytes(this._data, value, off);
   if (typeof value === 'number') return _indexOfByte(this._data, value, off);
   return -1;
@@ -659,7 +783,7 @@ NodeBuffer.prototype.lastIndexOf = function(value, byteOffset, encoding) {
     var searchBytes = _encodeString(value, enc);
     return _lastIndexOfBytes(this._data, searchBytes, off);
   }
-  if (value instanceof NodeBuffer) return _lastIndexOfBytes(this._data, value._data, off);
+  if (_isBuf(value)) return _lastIndexOfBytes(this._data, value._data, off);
   if (value instanceof Uint8Array) return _lastIndexOfBytes(this._data, value, off);
   if (typeof value === 'number') return _lastIndexOfByte(this._data, value, off);
   return -1;
@@ -671,7 +795,7 @@ NodeBuffer.prototype.includes = function(value, byteOffset, encoding) {
 
 NodeBuffer.prototype.equals = function(other) {
   if (!other) return false;
-  var otherData = other instanceof NodeBuffer ? other._data :
+  var otherData = _isBuf(other) ? other._data :
                   (other instanceof Uint8Array ? other : null);
   if (!otherData) return false;
   if (this._length !== otherData.length) return false;
@@ -683,7 +807,7 @@ NodeBuffer.prototype.equals = function(other) {
 
 NodeBuffer.prototype.set = function(array, offset) {
   var off = offset || 0;
-  var src = array instanceof NodeBuffer ? array._data :
+  var src = _isBuf(array) ? array._data :
             (array instanceof Uint8Array ? array : new Uint8Array(0));
   var len = Math.min(src.length, this._length - off);
   this._data.set(src.subarray(0, len), off);
@@ -1024,7 +1148,7 @@ function TextDecoderShim(label, options) {
 
 TextDecoderShim.prototype.decode = function(input) {
   var bytes;
-  if (input instanceof NodeBuffer) {
+  if (_isBuf(input)) {
     bytes = input._data;
   } else if (input instanceof Uint8Array) {
     bytes = input;
@@ -1075,6 +1199,13 @@ function _btoa(str) {
 }
 
 // ─── Module Exports ───
+// 让全局 Buffer 指向完整实现（NodeBuffer），替换残缺的 Rust 原生 Buffer。
+// 这样用户代码与所有内部 shim 使用一致的 Buffer API。
+if (typeof globalThis !== 'undefined') {
+  globalThis.Buffer = NodeBuffer;
+  if (globalThis.Blob === undefined) globalThis.Blob = Blob;
+}
+
 module.exports = {
   Buffer: NodeBuffer,
   Blob: Blob,

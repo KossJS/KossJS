@@ -2,7 +2,7 @@
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:process — Koss 标准库进程模块
 // 进程信息、环境变量、事件发射、内存/CPU使用等
@@ -42,82 +42,47 @@ function _kill(pid, signal) {
   throw new Error('process.kill not available');
 }
 
-// ─── EventEmitter ───
-var _events = {};
-var _maxListeners = 16;
+// ─── EventEmitter（复用 koss:events）───
+var EventEmitter = require('koss:events');
+var _ee = new EventEmitter();
+_ee.setMaxListeners(16);
 
 function _addListener(event, listener, prepend) {
   if (typeof listener !== 'function') throw new TypeError('listener must be a function');
-  if (_events[event] === undefined) {
-    _events[event] = listener;
-  } else if (Array.isArray(_events[event])) {
-    if (prepend) { _events[event].unshift(listener); } else { _events[event].push(listener); }
+  if (prepend) {
+    _ee.prependListener(event, listener);
   } else {
-    _events[event] = prepend
-      ? [listener, _events[event]]
-      : [_events[event], listener];
-  }
-  if (_maxListeners > 0 && _listenerCount(event) > _maxListeners) {
-    console.warn('MaxListenersExceededWarning: Possible EventEmitter memory leak detected. '
-      + _listenerCount(event) + ' ' + String(event) + ' listeners added.');
+    _ee.on(event, listener);
   }
   return kossProcess;
 }
 
 function _removeListener(event, listener) {
-  if (typeof listener !== 'function') return kossProcess;
-  var list = _events[event];
-  if (list === undefined) return kossProcess;
-  if (Array.isArray(list)) {
-    var index = list.indexOf(listener);
-    if (index !== -1) {
-      list.splice(index, 1);
-      if (list.length === 1) _events[event] = list[0];
-    }
-  } else if (list === listener) {
-    delete _events[event];
-  }
+  _ee.removeListener(event, listener);
   return kossProcess;
 }
 
 function _emit(event) {
-  var list = _events[event];
-  if (list === undefined) return false;
-  var args = Array.prototype.slice.call(arguments, 1);
-  if (Array.isArray(list)) {
-    var handlers = list.slice();
-    for (var i = 0; i < handlers.length; i++) handlers[i].apply(kossProcess, args);
-  } else {
-    list.apply(kossProcess, args);
-  }
-  return true;
+  return _ee.emit.apply(_ee, arguments);
 }
 
 function _listenerCount(event) {
-  var list = _events[event];
-  if (list === undefined) return 0;
-  if (Array.isArray(list)) return list.length;
-  return 1;
+  return _ee.listenerCount(event);
 }
 
-function _eventNames() { return Object.keys(_events); }
+function _eventNames() { return _ee.eventNames(); }
 
 function _setMaxListeners(n) {
   if (typeof n !== 'number' || n < 0) throw new RangeError('n must be a non-negative number');
-  _maxListeners = n;
+  _ee.setMaxListeners(n);
   return kossProcess;
 }
 
-function _getMaxListeners() { return _maxListeners; }
+function _getMaxListeners() { return _ee.getMaxListeners(); }
 
 function _once(event, listener) {
   if (typeof listener !== 'function') throw new TypeError('listener must be a function');
-  function g() {
-    _removeListener(event, g);
-    listener.apply(this, arguments);
-  }
-  g.listener = listener;
-  _addListener(event, g, false);
+  _ee.once(event, listener);
   return kossProcess;
 }
 
@@ -127,25 +92,17 @@ function _prependListener(event, listener) {
 
 function _prependOnceListener(event, listener) {
   if (typeof listener !== 'function') throw new TypeError('listener must be a function');
-  function g() {
-    _removeListener(event, g);
-    listener.apply(this, arguments);
-  }
-  g.listener = listener;
-  return _addListener(event, g, true);
+  _ee.prependOnceListener(event, listener);
+  return kossProcess;
 }
 
 function _removeAllListeners(event) {
-  if (event === undefined) { _events = {}; return kossProcess; }
-  delete _events[event];
+  _ee.removeAllListeners(event);
   return kossProcess;
 }
 
 function _listeners(event) {
-  var list = _events[event];
-  if (list === undefined) return [];
-  if (Array.isArray(list)) return list.slice();
-  return [list];
+  return _ee.listeners(event);
 }
 
 // ─── Stream stubs ───

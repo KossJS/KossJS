@@ -2,9 +2,14 @@
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/perf_hooks - Node.js perf_hooks module (L3)
+// performance.now() 使用单调时钟（__koss_performance_now），
+// 不受系统时间调整影响；createHistogram/monitorEventLoopDelay 返回真实直方图。
+
+const _nowFn = (typeof globalThis.__koss_performance_now === 'function') ? globalThis.__koss_performance_now : function() { return Date.now(); };
+const _timeOrigin = (typeof globalThis.__koss_performance_timeorigin === 'function') ? Number(globalThis.__koss_performance_timeorigin()) : Date.now();
 
 const marks = {};
 const measures = {};
@@ -21,8 +26,9 @@ class PerformanceEntry {
 
 const performance = {
   now() {
-    return Date.now();
+    return _nowFn();
   },
+  timeOrigin: _timeOrigin,
   mark(name) {
     marks[name] = performance.now();
     return new PerformanceEntry(name, 'mark', marks[name], 0);
@@ -77,30 +83,124 @@ const performance = {
     moduleLoadEnd: 0,
     moduleLoadStart: 0,
   },
-  timeOrigin: Date.now(),
   timing: {
     startTime: 0,
   },
 };
 
 class PerformanceObserver {
-  constructor(callback) { this._callback = callback; }
-  observe(options) { return this; }
-  disconnect() {}
-  takeRecords() { return []; }
+  constructor(callback) { this._callback = callback; this._buffered = []; this._active = false; }
+  observe(options) {
+    if (options && options.entryTypes && this._callback) {
+      this._active = true;
+      // 简化的同步投递：新产生的 entries 会通过 flush 机制回调
+    }
+    return this;
+  }
+  disconnect() { this._active = false; }
+  takeRecords() { const r = this._buffered.slice(); this._buffered = []; return r; }
+  flush() { if (this._active && this._callback && this._buffered.length > 0) { this._callback(this._buffered.slice(), this); this._buffered = []; } }
+}
+
+// ─── 真实直方图（对数分桶，类似 Node 的 Histogram） ───
+
+class Histogram {
+  constructor() {
+    this._count = 0;
+    this._sum = 0;
+    this._min = Infinity;
+    this._max = -Infinity;
+    this._buckets = new Map();
+    this._exceeds = 0;
+  }
+  _bucket(v) {
+    if (v <= 0) return 0;
+    return Math.floor(Math.log2(v)) + 1;
+  }
+  record(v) {
+    const n = Number(v);
+    if (isNaN(n)) return;
+    this._count++;
+    this._sum += n;
+    if (n < this._min) this._min = n;
+    if (n > this._max) this._max = n;
+    const b = this._bucket(n);
+    this._buckets.set(b, (this._buckets.get(b) || 0) + 1);
+    if (n > 2147483647) this._exceeds++;
+  }
+  reset() {
+    this._count = 0;
+    this._sum = 0;
+    this._min = Infinity;
+    this._max = -Infinity;
+    this._buckets.clear();
+    this._exceeds = 0;
+  }
+  get min() { return this._count === 0 ? 0 : this._min; }
+  get max() { return this._count === 0 ? 0 : this._max; }
+  get mean() { return this._count === 0 ? 0 : this._sum / this._count; }
+  get exceeds() { return this._exceeds; }
+  get stddev() {
+    if (this._count === 0) return 0;
+    const mean = this.mean;
+    let sumSq = 0;
+    for (const [bucket, count] of this._buckets) {
+      const low = Math.pow(2, bucket - 1);
+      const high = Math.pow(2, bucket);
+      const mid = (low + high) / 2;
+      sumSq += count * Math.pow(mid - mean, 2);
+    }
+    return Math.sqrt(sumSq / this._count);
+  }
+  percentile(p) {
+    const pct = Number(p);
+    if (isNaN(pct) || pct < 0 || pct > 100) throw new RangeError('percentile must be between 0 and 100');
+    if (this._count === 0) return 0;
+    const target = Math.ceil(this._count * pct / 100);
+    let cumulative = 0;
+    const sortedBuckets = Array.from(this._buckets.entries()).sort((a, b) => a[0] - b[0]);
+    for (const [bucket, count] of sortedBuckets) {
+      cumulative += count;
+      if (cumulative >= target) {
+        const low = Math.pow(2, bucket - 1);
+        const high = Math.pow(2, bucket);
+        return Math.round((low + high) / 2);
+      }
+    }
+    return this._max;
+  }
+  percentiles() {
+    const m = new Map();
+    for (let p = 1; p <= 100; p += 1) m.set(p, this.percentile(p));
+    return m;
+  }
 }
 
 function createHistogram() {
-  return { min: 0, max: 0, mean: 0, exceeds: 0, stddev: 0, percentiles: new Map(), percentile: (p) => 0, reset: () => {}, record: (v) => {} };
+  return new Histogram();
 }
 
 function monitorEventLoopDelay(options) {
-  return createHistogram();
+  const hist = new Histogram();
+  // 基于 performance.now() 的间隔采样
+  if (typeof setInterval === 'function') {
+    let last = _nowFn();
+    hist._timer = setInterval(function() {
+      const now = _nowFn();
+      hist.record(now - last);
+      last = now;
+    }, (options && options.resolution) || 10);
+  }
+  hist.reset = function() {
+    Histogram.prototype.reset.call(this);
+    if (this._timer) clearInterval(this._timer);
+  };
+  return hist;
 }
 
 function timerify(fn) {
   return function(...args) {
-    const start = performance.now();
+    const start = _nowFn();
     const result = fn.apply(this, args);
     return result;
   };

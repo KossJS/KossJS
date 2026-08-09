@@ -2,7 +2,7 @@
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:url — Koss 原生 URL 处理模块
 // URL 解析、格式化、路径转换、查询参数处理
@@ -88,15 +88,28 @@ _URLSearchParams.prototype.set = function(key, value) {
 };
 
 _URLSearchParams.prototype.keys = function() {
-  return this._pairs.map(function(p) { return p[0]; });
+  var self = this;
+  return (function*() {
+    for (var i = 0; i < self._pairs.length; i++) yield self._pairs[i][0];
+  })();
 };
 
 _URLSearchParams.prototype.values = function() {
-  return this._pairs.map(function(p) { return p[1]; });
+  var self = this;
+  return (function*() {
+    for (var i = 0; i < self._pairs.length; i++) yield self._pairs[i][1];
+  })();
 };
 
 _URLSearchParams.prototype.entries = function() {
-  return this._pairs.slice();
+  var self = this;
+  return (function*() {
+    for (var i = 0; i < self._pairs.length; i++) yield [self._pairs[i][0], self._pairs[i][1]];
+  })();
+};
+
+_URLSearchParams.prototype[Symbol.iterator] = function() {
+  return this.entries();
 };
 
 _URLSearchParams.prototype.forEach = function(callback, thisArg) {

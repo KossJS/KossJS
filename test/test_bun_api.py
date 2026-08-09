@@ -210,11 +210,14 @@ class TestBunUtils:
         assert str(result) == "h"
 
     def test_which_returns_cmd(self):
+        # which 现在会查找 PATH 中存在的命令；node 通常存在于 CI/本地 PATH。
+        # 若 node 不可用则返回 null。断言行为：找到时返回非空路径，找不到返回 null。
         result = self.koss.eval("""
             var Bun = require('koss:bun');
-            Bun.which('node');
+            var p = Bun.which('node');
+            p === null || (typeof p === 'string' && p.length > 0);
         """)
-        assert str(result) == "node"
+        assert str(result) == "true" or result is True
 
     def test_which_null(self):
         result = self.koss.eval("""

@@ -4,7 +4,7 @@
 // with the TT23XR Studio Additional Permission:
 // "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
-// koss:node/assert - Node.js assert module (L3)
-// Maps to koss:assert standard library
+// koss:node/console - Node.js console module (L3)
+// 返回全局 console（Node 中 console 既是全局对象也是模块）
 
-module.exports = require('koss:assert');
+module.exports = globalThis.console;

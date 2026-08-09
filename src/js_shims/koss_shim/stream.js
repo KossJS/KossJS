@@ -2,156 +2,16 @@
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:stream — Koss 标准库 Stream 模块
 // Node.js Stream API 兼容实现，纯 JS，无外部依赖
 
-var Buffer = globalThis.Buffer;
+var Buffer = globalThis.Buffer || require('koss:buffer').Buffer;
+var EventEmitter = require('koss:events');
 
 var kDefaultHighWaterMark = 16384;
 var kMaxListeners = 16;
-
-// ═══════════════════════════════════════════
-// 内置 EventEmitter（自包含，无外部依赖）
-// ═══════════════════════════════════════════
-
-function EventEmitter() {
-  this._events = {};
-  this._maxListeners = kMaxListeners;
-}
-
-EventEmitter.defaultMaxListeners = kMaxListeners;
-
-EventEmitter.prototype._addListener = function(event, listener, prepend) {
-  if (typeof listener !== 'function') {
-    throw new TypeError('listener must be a function');
-  }
-  if (this._events[event] === undefined) {
-    this._events[event] = listener;
-  } else if (Array.isArray(this._events[event])) {
-    if (prepend) {
-      this._events[event].unshift(listener);
-    } else {
-      this._events[event].push(listener);
-    }
-  } else {
-    this._events[event] = prepend
-      ? [listener, this._events[event]]
-      : [this._events[event], listener];
-  }
-
-  var maxListeners = this._maxListeners;
-  if (maxListeners > 0 && this.listenerCount(event) > maxListeners) {
-    console.warn('MaxListenersExceededWarning: Possible EventEmitter memory leak detected. ' +
-      this.listenerCount(event) + ' ' + String(event) + ' listeners added.');
-  }
-
-  return this;
-};
-
-EventEmitter.prototype.on = function(event, listener) {
-  return this._addListener(event, listener, false);
-};
-
-EventEmitter.prototype.addListener = function(event, listener) {
-  return this._addListener(event, listener, false);
-};
-
-EventEmitter.prototype.once = function(event, listener) {
-  if (typeof listener !== 'function') throw new TypeError('listener must be a function');
-
-  function wrappedListener() {
-    var args = Array.prototype.slice.call(arguments);
-    this.removeListener(event, wrappedListener);
-    return listener.apply(this, args);
-  }
-  wrappedListener.listener = listener;
-  this.on(event, wrappedListener);
-  return this;
-};
-
-EventEmitter.prototype.removeListener = function(event, listener) {
-  if (typeof listener !== 'function') return this;
-  var list = this._events[event];
-  if (list === undefined) return this;
-
-  if (Array.isArray(list)) {
-    var index = list.indexOf(listener);
-    if (index !== -1) {
-      list.splice(index, 1);
-      if (list.length === 1) {
-        this._events[event] = list[0];
-      }
-    }
-  } else if (list === listener) {
-    delete this._events[event];
-  }
-
-  return this;
-};
-
-EventEmitter.prototype.off = function(event, listener) {
-  return this.removeListener(event, listener);
-};
-
-EventEmitter.prototype.removeAllListeners = function(event) {
-  if (event === undefined) {
-    this._events = {};
-    return this;
-  }
-  delete this._events[event];
-  return this;
-};
-
-EventEmitter.prototype.emit = function(event) {
-  var list = this._events[event];
-  if (list === undefined) return false;
-
-  var args = Array.prototype.slice.call(arguments, 1);
-
-  if (Array.isArray(list)) {
-    var handlers = list.slice();
-    for (var i = 0; i < handlers.length; i++) {
-      handlers[i].apply(this, args);
-    }
-  } else {
-    list.apply(this, args);
-  }
-
-  return true;
-};
-
-EventEmitter.prototype.listeners = function(event) {
-  var list = this._events[event];
-  if (list === undefined) return [];
-  if (Array.isArray(list)) return list.slice();
-  return [list];
-};
-
-EventEmitter.prototype.listenerCount = function(event) {
-  var list = this._events[event];
-  if (list === undefined) return 0;
-  if (Array.isArray(list)) return list.length;
-  return 1;
-};
-
-EventEmitter.prototype.eventNames = function() {
-  return Object.keys(this._events);
-};
-
-EventEmitter.prototype.setMaxListeners = function(n) {
-  this._maxListeners = n;
-  return this;
-};
-
-EventEmitter.prototype.getMaxListeners = function() {
-  return this._maxListeners;
-};
-
-EventEmitter.prototype.rawListeners = function(event) {
-  return this.listeners(event);
-};
 
 // ═══════════════════════════════════════════
 // Stream 基类
@@ -160,8 +20,12 @@ EventEmitter.prototype.rawListeners = function(event) {
 function Stream(options) {
   EventEmitter.call(this);
   var opts = options || {};
-  this.readable = opts.readable !== false;
-  this.writable = opts.writable !== false;
+  try {
+    this.readable = opts.readable !== false;
+    this.writable = opts.writable !== false;
+  } catch (e) {
+    // 子类原型可能定义了只读 getter（Readable/Writable/Duplex），此时忽略赋值
+  }
 }
 
 Stream.prototype = Object.create(EventEmitter.prototype);
@@ -433,10 +297,12 @@ function Writable(options) {
     highWaterMark: opts.highWaterMark || kDefaultHighWaterMark,
     encoding: opts.encoding || null,
     objectMode: opts.objectMode || false,
+    writable: true,
     ended: false,
     destroyed: false,
     writecb: null,
     writecount: 0,
+    length: 0,
   };
   this._writeFn = opts._write || opts.write || null;
 }
@@ -484,8 +350,14 @@ Writable.prototype.write = function(chunk, encoding, callback) {
         cb(err);
         return;
       }
+      if (chunk && typeof chunk.length === 'number') {
+        state.length = Math.max(0, state.length - chunk.length);
+      }
       cb();
     });
+    if (chunk && typeof chunk.length === 'number') {
+      state.length += chunk.length;
+    }
     return true;
   } catch (err) {
     cb(err);
@@ -529,7 +401,7 @@ Writable.prototype.destroy = function(err) {
 
 Object.defineProperty(Writable.prototype, 'writable', {
   get: function() {
-    return this._writableState && this._writableState.writable && !this._writableState.ended;
+    return this._writableState && this._writableState.writable !== false && !this._writableState.ended && !this._writableState.destroyed;
   }
 });
 
@@ -553,7 +425,7 @@ Object.defineProperty(Writable.prototype, 'writableObjectMode', {
 
 Object.defineProperty(Writable.prototype, 'writableLength', {
   get: function() {
-    return 0;
+    return this._writableState ? this._writableState.length || 0 : 0;
   }
 });
 
@@ -577,10 +449,12 @@ function Duplex(options) {
     highWaterMark: opts.highWaterMark || kDefaultHighWaterMark,
     encoding: opts.encoding || null,
     objectMode: opts.objectMode || false,
+    writable: true,
     ended: false,
     destroyed: false,
     writecb: null,
     writecount: 0,
+    length: 0,
   };
   this._readFn = opts._read || opts.read || null;
   this._writeFn = opts._write || opts.write || null;
@@ -903,10 +777,19 @@ Transform.prototype._write = function(chunk, encoding, callback) {
       return;
     }
     if (data !== undefined) {
-      self.push(data);
+      self._transformState.buffer.push(data);
+      self._emitReadable();
     }
     callback();
   });
+};
+
+Transform.prototype._emitReadable = function() {
+  if (this._readableState && this._readableState.flowing) {
+    while (this._transformState.buffer.length > 0) {
+      this.push(this._transformState.buffer.shift());
+    }
+  }
 };
 
 Transform.prototype._read = function(size) {

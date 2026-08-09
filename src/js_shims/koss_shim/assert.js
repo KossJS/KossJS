@@ -2,7 +2,7 @@
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:assert — Koss 原生断言标准库
 
@@ -16,7 +16,11 @@ function AssertionError(options) {
 }
 AssertionError.prototype = Object.create(Error.prototype);
 AssertionError.prototype.constructor = AssertionError;
-AssertionError.prototype.toString = function() { return this.name + ': ' + this.message; };
+Object.defineProperty(AssertionError.prototype, 'toString', {
+  value: function() { return this.name + ': ' + this.message; },
+  writable: true,
+  configurable: true,
+});
 
 function isError(e) { return e instanceof Error || (e && e.name && e.message); }
 

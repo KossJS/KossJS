@@ -2,14 +2,14 @@
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:http — Koss 原生 HTTP 客户端/服务端标准库
 // 兼容 Node.js http 模块 API，基于 koss:net TCP 网络层
 
 var EventEmitter = require('koss:events').EventEmitter;
 var net = require('koss:net');
-var Buffer = globalThis.Buffer;
+var Buffer = globalThis.Buffer || require('koss:buffer').Buffer;
 
 // ═══════════════════════════════════════════
 // HTTP 状态码与状态文本

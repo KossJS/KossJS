@@ -2,7 +2,7 @@
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:crypto — Koss 原生加密与安全模块
 // 哈希、HMAC、随机数、签名、对称加密，全部一步完成
@@ -98,33 +98,34 @@ function pbkdf2(password, salt, iterations, keylen) {
 }
 
 function sign(privateKey, data) {
-  var keyBytes = _toBytes(privateKey);
-  if (keyBytes.length < 32) {
-    var derived = internalCrypto.hashBytes('sha256', keyBytes);
-    keyBytes = derived.slice(0, 32);
-  }
-  return internalCrypto.hmacBytes('sha256', keyBytes, _toBytes(data));
+  return internalCrypto.ed25519Sign(_toBytes(privateKey), _toBytes(data));
 }
 
 function verify(publicKey, data, signature) {
-  var keyBytes = _toBytes(publicKey);
-  if (keyBytes.length < 32) {
-    var derived = internalCrypto.hashBytes('sha256', keyBytes);
-    keyBytes = derived.slice(0, 32);
-  }
-  var expected = internalCrypto.hmacBytes('sha256', keyBytes, _toBytes(data));
-  var sigBytes = _toBytes(signature);
-  if (expected.length !== sigBytes.length) return false;
-  var result = 0;
-  for (var i = 0; i < expected.length; i++) result |= expected[i] ^ sigBytes[i];
-  return result === 0;
+  return internalCrypto.ed25519Verify(_toBytes(publicKey), _toBytes(data), _toBytes(signature));
+}
+
+function ed25519KeyPair() {
+  var kp = internalCrypto.ed25519KeyPair();
+  return {
+    publicKey: kp.publicKey,
+    privateKey: kp.privateKey,
+  };
+}
+
+function hashBytes(algorithm, data) {
+  return internalCrypto.hashBytes(String(algorithm), _toBytes(data));
+}
+
+function hmacBytes(algorithm, key, data) {
+  return internalCrypto.hmacBytes(String(algorithm), _toBytes(key), _toBytes(data));
 }
 
 function encrypt(key, data, options) {
   var opts = options || {};
   var aad = opts.aad || new Uint8Array(0);
   var nonce = opts.nonce || randomBytes(12);
-  var ciphertext = internalCrypto.aesGcmEncrypt(_deriveAESKey(key), nonce, aad, _toBytes(data));
+  var ciphertext = internalCrypto.aesGcmEncrypt(_toBytes(key), nonce, aad, _toBytes(data));
   if (opts.nonce) return ciphertext;
   var result = new Uint8Array(nonce.length + ciphertext.length);
   result.set(nonce, 0);
@@ -145,44 +146,72 @@ function decrypt(key, ciphertext, options) {
     nonce = ctBytes.slice(0, 12);
     body = ctBytes.slice(12);
   }
-  return internalCrypto.aesGcmDecrypt(_deriveAESKey(key), nonce, aad, body);
+  return internalCrypto.aesGcmDecrypt(_toBytes(key), nonce, aad, body);
+}
+
+function _parseCipherAlgorithm(algorithm) {
+  var a = String(algorithm).toLowerCase().replace('_', '-');
+  if (a === 'aes-128-gcm') return { keyLen: 16 };
+  if (a === 'aes-192-gcm') return { keyLen: 24 };
+  if (a === 'aes-256-gcm') return { keyLen: 32 };
+  return null;
 }
 
 function createCipher(algorithm, key) {
-  var keyBytes = _deriveAESKey(key);
+  var spec = _parseCipherAlgorithm(algorithm);
+  if (!spec) throw new Error('Unsupported cipher: ' + algorithm);
+  var keyBytes = _toBytes(key);
+  if (keyBytes.length !== spec.keyLen) {
+    throw new Error('Invalid key length ' + keyBytes.length + ' for ' + algorithm);
+  }
+  var nonce = randomBytes(12);
   var chunks = [];
+  var aad = new Uint8Array(0);
   return {
     update: function(data) {
       chunks.push(_toBytes(data));
       return '';
     },
+    setAAD: function(buf) { aad = _toBytes(buf); return this; },
     final: function() {
       var plaintext = _concatChunks(chunks);
-      var nonce = randomBytes(12);
-      var ciphertext = internalCrypto.aesGcmEncrypt(keyBytes, nonce, new Uint8Array(0), plaintext);
+      var ciphertext = internalCrypto.aesGcmEncrypt(keyBytes, nonce, aad, plaintext);
       var result = new Uint8Array(nonce.length + ciphertext.length);
       result.set(nonce, 0);
       result.set(ciphertext, nonce.length);
       return result;
     },
-    getAuthTag: function() { return new Uint8Array(16); },
+    getAuthTag: function() {
+      var all = _concatChunks(chunks);
+      var ciphertext = internalCrypto.aesGcmEncrypt(keyBytes, nonce, aad, all);
+      return ciphertext.slice(ciphertext.length - 16);
+    },
   };
 }
 
 function createDecipher(algorithm, key) {
-  var keyBytes = _deriveAESKey(key);
+  var spec = _parseCipherAlgorithm(algorithm);
+  if (!spec) throw new Error('Unsupported cipher: ' + algorithm);
+  var keyBytes = _toBytes(key);
+  if (keyBytes.length !== spec.keyLen) {
+    throw new Error('Invalid key length ' + keyBytes.length + ' for ' + algorithm);
+  }
   var chunks = [];
+  var aad = new Uint8Array(0);
+  var authTag = null;
   return {
     update: function(data) {
       chunks.push(_toBytes(data));
       return '';
     },
-    setAuthTag: function(tag) { return this; },
+    setAAD: function(buf) { aad = _toBytes(buf); return this; },
+    setAuthTag: function(tag) { authTag = _toBytes(tag); return this; },
     final: function() {
       var combined = _concatChunks(chunks);
+      if (combined.length < 12) throw new Error('Ciphertext too short');
       var nonce = combined.slice(0, 12);
-      var ciphertext = combined.slice(12);
-      return internalCrypto.aesGcmDecrypt(keyBytes, nonce, new Uint8Array(0), ciphertext);
+      var body = combined.slice(12);
+      return internalCrypto.aesGcmDecrypt(keyBytes, nonce, aad, body);
     },
   };
 }
@@ -196,8 +225,10 @@ var algorithms = ['sha1', 'sha256', 'sha384', 'sha512', 'md5'];
 module.exports = {
   hash: hash, hashHex: hashHex,
   hmac: hmac, hmacHex: hmacHex,
+  hashBytes: hashBytes, hmacBytes: hmacBytes,
   randomBytes: randomBytes, uuid: uuid, pbkdf2: pbkdf2,
   sign: sign, verify: verify,
+  ed25519KeyPair: ed25519KeyPair,
   encrypt: encrypt, decrypt: decrypt,
   createCipher: createCipher, createDecipher: createDecipher,
   timingSafeEqual: timingSafeEqual, algorithms: algorithms,

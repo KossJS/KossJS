@@ -2,7 +2,7 @@
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:string_decoder — Koss 标准库字符串解码器模块
 // Node.js StringDecoder 兼容实现，纯 JS，无外部依赖
@@ -205,7 +205,17 @@ StringDecoder.prototype.write = function(buffer) {
 
 StringDecoder.prototype.end = function(buffer) {
   var result = buffer ? this.write(buffer) : '';
+  if (this._bufferBytes && this._bufferBytes.length > 0) {
+    if (this.encoding === 'utf8' || this.encoding === 'utf-8') {
+      result += _utf8Decode(this._bufferBytes);
+    } else if (this.encoding === 'utf16le' || this.encoding === 'utf-16le' || this.encoding === 'ucs2' || this.encoding === 'ucs-2') {
+      result += _utf16leDecode(this._bufferBytes);
+    } else {
+      result += _latin1Decode(this._bufferBytes);
+    }
+  }
   this._buffer = '';
+  this._bufferBytes = null;
   this._lastNeed = 0;
   this._lastTotal = 0;
   return result;
@@ -227,31 +237,68 @@ StringDecoder.prototype.fillLast = function(buffer) {
 // ─── Encoding-specific writers ───
 
 StringDecoder.prototype._writeUtf8 = function(buf) {
-  var total = this._lastTotal + buf.length;
   var result = '';
 
-  if (this._lastNeed > 0) {
-    var needed = this._lastNeed;
-    if (needed > buf.length) needed = buf.length;
-    var partial = new Uint8Array(this._lastTotal + needed);
+  if (this._lastNeed > 0 && this._bufferBytes) {
+    var buffered = this._bufferBytes.length;
+    // 从新 buf 取需要的字节补齐到完整序列
+    var take = Math.min(this._lastNeed, buf.length);
+    var partial = new Uint8Array(buffered + take);
     partial.set(this._bufferBytes, 0);
-    partial.set(buf.subarray(0, needed), this._lastTotal);
-    result = _utf8Decode(partial);
-    this._lastNeed -= needed;
-    this._lastTotal = this._lastNeed;
+    partial.set(buf.subarray(0, take), buffered);
+    this._lastNeed -= take;
     if (this._lastNeed > 0) {
-      this._bufferBytes = new Uint8Array(result.length);
-      for (var j = 0; j < result.length; j++) {
-        this._bufferBytes[j] = result.charCodeAt(j);
-      }
+      // 仍不完整，继续保存
+      var newBuf = new Uint8Array(buffered + take);
+      newBuf.set(this._bufferBytes, 0);
+      newBuf.set(buf.subarray(0, take), buffered);
+      this._bufferBytes = newBuf;
     } else {
+      result = _utf8Decode(partial);
       this._bufferBytes = null;
     }
-    buf = buf.subarray(needed);
+    buf = buf.subarray(take);
   }
 
   if (buf.length > 0) {
-    result += _utf8Decode(buf);
+    // 处理结尾不完整的 UTF-8 序列：从末尾向前找到第一个非续字节。
+    // 只有"起始字节后缺少续字节"的情况需要缓冲。
+    var split = buf.length;
+    var i = buf.length - 1;
+    // 跳过末尾的续字节
+    while (i >= 0 && (buf[i] & 0xc0) === 0x80) i--;
+    if (i >= 0) {
+      var b0 = buf[i];
+      var need;
+      if (b0 >= 0xf0) need = 4;
+      else if (b0 >= 0xe0) need = 3;
+      else if (b0 >= 0xc0) need = 2;
+      else need = 1;
+      // 从 i 到末尾的字节数
+      var consumed = buf.length - i;
+      if (consumed < need) {
+        // 起始字节已出现但续字节不足 → 整个序列缓冲
+        split = i;
+      }
+    }
+    var complete = buf.subarray(0, split);
+    if (complete.length > 0) {
+      result += _utf8Decode(complete);
+    }
+    var remaining = buf.subarray(split);
+    if (remaining.length > 0) {
+      // 从第一个起始字节算起的完整序列所需字节数
+      var first = remaining[0];
+      var totalNeed;
+      if (first >= 0xf0) totalNeed = 4;
+      else if (first >= 0xe0) totalNeed = 3;
+      else if (first >= 0xc0) totalNeed = 2;
+      else totalNeed = 1;
+      this._lastNeed = totalNeed - remaining.length;
+      this._bufferBytes = new Uint8Array(remaining);
+    } else {
+      this._bufferBytes = null;
+    }
   }
 
   return result;

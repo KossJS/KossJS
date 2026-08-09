@@ -10,7 +10,7 @@ pub fn get(path: &str) -> Option<&'static str> {
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:bun - Bun 运行时兼容层 (L3)
 // Bun v1.1.x API alignment
@@ -20,7 +20,7 @@ var io = require('koss:io');
 var kossCrypto = require('koss:crypto');
 var kossSystem = require('koss:system');
 
-var Buffer = globalThis.Buffer;
+var Buffer = globalThis.Buffer || require('koss:buffer').Buffer;
 
 var version = '1.1.42';
 var build = 'koss-bun-compat';
@@ -53,7 +53,26 @@ function file(path) {
       return new Uint8Array(0).buffer;
     },
     stream: function() {
-      throw new Error('ReadableStream is not supported in KossJS (Boa 0.21.x)');
+      var Readable;
+      try { Readable = require('koss:stream').Readable; } catch (e) { Readable = null; }
+      if (!Readable) {
+        throw new Error('ReadableStream is not supported in KossJS (Boa 0.21.x)');
+      }
+      var path = this.path;
+      var self = this;
+      var stream = new Readable({
+        read: function() {
+          try {
+            var data = io.read(path);
+            if (data === null || data === undefined) { this.push(null); return; }
+            this.push(data);
+            this.push(null);
+          } catch (err) {
+            this.emit('error', err);
+          }
+        },
+      });
+      return stream;
     },
     exists: function() {
       return io.exists(path);
@@ -97,7 +116,33 @@ function peek(iterable) {
 }
 
 function which(cmd) {
-  return cmd || null;
+  if (!cmd) return null;
+  var pathVar = (kossSystem.env && kossSystem.env().PATH) || '';
+  var sep = (kossSystem.platform && kossSystem.platform() === 'win32') ? ';' : ':';
+  var pathSep = (kossSystem.platform && kossSystem.platform() === 'win32') ? '\\' : '/';
+  var isWin = sep === ';';
+  var candidates = pathVar.split(sep);
+  for (var i = 0; i < candidates.length; i++) {
+    if (!candidates[i]) continue;
+    var base = candidates[i];
+    if (base.charAt(base.length - 1) !== pathSep && base.charAt(base.length - 1) !== '/') {
+      base += pathSep;
+    }
+    var full = base + cmd;
+    if (!isWin && io.exists(full)) return full;
+    if (isWin) {
+      if (io.exists(full)) return full;
+      var exts = ['.exe', '.cmd', '.bat', '.com'];
+      for (var j = 0; j < exts.length; j++) {
+        if (io.exists(full + exts[j])) return full + exts[j];
+      }
+    }
+  }
+  // 若 cmd 本身含路径分隔符，直接检查
+  if (cmd.indexOf('/') !== -1 || (isWin && cmd.indexOf('\\') !== -1)) {
+    if (io.exists(cmd)) return cmd;
+  }
+  return null;
 }
 
 function randomUUIDv7() {
@@ -118,6 +163,312 @@ function hash(algorithm, data) {
 
 function malloc(size) { throw new Error('Bun malloc is not implemented in KossJS'); }
 function gc() { throw new Error('Bun.gc is not implemented in KossJS'); }
+
+// ── 压缩 ──
+var kossZlib = null;
+try { kossZlib = require('koss:zlib'); } catch (e) { kossZlib = null; }
+
+function gzipSync(data, options) { return kossZlib ? kossZlib.gzipSync(data, options) : _unsupported('gzipSync'); }
+function gunzipSync(data, options) { return kossZlib ? kossZlib.gunzipSync(data, options) : _unsupported('gunzipSync'); }
+function deflateSync(data, options) { return kossZlib ? kossZlib.deflateSync(data, options) : _unsupported('deflateSync'); }
+function inflateSync(data, options) { return kossZlib ? kossZlib.inflateSync(data, options) : _unsupported('inflateSync'); }
+
+// ── 高精度时间 ──
+function nanoseconds() {
+  if (typeof globalThis.__koss_performance_now === 'function') {
+    return Math.round(globalThis.__koss_performance_now() * 1e6);
+  }
+  return Date.now() * 1e6;
+}
+
+// ── 深比较 ──
+function deepEquals(a, b) {
+  if (a === b) return true;
+  if (a === null || b === null || a === undefined || b === undefined) return a === b;
+  if (typeof a !== 'object' || typeof b !== 'object') return false;
+  if (a instanceof Uint8Array && b instanceof Uint8Array) {
+    if (a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+  var ka = Object.keys(a), kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  for (var j = 0; j < ka.length; j++) {
+    var k = ka[j];
+    if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+    if (!deepEquals(a[k], b[k])) return false;
+  }
+  return true;
+}
+
+function deepMatch(a, b) {
+  if (b === a) return true;
+  if (b && typeof b === 'object' && a && typeof a === 'object') {
+    for (var k in b) {
+      if (!deepMatch(a[k], b[k])) return false;
+    }
+    return true;
+  }
+  return b === a;
+}
+
+// ── 文本工具 ──
+function escapeHTML(input) {
+  return String(input)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function stringWidth(str) {
+  var s = String(str);
+  var width = 0;
+  for (var i = 0; i < s.length; i++) {
+    var c = s.codePointAt(i);
+    // 东亚宽字符（CJK）计 2 宽度
+    if (c > 0x1100 && (c <= 0x115f || c === 0x2329 || c === 0x232a ||
+        (c >= 0x2e80 && c <= 0xa4cf && c !== 0x303f) ||
+        (c >= 0xac00 && c <= 0xd7a3) ||
+        (c >= 0xf900 && c <= 0xfaff) ||
+        (c >= 0xfe10 && c <= 0xfe19) ||
+        (c >= 0xfe30 && c <= 0xfe6f) ||
+        (c >= 0xff00 && c <= 0xff60) ||
+        (c >= 0xffe0 && c <= 0xffe6))) {
+      width += 2;
+    } else {
+      width += 1;
+    }
+  }
+  return width;
+}
+
+// ── URL/路径工具 ──
+function fileURLToPath(url) {
+  var u = typeof url === 'string' ? new URL(url) : url;
+  if (u.protocol !== 'file:') throw new TypeError('Must be a file URL');
+  var path = decodeURIComponent(u.pathname);
+  if (process && process.platform === 'win32') {
+    path = path.replace(/^\//, '').replace(/\//g, '\\');
+  }
+  return path;
+}
+
+function pathToFileURL(path) {
+  var p = String(path).replace(/\\/g, '/');
+  if (p.charAt(0) !== '/') p = '/' + p;
+  return new URL('file://' + encodeURI(p).replace(/%2F/gi, '/'));
+}
+
+// ── 内存工具 ──
+function concatArrayBuffers(buffers) {
+  var total = 0;
+  var i;
+  for (i = 0; i < buffers.length; i++) total += buffers[i].byteLength;
+  var out = new Uint8Array(total);
+  var offset = 0;
+  for (i = 0; i < buffers.length; i++) {
+    out.set(new Uint8Array(buffers[i]), offset);
+    offset += buffers[i].byteLength;
+  }
+  return out.buffer;
+}
+
+function allocUnsafe(size) {
+  return new ArrayBuffer(Number(size) || 0);
+}
+
+// ── CryptoHasher ──
+function CryptoHasher(algorithm) {
+  this._algorithm = String(algorithm).toLowerCase().replace('-', '');
+  this._chunks = [];
+}
+CryptoHasher.prototype.update = function(data) {
+  var u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
+  this._chunks.push(u8);
+  return this;
+};
+CryptoHasher.prototype.digest = function(encoding) {
+  var total = 0;
+  for (var i = 0; i < this._chunks.length; i++) total += this._chunks[i].length;
+  var input = new Uint8Array(total);
+  var offset = 0;
+  for (var j = 0; j < this._chunks.length; j++) { input.set(this._chunks[j], offset); offset += this._chunks[j].length; }
+  var hex = kossCrypto.hashHex(this._algorithm, input);
+  if (encoding === 'hex' || !encoding) return hex;
+  if (encoding === 'base64') {
+    var bytes = new Uint8Array(hex.length / 2);
+    for (var k = 0; k < bytes.length; k++) bytes[k] = parseInt(hex.substr(k * 2, 2), 16);
+    var b64 = '';
+    for (var m = 0; m < bytes.length; m += 3) {
+      var a = bytes[m], b = bytes[m+1], c = bytes[m+2];
+      b64 += _b64chars[(a >> 2) & 63] + _b64chars[((a << 4) | (b >> 4)) & 63] +
+        (m+1 < bytes.length ? _b64chars[((b << 2) | (c >> 6)) & 63] : '=') +
+        (m+2 < bytes.length ? _b64chars[c & 63] : '=');
+    }
+    return b64;
+  }
+  return hex;
+};
+var _b64chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+// ── Glob ──
+function Glob(pattern) {
+  this._pattern = String(pattern);
+  this._regex = new RegExp('^' + _globToRegex(this._pattern) + '$');
+}
+Glob.prototype.match = function(path) {
+  var p = String(path).replace(/\\/g, '/');
+  return this._regex.test(p);
+};
+Glob.prototype.scan = function(options) {
+  var root = (options && options.cwd) || '.';
+  var self = this;
+  var results = [];
+  function walk(dir) {
+    var entries;
+    try { entries = io.list(dir); } catch (e) { return; }
+    for (var i = 0; i < entries.length; i++) {
+      var name = typeof entries[i] === 'string' ? entries[i] : entries[i][0];
+      var full = dir === '.' ? name : dir + '/' + name;
+      try {
+        var st = io.stat(full);
+        if (st && (st.isDir || st.isDirectory)) {
+          walk(full);
+        } else {
+          if (self.match(full)) results.push(full);
+        }
+      } catch (e) {
+        if (self.match(full)) results.push(full);
+      }
+    }
+  }
+  walk(root);
+  return results;
+};
+function _globToRegex(pattern) {
+  var p = pattern;
+  var out = '';
+  var i = 0;
+  while (i < p.length) {
+    var ch = p[i];
+    if (ch === '*') {
+      if (p[i+1] === '*') {
+        // ** 匹配任意层级
+        out += '.*';
+        i += 2;
+      } else {
+        out += '[^/]*';
+        i++;
+      }
+    } else if (ch === '?') {
+      out += '[^/]';
+      i++;
+    } else if (ch === '[') {
+      var j = i + 1;
+      var cls = '[';
+      if (p[j] === '!' || p[j] === '^') { cls += '^'; j++; }
+      while (j < p.length && p[j] !== ']') { cls += p[j]; j++; }
+      cls += ']';
+      out += cls;
+      i = j + 1;
+    } else if ('\\.+?^$|(){}'.indexOf(ch) !== -1) {
+      out += '\\' + ch;
+      i++;
+    } else {
+      out += ch;
+      i++;
+    }
+  }
+  return out;
+}
+
+// ── Cookie / CookieMap ──
+function Cookie(name, value, options) {
+  this.name = String(name);
+  this.value = String(value);
+  var opts = options || {};
+  this.path = opts.path || '/';
+  this.domain = opts.domain || '';
+  this.expires = opts.expires || undefined;
+  this.httpOnly = !!(opts.httpOnly);
+  this.secure = !!(opts.secure);
+  this.sameSite = opts.sameSite || '';
+}
+Object.defineProperty(Cookie.prototype, 'toString', {
+  value: function() {
+    var parts = [this.name + '=' + this.value];
+    if (this.path) parts.push('Path=' + this.path);
+    if (this.domain) parts.push('Domain=' + this.domain);
+    if (this.expires) parts.push('Expires=' + this.expires);
+    if (this.httpOnly) parts.push('HttpOnly');
+    if (this.secure) parts.push('Secure');
+    if (this.sameSite) parts.push('SameSite=' + this.sameSite);
+    return parts.join('; ');
+  },
+  writable: true,
+  configurable: true,
+});
+
+function CookieMap(initial) {
+  this._map = {};
+  if (initial) {
+    if (typeof initial === 'string') this._parseHeader(initial);
+    else if (initial instanceof CookieMap) this._map = Object.assign({}, initial._map);
+    else if (typeof initial === 'object') this.set(initial);
+  }
+}
+CookieMap.prototype._parseHeader = function(header) {
+  var pairs = header.split(';');
+  for (var i = 0; i < pairs.length; i++) {
+    var pair = pairs[i].trim();
+    if (!pair) continue;
+    var eq = pair.indexOf('=');
+    if (eq === -1) continue;
+    this._map[pair.substring(0, eq).trim()] = pair.substring(eq + 1).trim();
+  }
+};
+CookieMap.prototype.get = function(name) {
+  return this._map[name] !== undefined ? this._map[name] : undefined;
+};
+CookieMap.prototype.set = function(name, value) {
+  if (typeof name === 'object' && name !== null) {
+    var keys = Object.keys(name);
+    for (var i = 0; i < keys.length; i++) this._map[keys[i]] = name[keys[i]];
+  } else {
+    this._map[String(name)] = String(value);
+  }
+  return this;
+};
+CookieMap.prototype.delete = function(name) {
+  delete this._map[String(name)];
+};
+CookieMap.prototype.has = function(name) {
+  return Object.prototype.hasOwnProperty.call(this._map, String(name));
+};
+CookieMap.prototype.entries = function() {
+  var arr = [];
+  for (var k in this._map) arr.push([k, this._map[k]]);
+  return arr[Symbol.iterator]();
+};
+Object.defineProperty(CookieMap.prototype, 'toString', {
+  value: function() {
+    var parts = [];
+    for (var k in this._map) parts.push(k + '=' + this._map[k]);
+    return parts.join('; ');
+  },
+  writable: true,
+  configurable: true,
+});
+CookieMap.prototype[Symbol.iterator] = function() { return this.entries(); };
+Object.defineProperty(CookieMap.prototype, 'size', {
+  get: function() { return Object.keys(this._map).length; }
+});
+
+function _unsupported(name) {
+  return new Error('Bun.' + name + ' is not available in KossJS');
+}
 
 // === Not implemented ===
 function sql() { throw new Error('Bun.sql is not implemented in KossJS (requires SQLite)'); }
@@ -145,13 +496,31 @@ module.exports = {
   sql: sql,
   spawn: spawn,
   build: buildFn,
+  // 新增
+  gzipSync: gzipSync,
+  gunzipSync: gunzipSync,
+  deflateSync: deflateSync,
+  inflateSync: inflateSync,
+  nanoseconds: nanoseconds,
+  deepEquals: deepEquals,
+  deepMatch: deepMatch,
+  escapeHTML: escapeHTML,
+  stringWidth: stringWidth,
+  fileURLToPath: fileURLToPath,
+  pathToFileURL: pathToFileURL,
+  concatArrayBuffers: concatArrayBuffers,
+  allocUnsafe: allocUnsafe,
+  CryptoHasher: CryptoHasher,
+  Glob: Glob,
+  Cookie: Cookie,
+  CookieMap: CookieMap,
 };
 "#),
         "deno_shim.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:deno - Deno 运行时兼容层 (L3)
 // Deno v2.0.x API alignment
@@ -161,7 +530,7 @@ var io = require('koss:io');
 var kossCrypto = require('koss:crypto');
 var kossSystem = require('koss:system');
 
-var Buffer = globalThis.Buffer;
+var Buffer = globalThis.Buffer || require('koss:buffer').Buffer;
 
 var version = { deno: '2.0.6', v8: '12.9', typescript: '5.6' };
 var args = [];
@@ -212,7 +581,7 @@ function rename(oldPath, newPath) {
 }
 
 function realPath(path) {
-  return path;
+  return io.realpath(path);
 }
 
 function cwd() {
@@ -228,11 +597,13 @@ function serve(handler, options) {
   options = options || {};
   var port = options.port || 8000;
   var hostname = options.hostname || '0.0.0.0';
-  var server = io.serve({ port: port, hostname: hostname });
+  // 接线 handler：io.serve 现在支持带 handler 的完整 HTTP 服务器
+  var server = io.serve({ port: port, hostname: hostname }, handler);
   return {
     port: Number(port),
     hostname: String(hostname),
     close: function() { server.close(); },
+    shutdown: function() { server.close(); return Promise.resolve(); },
   };
 }
 
@@ -265,6 +636,150 @@ function memoryUsage() {
     heapUsed: mem.used || 0,
     external: 0,
   };
+}
+
+// === Env（Deno.Env API） ===
+function _envSnapshot() {
+  var env = kossSystem.env();
+  var copy = {};
+  for (var k in env) copy[k] = env[k];
+  return copy;
+}
+var Env = {
+  get: function(key) {
+    var env = _envSnapshot();
+    return Object.prototype.hasOwnProperty.call(env, key) ? env[key] : undefined;
+  },
+  set: function(key, value) {
+    kossSystem.setEnv ? kossSystem.setEnv(key, value) : undefined;
+    var env = kossSystem.env();
+    if (env && typeof env === 'object') env[key] = value;
+  },
+  delete: function(key) {
+    kossSystem.deleteEnv ? kossSystem.deleteEnv(key) : undefined;
+    var env = kossSystem.env();
+    if (env && typeof env === 'object') delete env[key];
+  },
+  toObject: function() { return _envSnapshot(); },
+};
+
+// === 文件同步族 ===
+function readTextFileSync(path) { return io.readText(path); }
+function readFileSync(path) { return io.read(path); }
+function writeTextFileSync(path, data) { io.writeText(path, data); }
+function writeFileSync(path, data) { io.write(path, data); }
+function mkdirSync(path, options) {
+  try { io.mkdir(path, options); }
+  catch (e) {
+    var msg = e && e.message ? e.message : String(e);
+    if (msg.indexOf('already exists') !== -1 || msg.indexOf('os error 183') !== -1 || msg.indexOf('os error 17') !== -1) return;
+    throw e;
+  }
+}
+function removeSync(path, options) { io.rm(path, options); }
+function renameSync(oldPath, newPath) { io.mv(oldPath, newPath); }
+function statSync(path) { return io.stat(path); }
+function lstatSync(path) { return io.lstat(path); }
+function realPathSync(path) { return io.realpath(path); }
+function cwdSync() { return kossSystem.cwd(); }
+function chdirSync(path) { kossSystem.chdir(path); }
+function copyFileSync(from, to) { io.cp(from, to); }
+function symlinkSync(target, path, type) { throw new Error('Deno.symlinkSync is not implemented in KossJS'); }
+function existsSync(path) { return io.exists(path); }
+
+// === open/close/seek/readAll/writeAll ===
+function open(path, options) {
+  var opts = options || {};
+  var flags;
+  if (opts.read && opts.write) flags = 'r+';
+  else if (opts.write && opts.append) flags = 'a';
+  else if (opts.write) flags = 'w';
+  else if (opts.read) flags = 'r';
+  else if (opts.create) flags = 'w';
+  else flags = 'r';
+  var fsMod = require('node:fs');
+  var fd = fsMod.openSync(path, flags);
+  var f = new FsFile(fd, path);
+  return Promise.resolve(f);
+}
+function FsFile(fd, path) {
+  this.rid = fd;
+  this.path = path;
+}
+FsFile.prototype.read = function(buffer) {
+  var self = this;
+  return new Promise(function(resolve) {
+    var fsMod = require('node:fs');
+    var n = fsMod.readSync(self.rid, buffer, 0, buffer.length);
+    resolve(n === 0 ? null : n);
+  });
+};
+FsFile.prototype.write = function(data) {
+  var self = this;
+  return new Promise(function(resolve) {
+    var fsMod = require('node:fs');
+    var n = fsMod.writeSync(self.rid, data);
+    resolve(n);
+  });
+};
+FsFile.prototype.close = function() {
+  var fsMod = require('node:fs');
+  try { fsMod.closeSync(this.rid); } catch (e) {}
+  return Promise.resolve();
+};
+FsFile.prototype.seek = function(offset, whence) {
+  // 当前实现基于 fd，seek 通过 position 参数支持有限
+  return Promise.resolve(offset);
+};
+FsFile.prototype.stat = function() {
+  var self = this;
+  return new Promise(function(resolve) {
+    var fsMod = require('node:fs');
+    resolve(fsMod.fstatSync(self.rid));
+  });
+};
+FsFile.prototype[Symbol.asyncDispose] = function() {
+  return this.close();
+};
+
+function readAll(file) {
+  return new Promise(function(resolve) {
+    var chunks = [];
+    function readNext() {
+      file.read(new Uint8Array(65536)).then(function(n) {
+        if (n === null) {
+          var total = 0;
+          for (var i = 0; i < chunks.length; i++) total += chunks[i].length;
+          var out = new Uint8Array(total);
+          var off = 0;
+          for (var j = 0; j < chunks.length; j++) { out.set(chunks[j], off); off += chunks[j].length; }
+          resolve(out);
+          return;
+        }
+        var buf = new Uint8Array(65536);
+        // 从 file.read 已填充的 buffer 读取
+        chunks.push(buf.subarray(0, n));
+        readNext();
+      });
+    }
+    readNext();
+  });
+}
+
+function writeAll(file, data) {
+  var bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+  return file.write(bytes);
+}
+
+function readTextFileSyncAlias(path) { return readTextFileSync(path); }
+
+// === kill ===
+function kill(pid, signal) {
+  if (kossSystem.kill) {
+    kossSystem.kill(pid, signal);
+    return;
+  }
+  throw new Error('Deno.kill is not implemented in KossJS');
 }
 
 // === Timers ===
@@ -302,8 +817,8 @@ var cryptoObj = {
       var algo = typeof algorithm === 'string' ? algorithm : (algorithm && algorithm.name) || 'AES-GCM';
       var keyBytes = _toBytes(key);
       var ptBytes = _toBytes(data);
-      var result = kossCrypto.encrypt(keyBytes, ptBytes);
-      return result.ciphertext;
+      var combined = kossCrypto.encrypt(keyBytes, ptBytes);
+      return combined;
     },
     decrypt: async function(algorithm, key, data) {
       var ctBytes = _toBytes(data);
@@ -312,7 +827,7 @@ var cryptoObj = {
     generateKey: async function(algorithm) {
       var algo = typeof algorithm === 'string' ? algorithm : (algorithm && algorithm.name) || 'Ed25519';
       if (algo === 'Ed25519' || algo === 'ed25519') {
-        var kp = kossCrypto.internalCrypto.ed25519KeyPair();
+        var kp = kossCrypto.ed25519KeyPair();
         return kp;
       }
       var keyLen = (algorithm && algorithm.length) || 32;
@@ -395,13 +910,35 @@ module.exports = {
   run: run,
   spawn: spawn,
   permissions: permissions,
+  // 新增
+  Env: Env,
+  kill: kill,
+  readTextFileSync: readTextFileSync,
+  readFileSync: readFileSync,
+  writeTextFileSync: writeTextFileSync,
+  writeFileSync: writeFileSync,
+  mkdirSync: mkdirSync,
+  removeSync: removeSync,
+  renameSync: renameSync,
+  statSync: statSync,
+  lstatSync: lstatSync,
+  realPathSync: realPathSync,
+  cwdSync: cwdSync,
+  chdirSync: chdirSync,
+  copyFileSync: copyFileSync,
+  symlinkSync: symlinkSync,
+  existsSync: existsSync,
+  open: open,
+  readAll: readAll,
+  writeAll: writeAll,
+  FsFile: FsFile,
 };
 "#),
         "internal/crypto.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:internal/crypto - Internal cryptography layer (L2)
 // Not directly accessible to user code. Used by L3 compatibility layers.
@@ -679,7 +1216,7 @@ module.exports = {
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:internal/fs - Internal filesystem layer (L2)
 // Not directly accessible to user code. Used by L3 compatibility layers.
@@ -924,7 +1461,7 @@ module.exports = {
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:internal/net - Internal network layer (L2)
 // Not directly accessible to user code. Used by L3 compatibility layers.
@@ -1090,12 +1627,12 @@ module.exports = {
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:internal/stream - Internal stream layer (L2)
 // Not directly accessible to user code. Used by L3 compatibility layers.
 
-var Buffer = globalThis.Buffer;
+var Buffer = globalThis.Buffer || require('koss:buffer').Buffer;
 
 function ReadStream(readFn, options) {
   this._readFn = readFn;
@@ -1225,7 +1762,7 @@ module.exports = {
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:assert — Koss 原生断言标准库
 
@@ -1239,7 +1776,11 @@ function AssertionError(options) {
 }
 AssertionError.prototype = Object.create(Error.prototype);
 AssertionError.prototype.constructor = AssertionError;
-AssertionError.prototype.toString = function() { return this.name + ': ' + this.message; };
+Object.defineProperty(AssertionError.prototype, 'toString', {
+  value: function() { return this.name + ': ' + this.message; },
+  writable: true,
+  configurable: true,
+});
 
 function isError(e) { return e instanceof Error || (e && e.name && e.message); }
 
@@ -1356,7 +1897,7 @@ module.exports.strict = strict;
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:buffer — Koss 标准库 Buffer 模块
 // Node.js Buffer 兼容实现，纯 JS，无外部依赖
@@ -1444,7 +1985,36 @@ Blob.prototype.text = function() {
 };
 
 Blob.prototype.stream = function() {
-  throw new Error('Blob.stream is not supported in this environment');
+  var self = this;
+  var chunks = [];
+  for (var i = 0; i < this._parts.length; i++) chunks.push(this._parts[i]);
+  var idx = 0;
+  var Readable;
+  try { Readable = require('koss:stream').Readable; } catch (e) { Readable = null; }
+  if (Readable) {
+    var stream = new Readable({
+      read: function() {
+        if (idx >= chunks.length) { this.push(null); return; }
+        this.push(chunks[idx++]);
+      },
+    });
+    return stream;
+  }
+  // 降级：返回一个带 ReadableStream 形状的简单对象
+  var reader = {
+    read: function() {
+      return Promise.resolve({
+        done: idx >= chunks.length,
+        value: idx < chunks.length ? chunks[idx++].slice() : undefined,
+      });
+    },
+  };
+  return {
+    getReader: function() { return reader; },
+    [Symbol.asyncIterator]: async function*() {
+      for (var j = 0; j < chunks.length; j++) yield chunks[j];
+    },
+  };
 };
 
 Object.defineProperty(Blob.prototype, 'type', {
@@ -1461,9 +2031,9 @@ function NodeBuffer(value, encodingOrOffset, length) {
     var bytes = _encodeString(value, enc);
     this._data = bytes;
     this._length = bytes.length;
-  } else if (value instanceof Uint8Array || value instanceof ArrayBuffer || value instanceof NodeBuffer) {
+  } else if (value instanceof Uint8Array || value instanceof ArrayBuffer || _isBuf(value)) {
     var src;
-    if (value instanceof NodeBuffer) {
+    if (_isBuf(value)) {
       src = value._data;
     } else if (value instanceof ArrayBuffer) {
       src = new Uint8Array(value);
@@ -1506,6 +2076,10 @@ function _defineIndexAccess(buf) {
 
 NodeBuffer.prototype._isBuffer = true;
 
+function _isBuf(x) {
+  return !!(x && x._isBuffer);
+}
+
 Object.defineProperty(NodeBuffer.prototype, 'length', {
   get: function() { return this._length; }
 });
@@ -1533,7 +2107,7 @@ NodeBuffer.isEncoding = function(encoding) {
 
 NodeBuffer.byteLength = function(str, encoding) {
   if (typeof str === 'number') return str;
-  if (str instanceof NodeBuffer) return str._length;
+  if (str instanceof NodeBuffer || _isBuf(str)) return str._length;
   if (str instanceof Uint8Array) return str.length;
   var enc = encoding || 'utf8';
   if (enc === 'base64') {
@@ -1552,7 +2126,7 @@ NodeBuffer.concat = function(list, totalLength) {
     totalLength = 0;
     for (var i = 0; i < list.length; i++) {
       var item = list[i];
-      if (item instanceof NodeBuffer) totalLength += item._length;
+      if (_isBuf(item)) totalLength += item._length;
       else if (item instanceof Uint8Array) totalLength += item.length;
       else totalLength += String(item).length;
     }
@@ -1562,7 +2136,7 @@ NodeBuffer.concat = function(list, totalLength) {
   for (var j = 0; j < list.length; j++) {
     var item2 = list[j];
     var bytes;
-    if (item2 instanceof NodeBuffer) {
+    if (_isBuf(item2)) {
       bytes = item2._data;
     } else if (item2 instanceof Uint8Array) {
       bytes = item2;
@@ -1583,7 +2157,7 @@ NodeBuffer.from = function(value, encodingOrOffset, length) {
   if (typeof value === 'string') {
     return new NodeBuffer(value, encodingOrOffset, length);
   }
-  if (value instanceof NodeBuffer) {
+  if (_isBuf(value)) {
     return new NodeBuffer(value, encodingOrOffset, length);
   }
   if (value instanceof Uint8Array || value instanceof ArrayBuffer) {
@@ -1626,8 +2200,8 @@ NodeBuffer.allocUnsafeSlow = function(size) {
 };
 
 NodeBuffer.compare = function(a, b) {
-  var bytesA = a instanceof NodeBuffer ? a._data : (a instanceof Uint8Array ? a : new Uint8Array(0));
-  var bytesB = b instanceof NodeBuffer ? b._data : (b instanceof Uint8Array ? b : new Uint8Array(0));
+  var bytesA = _isBuf(a) ? a._data : (a instanceof Uint8Array ? a : new Uint8Array(0));
+  var bytesB = _isBuf(b) ? b._data : (b instanceof Uint8Array ? b : new Uint8Array(0));
   var minLen = Math.min(bytesA.length, bytesB.length);
   for (var i = 0; i < minLen; i++) {
     if (bytesA[i] < bytesB[i]) return -1;
@@ -1639,12 +2213,12 @@ NodeBuffer.compare = function(a, b) {
 };
 
 NodeBuffer.prototype.compare = function(other, start, end, thisStart, thisEnd) {
-  var otherBuf = other instanceof NodeBuffer ? other._data :
+  var otherBuf = _isBuf(other) ? other._data :
                  (other instanceof Uint8Array ? other : new Uint8Array(0));
   var oStart = start || 0;
   var oEnd = end !== undefined ? end : otherBuf.length;
   var tStart = thisStart || 0;
-  var tEnd = thisEnd !== undefined ? tEnd : this._length;
+  var tEnd = thisEnd !== undefined ? thisEnd : this._length;
   var oLen = oEnd - oStart;
   var tLen = tEnd - tStart;
   var minLen = Math.min(oLen, tLen);
@@ -1719,7 +2293,7 @@ NodeBuffer.prototype.slice = function(start, end) {
 NodeBuffer.prototype.subarray = NodeBuffer.prototype.slice;
 
 NodeBuffer.prototype.copy = function(target, targetStart, sourceStart, sourceEnd) {
-  var targetBuf = target instanceof NodeBuffer ? target :
+  var targetBuf = _isBuf(target) ? target :
                   (target instanceof Uint8Array ? new NodeBuffer(target) : target);
   var tStart = targetStart || 0;
   var sStart = sourceStart || 0;
@@ -1749,8 +2323,8 @@ NodeBuffer.prototype.fill = function(value, start, end, encoding) {
     for (var i2 = s; i2 < e; i2++) {
       this._data[i2] = value & 0xff;
     }
-  } else if (value instanceof Uint8Array || value instanceof NodeBuffer) {
-    var src = value instanceof NodeBuffer ? value._data : value;
+  } else if (value instanceof Uint8Array || _isBuf(value)) {
+    var src = _isBuf(value) ? value._data : value;
     for (var i3 = s; i3 < e; i3++) {
       this._data[i3] = src[(i3 - s) % src.length];
     }
@@ -1990,6 +2564,97 @@ NodeBuffer.prototype.readDoubleBE = function(offset, noAssert) {
   return view.getFloat64(off, false);
 };
 
+// ─── BigInt read/write ───
+
+function _readBigUInt64LE(data, off) {
+  var lo = ((data[off + 3] * 0x1000000) + ((data[off + 2] << 16) | (data[off + 1] << 8) | data[off])) >>> 0;
+  var hi = ((data[off + 7] * 0x1000000) + ((data[off + 6] << 16) | (data[off + 5] << 8) | data[off + 4])) >>> 0;
+  return (BigInt(hi) << 32n) | BigInt(lo);
+}
+
+function _readBigUInt64BE(data, off) {
+  var hi = (data[off] * 0x1000000) + ((data[off + 1] << 16) | (data[off + 2] << 8) | data[off + 3]);
+  var lo = (data[off + 4] * 0x1000000) + ((data[off + 5] << 16) | (data[off + 6] << 8) | data[off + 7]);
+  return (BigInt(hi) << 32n) | BigInt(lo);
+}
+
+function _readBigInt64LE(data, off) {
+  var u = _readBigUInt64LE(data, off);
+  return (u & (1n << 63n)) !== 0n ? u - (1n << 64n) : u;
+}
+
+function _readBigInt64BE(data, off) {
+  var u = _readBigUInt64BE(data, off);
+  return (u & (1n << 63n)) !== 0n ? u - (1n << 64n) : u;
+}
+
+function _writeBigUInt64LE(value, data, off) {
+  var u = BigInt(value) & ((1n << 64n) - 1n);
+  for (var i = 0; i < 8; i++) {
+    data[off + i] = Number((u >> BigInt(i * 8)) & 0xffn);
+  }
+  return off + 8;
+}
+
+function _writeBigUInt64BE(value, data, off) {
+  var u = BigInt(value) & ((1n << 64n) - 1n);
+  for (var i = 0; i < 8; i++) {
+    data[off + 7 - i] = Number((u >> BigInt(i * 8)) & 0xffn);
+  }
+  return off + 8;
+}
+
+function _writeBigInt64LE(value, data, off) {
+  var v = BigInt(value);
+  return _writeBigUInt64LE(v < 0n ? v + (1n << 64n) : v, data, off);
+}
+
+function _writeBigInt64BE(value, data, off) {
+  var v = BigInt(value);
+  return _writeBigUInt64BE(v < 0n ? v + (1n << 64n) : v, data, off);
+}
+
+NodeBuffer.prototype.readBigUInt64LE = function(offset, noAssert) {
+  var off = offset || 0;
+  if (!noAssert && (off < 0 || off + 7 >= this._length)) throw new RangeError('Index out of range');
+  return _readBigUInt64LE(this._data, off);
+};
+NodeBuffer.prototype.readBigUInt64BE = function(offset, noAssert) {
+  var off = offset || 0;
+  if (!noAssert && (off < 0 || off + 7 >= this._length)) throw new RangeError('Index out of range');
+  return _readBigUInt64BE(this._data, off);
+};
+NodeBuffer.prototype.readBigInt64LE = function(offset, noAssert) {
+  var off = offset || 0;
+  if (!noAssert && (off < 0 || off + 7 >= this._length)) throw new RangeError('Index out of range');
+  return _readBigInt64LE(this._data, off);
+};
+NodeBuffer.prototype.readBigInt64BE = function(offset, noAssert) {
+  var off = offset || 0;
+  if (!noAssert && (off < 0 || off + 7 >= this._length)) throw new RangeError('Index out of range');
+  return _readBigInt64BE(this._data, off);
+};
+NodeBuffer.prototype.writeBigUInt64LE = function(value, offset, noAssert) {
+  var off = offset || 0;
+  if (!noAssert && (off < 0 || off + 7 >= this._length)) throw new RangeError('Index out of range');
+  return _writeBigUInt64LE(value, this._data, off);
+};
+NodeBuffer.prototype.writeBigUInt64BE = function(value, offset, noAssert) {
+  var off = offset || 0;
+  if (!noAssert && (off < 0 || off + 7 >= this._length)) throw new RangeError('Index out of range');
+  return _writeBigUInt64BE(value, this._data, off);
+};
+NodeBuffer.prototype.writeBigInt64LE = function(value, offset, noAssert) {
+  var off = offset || 0;
+  if (!noAssert && (off < 0 || off + 7 >= this._length)) throw new RangeError('Index out of range');
+  return _writeBigInt64LE(value, this._data, off);
+};
+NodeBuffer.prototype.writeBigInt64BE = function(value, offset, noAssert) {
+  var off = offset || 0;
+  if (!noAssert && (off < 0 || off + 7 >= this._length)) throw new RangeError('Index out of range');
+  return _writeBigInt64BE(value, this._data, off);
+};
+
 NodeBuffer.prototype.indexOf = function(value, byteOffset, encoding) {
   var off = byteOffset || 0;
   if (off < 0) off = Math.max(0, this._length + off);
@@ -1998,7 +2663,7 @@ NodeBuffer.prototype.indexOf = function(value, byteOffset, encoding) {
     var searchBytes = _encodeString(value, enc);
     return _indexOfBytes(this._data, searchBytes, off);
   }
-  if (value instanceof NodeBuffer) return _indexOfBytes(this._data, value._data, off);
+  if (_isBuf(value)) return _indexOfBytes(this._data, value._data, off);
   if (value instanceof Uint8Array) return _indexOfBytes(this._data, value, off);
   if (typeof value === 'number') return _indexOfByte(this._data, value, off);
   return -1;
@@ -2013,7 +2678,7 @@ NodeBuffer.prototype.lastIndexOf = function(value, byteOffset, encoding) {
     var searchBytes = _encodeString(value, enc);
     return _lastIndexOfBytes(this._data, searchBytes, off);
   }
-  if (value instanceof NodeBuffer) return _lastIndexOfBytes(this._data, value._data, off);
+  if (_isBuf(value)) return _lastIndexOfBytes(this._data, value._data, off);
   if (value instanceof Uint8Array) return _lastIndexOfBytes(this._data, value, off);
   if (typeof value === 'number') return _lastIndexOfByte(this._data, value, off);
   return -1;
@@ -2025,7 +2690,7 @@ NodeBuffer.prototype.includes = function(value, byteOffset, encoding) {
 
 NodeBuffer.prototype.equals = function(other) {
   if (!other) return false;
-  var otherData = other instanceof NodeBuffer ? other._data :
+  var otherData = _isBuf(other) ? other._data :
                   (other instanceof Uint8Array ? other : null);
   if (!otherData) return false;
   if (this._length !== otherData.length) return false;
@@ -2037,7 +2702,7 @@ NodeBuffer.prototype.equals = function(other) {
 
 NodeBuffer.prototype.set = function(array, offset) {
   var off = offset || 0;
-  var src = array instanceof NodeBuffer ? array._data :
+  var src = _isBuf(array) ? array._data :
             (array instanceof Uint8Array ? array : new Uint8Array(0));
   var len = Math.min(src.length, this._length - off);
   this._data.set(src.subarray(0, len), off);
@@ -2378,7 +3043,7 @@ function TextDecoderShim(label, options) {
 
 TextDecoderShim.prototype.decode = function(input) {
   var bytes;
-  if (input instanceof NodeBuffer) {
+  if (_isBuf(input)) {
     bytes = input._data;
   } else if (input instanceof Uint8Array) {
     bytes = input;
@@ -2429,6 +3094,13 @@ function _btoa(str) {
 }
 
 // ─── Module Exports ───
+// 让全局 Buffer 指向完整实现（NodeBuffer），替换残缺的 Rust 原生 Buffer。
+// 这样用户代码与所有内部 shim 使用一致的 Buffer API。
+if (typeof globalThis !== 'undefined') {
+  globalThis.Buffer = NodeBuffer;
+  if (globalThis.Blob === undefined) globalThis.Blob = Blob;
+}
+
 module.exports = {
   Buffer: NodeBuffer,
   Blob: Blob,
@@ -2445,7 +3117,7 @@ module.exports = {
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:constants — Koss 标准库常量模块
 // Node.js constants 兼容实现，纯 JS，无外部依赖
@@ -2604,7 +3276,7 @@ module.exports = {
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:crypto — Koss 原生加密与安全模块
 // 哈希、HMAC、随机数、签名、对称加密，全部一步完成
@@ -2700,33 +3372,34 @@ function pbkdf2(password, salt, iterations, keylen) {
 }
 
 function sign(privateKey, data) {
-  var keyBytes = _toBytes(privateKey);
-  if (keyBytes.length < 32) {
-    var derived = internalCrypto.hashBytes('sha256', keyBytes);
-    keyBytes = derived.slice(0, 32);
-  }
-  return internalCrypto.hmacBytes('sha256', keyBytes, _toBytes(data));
+  return internalCrypto.ed25519Sign(_toBytes(privateKey), _toBytes(data));
 }
 
 function verify(publicKey, data, signature) {
-  var keyBytes = _toBytes(publicKey);
-  if (keyBytes.length < 32) {
-    var derived = internalCrypto.hashBytes('sha256', keyBytes);
-    keyBytes = derived.slice(0, 32);
-  }
-  var expected = internalCrypto.hmacBytes('sha256', keyBytes, _toBytes(data));
-  var sigBytes = _toBytes(signature);
-  if (expected.length !== sigBytes.length) return false;
-  var result = 0;
-  for (var i = 0; i < expected.length; i++) result |= expected[i] ^ sigBytes[i];
-  return result === 0;
+  return internalCrypto.ed25519Verify(_toBytes(publicKey), _toBytes(data), _toBytes(signature));
+}
+
+function ed25519KeyPair() {
+  var kp = internalCrypto.ed25519KeyPair();
+  return {
+    publicKey: kp.publicKey,
+    privateKey: kp.privateKey,
+  };
+}
+
+function hashBytes(algorithm, data) {
+  return internalCrypto.hashBytes(String(algorithm), _toBytes(data));
+}
+
+function hmacBytes(algorithm, key, data) {
+  return internalCrypto.hmacBytes(String(algorithm), _toBytes(key), _toBytes(data));
 }
 
 function encrypt(key, data, options) {
   var opts = options || {};
   var aad = opts.aad || new Uint8Array(0);
   var nonce = opts.nonce || randomBytes(12);
-  var ciphertext = internalCrypto.aesGcmEncrypt(_deriveAESKey(key), nonce, aad, _toBytes(data));
+  var ciphertext = internalCrypto.aesGcmEncrypt(_toBytes(key), nonce, aad, _toBytes(data));
   if (opts.nonce) return ciphertext;
   var result = new Uint8Array(nonce.length + ciphertext.length);
   result.set(nonce, 0);
@@ -2747,44 +3420,72 @@ function decrypt(key, ciphertext, options) {
     nonce = ctBytes.slice(0, 12);
     body = ctBytes.slice(12);
   }
-  return internalCrypto.aesGcmDecrypt(_deriveAESKey(key), nonce, aad, body);
+  return internalCrypto.aesGcmDecrypt(_toBytes(key), nonce, aad, body);
+}
+
+function _parseCipherAlgorithm(algorithm) {
+  var a = String(algorithm).toLowerCase().replace('_', '-');
+  if (a === 'aes-128-gcm') return { keyLen: 16 };
+  if (a === 'aes-192-gcm') return { keyLen: 24 };
+  if (a === 'aes-256-gcm') return { keyLen: 32 };
+  return null;
 }
 
 function createCipher(algorithm, key) {
-  var keyBytes = _deriveAESKey(key);
+  var spec = _parseCipherAlgorithm(algorithm);
+  if (!spec) throw new Error('Unsupported cipher: ' + algorithm);
+  var keyBytes = _toBytes(key);
+  if (keyBytes.length !== spec.keyLen) {
+    throw new Error('Invalid key length ' + keyBytes.length + ' for ' + algorithm);
+  }
+  var nonce = randomBytes(12);
   var chunks = [];
+  var aad = new Uint8Array(0);
   return {
     update: function(data) {
       chunks.push(_toBytes(data));
       return '';
     },
+    setAAD: function(buf) { aad = _toBytes(buf); return this; },
     final: function() {
       var plaintext = _concatChunks(chunks);
-      var nonce = randomBytes(12);
-      var ciphertext = internalCrypto.aesGcmEncrypt(keyBytes, nonce, new Uint8Array(0), plaintext);
+      var ciphertext = internalCrypto.aesGcmEncrypt(keyBytes, nonce, aad, plaintext);
       var result = new Uint8Array(nonce.length + ciphertext.length);
       result.set(nonce, 0);
       result.set(ciphertext, nonce.length);
       return result;
     },
-    getAuthTag: function() { return new Uint8Array(16); },
+    getAuthTag: function() {
+      var all = _concatChunks(chunks);
+      var ciphertext = internalCrypto.aesGcmEncrypt(keyBytes, nonce, aad, all);
+      return ciphertext.slice(ciphertext.length - 16);
+    },
   };
 }
 
 function createDecipher(algorithm, key) {
-  var keyBytes = _deriveAESKey(key);
+  var spec = _parseCipherAlgorithm(algorithm);
+  if (!spec) throw new Error('Unsupported cipher: ' + algorithm);
+  var keyBytes = _toBytes(key);
+  if (keyBytes.length !== spec.keyLen) {
+    throw new Error('Invalid key length ' + keyBytes.length + ' for ' + algorithm);
+  }
   var chunks = [];
+  var aad = new Uint8Array(0);
+  var authTag = null;
   return {
     update: function(data) {
       chunks.push(_toBytes(data));
       return '';
     },
-    setAuthTag: function(tag) { return this; },
+    setAAD: function(buf) { aad = _toBytes(buf); return this; },
+    setAuthTag: function(tag) { authTag = _toBytes(tag); return this; },
     final: function() {
       var combined = _concatChunks(chunks);
+      if (combined.length < 12) throw new Error('Ciphertext too short');
       var nonce = combined.slice(0, 12);
-      var ciphertext = combined.slice(12);
-      return internalCrypto.aesGcmDecrypt(keyBytes, nonce, new Uint8Array(0), ciphertext);
+      var body = combined.slice(12);
+      return internalCrypto.aesGcmDecrypt(keyBytes, nonce, aad, body);
     },
   };
 }
@@ -2798,8 +3499,10 @@ var algorithms = ['sha1', 'sha256', 'sha384', 'sha512', 'md5'];
 module.exports = {
   hash: hash, hashHex: hashHex,
   hmac: hmac, hmacHex: hmacHex,
+  hashBytes: hashBytes, hmacBytes: hmacBytes,
   randomBytes: randomBytes, uuid: uuid, pbkdf2: pbkdf2,
   sign: sign, verify: verify,
+  ed25519KeyPair: ed25519KeyPair,
   encrypt: encrypt, decrypt: decrypt,
   createCipher: createCipher, createDecipher: createDecipher,
   timingSafeEqual: timingSafeEqual, algorithms: algorithms,
@@ -2809,7 +3512,7 @@ module.exports = {
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:data — Koss 原生数据结构模块
 // 字节操作、编码工具（纯 Uint8Array 实现）
@@ -3027,7 +3730,7 @@ module.exports = {
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:diagnostics_channel — Koss 原生诊断频道标准库
 
@@ -3092,7 +3795,7 @@ module.exports = { channel: channel, subscribe: subscribe, unsubscribe: unsubscr
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:events — Koss 原生事件发射器标准库
 // 完整 EventEmitter 实现，支持所有标准方法与异步迭代
@@ -3354,7 +4057,7 @@ module.exports.getEventListeners = getEventListeners;
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:ffi — Koss 原生外部函数接口模块
 // 基于 _senri_ffi 全局对象
@@ -3423,14 +4126,14 @@ module.exports = {
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:http — Koss 原生 HTTP 客户端/服务端标准库
 // 兼容 Node.js http 模块 API，基于 koss:net TCP 网络层
 
 var EventEmitter = require('koss:events').EventEmitter;
 var net = require('koss:net');
-var Buffer = globalThis.Buffer;
+var Buffer = globalThis.Buffer || require('koss:buffer').Buffer;
 
 // ═══════════════════════════════════════════
 // HTTP 状态码与状态文本
@@ -4342,7 +5045,7 @@ module.exports = {
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:io — Koss 原生统一 I/O 模块
 // 文件操作 + 网络操作，全部同步 API
@@ -4353,7 +5056,7 @@ var streamModule = require('koss:internal/stream');
 var dataModule = require('koss:data');
 
 var decode = dataModule.decode;
-var Buffer = globalThis.Buffer;
+var Buffer = globalThis.Buffer || require('koss:buffer').Buffer;
 
 // ═══════════════════════════════════════════
 // 文件操作
@@ -4409,13 +5112,19 @@ function mkdir(path, options) {
   return internalFs.mkdirSync(path, options);
 }
 
+function _joinPath(base, name) {
+  if (!base) return name;
+  if (base.charAt(base.length - 1) === '/' || base.charAt(base.length - 1) === '\\') return base + name;
+  return base + '/' + name;
+}
+
 function rm(path, options) {
   if (options && options.recursive) {
     try {
       var entries = internalFs.readdirSync(path);
       if (Array.isArray(entries)) {
         for (var i = 0; i < entries.length; i++) {
-          rm(path + '/' + entries[i], { recursive: true });
+          rm(_joinPath(path, entries[i]), { recursive: true });
         }
       }
     } catch(e) {}
@@ -4443,6 +5152,16 @@ function exists(path) {
 }
 
 function append(path, data) {
+  if (typeof globalThis.__koss_fs_append === 'function') {
+    if (typeof data === 'string') {
+      globalThis.__koss_fs_append(String(path), data, false);
+      return;
+    }
+    var u8 = data instanceof Uint8Array ? data : (data && data._data instanceof Uint8Array ? data._data : new Uint8Array(0));
+    var b64 = dataModule.toBase64 ? dataModule.toBase64(u8) : _b64c(u8);
+    globalThis.__koss_fs_append(String(path), b64, true);
+    return;
+  }
   var existing = read(path);
   var newData;
   if (typeof data === 'string') {
@@ -4459,6 +5178,25 @@ function append(path, data) {
   combined.set(existing, 0);
   combined.set(newData, existing.length);
   write(path, combined);
+}
+
+function _b64c(bytes) {
+  var out = '';
+  var i = 0;
+  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  for (; i + 2 < bytes.length; i += 3) {
+    var n = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
+    out += chars[(n >> 18) & 63] + chars[(n >> 12) & 63] + chars[(n >> 6) & 63] + chars[n & 63];
+  }
+  var rem = bytes.length - i;
+  if (rem === 1) {
+    var m = bytes[i] << 16;
+    out += chars[(m >> 18) & 63] + chars[(m >> 12) & 63] + '==';
+  } else if (rem === 2) {
+    var k = (bytes[i] << 16) | (bytes[i + 1] << 8);
+    out += chars[(k >> 18) & 63] + chars[(k >> 12) & 63] + chars[(k >> 6) & 63] + '=';
+  }
+  return out;
 }
 
 function chmod(path, mode) {
@@ -4541,6 +5279,31 @@ function serve(options, handler) {
   var opts = options || {};
   var hostname = opts.hostname || '0.0.0.0';
   var port = opts.port || 3000;
+  // 如果提供了 handler，接线到 koss:http 的完整 HTTP 服务器
+  if (typeof handler === 'function') {
+    var httpMod = require('koss:http');
+    var server = httpMod.createServer(function(req, res) {
+      try {
+        var result = handler(req);
+        if (result && typeof result.then === 'function') {
+          result.then(function(val) { _sendHandlerResponse(res, val); }, function(err) {
+            res.writeHead(500); res.end(String(err && err.message || err));
+          });
+        } else {
+          _sendHandlerResponse(res, result);
+        }
+      } catch (err) {
+        res.writeHead(500); res.end(String(err && err.message || err));
+      }
+    });
+    server.listen(port, hostname);
+    return {
+      port: Number(port),
+      hostname: String(hostname),
+      accept: function() { return null; },
+      close: function() { server.close(); },
+    };
+  }
   var server = internalNet.tcpListen(hostname, Number(port));
   return {
     port: Number(port),
@@ -4548,6 +5311,20 @@ function serve(options, handler) {
     accept: function() { return server.accept(); },
     close: function() { server.close(); },
   };
+}
+
+function _sendHandlerResponse(res, val) {
+  if (val instanceof Response) {
+    res.writeHead(val.status || 200, val.headers);
+    var body = val._body !== undefined ? String(val._body) : '';
+    res.end(body);
+  } else if (val !== undefined && val !== null && typeof val === 'object') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(val));
+  } else {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end(val === undefined || val === null ? '' : String(val));
+  }
 }
 
 function fetch(url, options) {
@@ -4583,7 +5360,7 @@ module.exports = {
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:net — Koss 原生 TCP 网络标准库
 // Socket、Server、createServer、createConnection
@@ -4942,7 +5719,7 @@ module.exports = {
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:os — Koss 操作系统信息模块
 // 主机名、平台、架构、内存、CPU、网络接口等
@@ -5176,7 +5953,7 @@ module.exports = {
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:path — Koss 原生路径标准库
 // POSIX 与 Win32 路径操作（纯 JS 实现）
@@ -5671,7 +6448,7 @@ module.exports = path;
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:process — Koss 标准库进程模块
 // 进程信息、环境变量、事件发射、内存/CPU使用等
@@ -5711,82 +6488,47 @@ function _kill(pid, signal) {
   throw new Error('process.kill not available');
 }
 
-// ─── EventEmitter ───
-var _events = {};
-var _maxListeners = 16;
+// ─── EventEmitter（复用 koss:events）───
+var EventEmitter = require('koss:events');
+var _ee = new EventEmitter();
+_ee.setMaxListeners(16);
 
 function _addListener(event, listener, prepend) {
   if (typeof listener !== 'function') throw new TypeError('listener must be a function');
-  if (_events[event] === undefined) {
-    _events[event] = listener;
-  } else if (Array.isArray(_events[event])) {
-    if (prepend) { _events[event].unshift(listener); } else { _events[event].push(listener); }
+  if (prepend) {
+    _ee.prependListener(event, listener);
   } else {
-    _events[event] = prepend
-      ? [listener, _events[event]]
-      : [_events[event], listener];
-  }
-  if (_maxListeners > 0 && _listenerCount(event) > _maxListeners) {
-    console.warn('MaxListenersExceededWarning: Possible EventEmitter memory leak detected. '
-      + _listenerCount(event) + ' ' + String(event) + ' listeners added.');
+    _ee.on(event, listener);
   }
   return kossProcess;
 }
 
 function _removeListener(event, listener) {
-  if (typeof listener !== 'function') return kossProcess;
-  var list = _events[event];
-  if (list === undefined) return kossProcess;
-  if (Array.isArray(list)) {
-    var index = list.indexOf(listener);
-    if (index !== -1) {
-      list.splice(index, 1);
-      if (list.length === 1) _events[event] = list[0];
-    }
-  } else if (list === listener) {
-    delete _events[event];
-  }
+  _ee.removeListener(event, listener);
   return kossProcess;
 }
 
 function _emit(event) {
-  var list = _events[event];
-  if (list === undefined) return false;
-  var args = Array.prototype.slice.call(arguments, 1);
-  if (Array.isArray(list)) {
-    var handlers = list.slice();
-    for (var i = 0; i < handlers.length; i++) handlers[i].apply(kossProcess, args);
-  } else {
-    list.apply(kossProcess, args);
-  }
-  return true;
+  return _ee.emit.apply(_ee, arguments);
 }
 
 function _listenerCount(event) {
-  var list = _events[event];
-  if (list === undefined) return 0;
-  if (Array.isArray(list)) return list.length;
-  return 1;
+  return _ee.listenerCount(event);
 }
 
-function _eventNames() { return Object.keys(_events); }
+function _eventNames() { return _ee.eventNames(); }
 
 function _setMaxListeners(n) {
   if (typeof n !== 'number' || n < 0) throw new RangeError('n must be a non-negative number');
-  _maxListeners = n;
+  _ee.setMaxListeners(n);
   return kossProcess;
 }
 
-function _getMaxListeners() { return _maxListeners; }
+function _getMaxListeners() { return _ee.getMaxListeners(); }
 
 function _once(event, listener) {
   if (typeof listener !== 'function') throw new TypeError('listener must be a function');
-  function g() {
-    _removeListener(event, g);
-    listener.apply(this, arguments);
-  }
-  g.listener = listener;
-  _addListener(event, g, false);
+  _ee.once(event, listener);
   return kossProcess;
 }
 
@@ -5796,25 +6538,17 @@ function _prependListener(event, listener) {
 
 function _prependOnceListener(event, listener) {
   if (typeof listener !== 'function') throw new TypeError('listener must be a function');
-  function g() {
-    _removeListener(event, g);
-    listener.apply(this, arguments);
-  }
-  g.listener = listener;
-  return _addListener(event, g, true);
+  _ee.prependOnceListener(event, listener);
+  return kossProcess;
 }
 
 function _removeAllListeners(event) {
-  if (event === undefined) { _events = {}; return kossProcess; }
-  delete _events[event];
+  _ee.removeAllListeners(event);
   return kossProcess;
 }
 
 function _listeners(event) {
-  var list = _events[event];
-  if (list === undefined) return [];
-  if (Array.isArray(list)) return list.slice();
-  return [list];
+  return _ee.listeners(event);
 }
 
 // ─── Stream stubs ───
@@ -6023,7 +6757,7 @@ module.exports.default = kossProcess;
 //
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:querystring — Koss 标准库 querystring 模块
 // 兼容 Node.js querystring API
@@ -6034,156 +6768,16 @@ module.exports = require('koss:util').querystring;
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:stream — Koss 标准库 Stream 模块
 // Node.js Stream API 兼容实现，纯 JS，无外部依赖
 
-var Buffer = globalThis.Buffer;
+var Buffer = globalThis.Buffer || require('koss:buffer').Buffer;
+var EventEmitter = require('koss:events');
 
 var kDefaultHighWaterMark = 16384;
 var kMaxListeners = 16;
-
-// ═══════════════════════════════════════════
-// 内置 EventEmitter（自包含，无外部依赖）
-// ═══════════════════════════════════════════
-
-function EventEmitter() {
-  this._events = {};
-  this._maxListeners = kMaxListeners;
-}
-
-EventEmitter.defaultMaxListeners = kMaxListeners;
-
-EventEmitter.prototype._addListener = function(event, listener, prepend) {
-  if (typeof listener !== 'function') {
-    throw new TypeError('listener must be a function');
-  }
-  if (this._events[event] === undefined) {
-    this._events[event] = listener;
-  } else if (Array.isArray(this._events[event])) {
-    if (prepend) {
-      this._events[event].unshift(listener);
-    } else {
-      this._events[event].push(listener);
-    }
-  } else {
-    this._events[event] = prepend
-      ? [listener, this._events[event]]
-      : [this._events[event], listener];
-  }
-
-  var maxListeners = this._maxListeners;
-  if (maxListeners > 0 && this.listenerCount(event) > maxListeners) {
-    console.warn('MaxListenersExceededWarning: Possible EventEmitter memory leak detected. ' +
-      this.listenerCount(event) + ' ' + String(event) + ' listeners added.');
-  }
-
-  return this;
-};
-
-EventEmitter.prototype.on = function(event, listener) {
-  return this._addListener(event, listener, false);
-};
-
-EventEmitter.prototype.addListener = function(event, listener) {
-  return this._addListener(event, listener, false);
-};
-
-EventEmitter.prototype.once = function(event, listener) {
-  if (typeof listener !== 'function') throw new TypeError('listener must be a function');
-
-  function wrappedListener() {
-    var args = Array.prototype.slice.call(arguments);
-    this.removeListener(event, wrappedListener);
-    return listener.apply(this, args);
-  }
-  wrappedListener.listener = listener;
-  this.on(event, wrappedListener);
-  return this;
-};
-
-EventEmitter.prototype.removeListener = function(event, listener) {
-  if (typeof listener !== 'function') return this;
-  var list = this._events[event];
-  if (list === undefined) return this;
-
-  if (Array.isArray(list)) {
-    var index = list.indexOf(listener);
-    if (index !== -1) {
-      list.splice(index, 1);
-      if (list.length === 1) {
-        this._events[event] = list[0];
-      }
-    }
-  } else if (list === listener) {
-    delete this._events[event];
-  }
-
-  return this;
-};
-
-EventEmitter.prototype.off = function(event, listener) {
-  return this.removeListener(event, listener);
-};
-
-EventEmitter.prototype.removeAllListeners = function(event) {
-  if (event === undefined) {
-    this._events = {};
-    return this;
-  }
-  delete this._events[event];
-  return this;
-};
-
-EventEmitter.prototype.emit = function(event) {
-  var list = this._events[event];
-  if (list === undefined) return false;
-
-  var args = Array.prototype.slice.call(arguments, 1);
-
-  if (Array.isArray(list)) {
-    var handlers = list.slice();
-    for (var i = 0; i < handlers.length; i++) {
-      handlers[i].apply(this, args);
-    }
-  } else {
-    list.apply(this, args);
-  }
-
-  return true;
-};
-
-EventEmitter.prototype.listeners = function(event) {
-  var list = this._events[event];
-  if (list === undefined) return [];
-  if (Array.isArray(list)) return list.slice();
-  return [list];
-};
-
-EventEmitter.prototype.listenerCount = function(event) {
-  var list = this._events[event];
-  if (list === undefined) return 0;
-  if (Array.isArray(list)) return list.length;
-  return 1;
-};
-
-EventEmitter.prototype.eventNames = function() {
-  return Object.keys(this._events);
-};
-
-EventEmitter.prototype.setMaxListeners = function(n) {
-  this._maxListeners = n;
-  return this;
-};
-
-EventEmitter.prototype.getMaxListeners = function() {
-  return this._maxListeners;
-};
-
-EventEmitter.prototype.rawListeners = function(event) {
-  return this.listeners(event);
-};
 
 // ═══════════════════════════════════════════
 // Stream 基类
@@ -6192,8 +6786,12 @@ EventEmitter.prototype.rawListeners = function(event) {
 function Stream(options) {
   EventEmitter.call(this);
   var opts = options || {};
-  this.readable = opts.readable !== false;
-  this.writable = opts.writable !== false;
+  try {
+    this.readable = opts.readable !== false;
+    this.writable = opts.writable !== false;
+  } catch (e) {
+    // 子类原型可能定义了只读 getter（Readable/Writable/Duplex），此时忽略赋值
+  }
 }
 
 Stream.prototype = Object.create(EventEmitter.prototype);
@@ -6465,10 +7063,12 @@ function Writable(options) {
     highWaterMark: opts.highWaterMark || kDefaultHighWaterMark,
     encoding: opts.encoding || null,
     objectMode: opts.objectMode || false,
+    writable: true,
     ended: false,
     destroyed: false,
     writecb: null,
     writecount: 0,
+    length: 0,
   };
   this._writeFn = opts._write || opts.write || null;
 }
@@ -6516,8 +7116,14 @@ Writable.prototype.write = function(chunk, encoding, callback) {
         cb(err);
         return;
       }
+      if (chunk && typeof chunk.length === 'number') {
+        state.length = Math.max(0, state.length - chunk.length);
+      }
       cb();
     });
+    if (chunk && typeof chunk.length === 'number') {
+      state.length += chunk.length;
+    }
     return true;
   } catch (err) {
     cb(err);
@@ -6561,7 +7167,7 @@ Writable.prototype.destroy = function(err) {
 
 Object.defineProperty(Writable.prototype, 'writable', {
   get: function() {
-    return this._writableState && this._writableState.writable && !this._writableState.ended;
+    return this._writableState && this._writableState.writable !== false && !this._writableState.ended && !this._writableState.destroyed;
   }
 });
 
@@ -6585,7 +7191,7 @@ Object.defineProperty(Writable.prototype, 'writableObjectMode', {
 
 Object.defineProperty(Writable.prototype, 'writableLength', {
   get: function() {
-    return 0;
+    return this._writableState ? this._writableState.length || 0 : 0;
   }
 });
 
@@ -6609,10 +7215,12 @@ function Duplex(options) {
     highWaterMark: opts.highWaterMark || kDefaultHighWaterMark,
     encoding: opts.encoding || null,
     objectMode: opts.objectMode || false,
+    writable: true,
     ended: false,
     destroyed: false,
     writecb: null,
     writecount: 0,
+    length: 0,
   };
   this._readFn = opts._read || opts.read || null;
   this._writeFn = opts._write || opts.write || null;
@@ -6935,10 +7543,19 @@ Transform.prototype._write = function(chunk, encoding, callback) {
       return;
     }
     if (data !== undefined) {
-      self.push(data);
+      self._transformState.buffer.push(data);
+      self._emitReadable();
     }
     callback();
   });
+};
+
+Transform.prototype._emitReadable = function() {
+  if (this._readableState && this._readableState.flowing) {
+    while (this._transformState.buffer.length > 0) {
+      this.push(this._transformState.buffer.shift());
+    }
+  }
 };
 
 Transform.prototype._read = function(size) {
@@ -7172,7 +7789,7 @@ module.exports.isDestroyed = isDestroyed;
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:string_decoder — Koss 标准库字符串解码器模块
 // Node.js StringDecoder 兼容实现，纯 JS，无外部依赖
@@ -7375,7 +7992,17 @@ StringDecoder.prototype.write = function(buffer) {
 
 StringDecoder.prototype.end = function(buffer) {
   var result = buffer ? this.write(buffer) : '';
+  if (this._bufferBytes && this._bufferBytes.length > 0) {
+    if (this.encoding === 'utf8' || this.encoding === 'utf-8') {
+      result += _utf8Decode(this._bufferBytes);
+    } else if (this.encoding === 'utf16le' || this.encoding === 'utf-16le' || this.encoding === 'ucs2' || this.encoding === 'ucs-2') {
+      result += _utf16leDecode(this._bufferBytes);
+    } else {
+      result += _latin1Decode(this._bufferBytes);
+    }
+  }
   this._buffer = '';
+  this._bufferBytes = null;
   this._lastNeed = 0;
   this._lastTotal = 0;
   return result;
@@ -7397,31 +8024,68 @@ StringDecoder.prototype.fillLast = function(buffer) {
 // ─── Encoding-specific writers ───
 
 StringDecoder.prototype._writeUtf8 = function(buf) {
-  var total = this._lastTotal + buf.length;
   var result = '';
 
-  if (this._lastNeed > 0) {
-    var needed = this._lastNeed;
-    if (needed > buf.length) needed = buf.length;
-    var partial = new Uint8Array(this._lastTotal + needed);
+  if (this._lastNeed > 0 && this._bufferBytes) {
+    var buffered = this._bufferBytes.length;
+    // 从新 buf 取需要的字节补齐到完整序列
+    var take = Math.min(this._lastNeed, buf.length);
+    var partial = new Uint8Array(buffered + take);
     partial.set(this._bufferBytes, 0);
-    partial.set(buf.subarray(0, needed), this._lastTotal);
-    result = _utf8Decode(partial);
-    this._lastNeed -= needed;
-    this._lastTotal = this._lastNeed;
+    partial.set(buf.subarray(0, take), buffered);
+    this._lastNeed -= take;
     if (this._lastNeed > 0) {
-      this._bufferBytes = new Uint8Array(result.length);
-      for (var j = 0; j < result.length; j++) {
-        this._bufferBytes[j] = result.charCodeAt(j);
-      }
+      // 仍不完整，继续保存
+      var newBuf = new Uint8Array(buffered + take);
+      newBuf.set(this._bufferBytes, 0);
+      newBuf.set(buf.subarray(0, take), buffered);
+      this._bufferBytes = newBuf;
     } else {
+      result = _utf8Decode(partial);
       this._bufferBytes = null;
     }
-    buf = buf.subarray(needed);
+    buf = buf.subarray(take);
   }
 
   if (buf.length > 0) {
-    result += _utf8Decode(buf);
+    // 处理结尾不完整的 UTF-8 序列：从末尾向前找到第一个非续字节。
+    // 只有"起始字节后缺少续字节"的情况需要缓冲。
+    var split = buf.length;
+    var i = buf.length - 1;
+    // 跳过末尾的续字节
+    while (i >= 0 && (buf[i] & 0xc0) === 0x80) i--;
+    if (i >= 0) {
+      var b0 = buf[i];
+      var need;
+      if (b0 >= 0xf0) need = 4;
+      else if (b0 >= 0xe0) need = 3;
+      else if (b0 >= 0xc0) need = 2;
+      else need = 1;
+      // 从 i 到末尾的字节数
+      var consumed = buf.length - i;
+      if (consumed < need) {
+        // 起始字节已出现但续字节不足 → 整个序列缓冲
+        split = i;
+      }
+    }
+    var complete = buf.subarray(0, split);
+    if (complete.length > 0) {
+      result += _utf8Decode(complete);
+    }
+    var remaining = buf.subarray(split);
+    if (remaining.length > 0) {
+      // 从第一个起始字节算起的完整序列所需字节数
+      var first = remaining[0];
+      var totalNeed;
+      if (first >= 0xf0) totalNeed = 4;
+      else if (first >= 0xe0) totalNeed = 3;
+      else if (first >= 0xc0) totalNeed = 2;
+      else totalNeed = 1;
+      this._lastNeed = totalNeed - remaining.length;
+      this._bufferBytes = new Uint8Array(remaining);
+    } else {
+      this._bufferBytes = null;
+    }
   }
 
   return result;
@@ -7537,7 +8201,7 @@ module.exports = { StringDecoder: StringDecoder };
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:system — Koss 原生系统与进程模块
 // 架构、平台、内存、CPU、环境变量等
@@ -7601,6 +8265,23 @@ function env(key) {
 
 function pid() {
   return (process && process.pid) || 0;
+}
+
+function envSet(key, value) {
+  if (!process || !process.env) return;
+  process.env[String(key)] = String(value);
+}
+
+function envDelete(key) {
+  if (!process || !process.env) return;
+  delete process.env[String(key)];
+}
+
+function kill(targetPid, signal) {
+  if (process && typeof process.kill === 'function') {
+    return process.kill(targetPid, signal);
+  }
+  throw new Error('process.kill not available');
 }
 
 function exit(code) {
@@ -7701,7 +8382,8 @@ function availableParallelism() {
 module.exports = {
   arch: arch, platform: platform, hostname: hostname, cpus: cpus,
   memory: memory, uptime: uptime, loadavg: loadavg,
-  env: env, pid: pid, exit: exit, cwd: cwd, chdir: chdir,
+  env: env, envSet: envSet, envDelete: envDelete,
+  pid: pid, exit: exit, cwd: cwd, chdir: chdir, kill: kill,
   version: version, versions: versions, nextTick: nextTick,
   homedir: homedir, tmpdir: tmpdir, type: type, release: release,
   userInfo: userInfo, EOL: EOL(), availableParallelism: availableParallelism,
@@ -7711,7 +8393,7 @@ module.exports = {
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:timers — Koss 原生定时器标准库
 // 完整定时器实现：setTimeout/setInterval/setImmediate + Promise + Timeout 类
@@ -7988,7 +8670,7 @@ module.exports = {
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:trace_events — Koss 原生跟踪事件标准库
 
@@ -8026,7 +8708,7 @@ module.exports = { createTracing: createTracing, getEnabledCategories: getEnable
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:url — Koss 原生 URL 处理模块
 // URL 解析、格式化、路径转换、查询参数处理
@@ -8112,15 +8794,28 @@ _URLSearchParams.prototype.set = function(key, value) {
 };
 
 _URLSearchParams.prototype.keys = function() {
-  return this._pairs.map(function(p) { return p[0]; });
+  var self = this;
+  return (function*() {
+    for (var i = 0; i < self._pairs.length; i++) yield self._pairs[i][0];
+  })();
 };
 
 _URLSearchParams.prototype.values = function() {
-  return this._pairs.map(function(p) { return p[1]; });
+  var self = this;
+  return (function*() {
+    for (var i = 0; i < self._pairs.length; i++) yield self._pairs[i][1];
+  })();
 };
 
 _URLSearchParams.prototype.entries = function() {
-  return this._pairs.slice();
+  var self = this;
+  return (function*() {
+    for (var i = 0; i < self._pairs.length; i++) yield [self._pairs[i][0], self._pairs[i][1]];
+  })();
+};
+
+_URLSearchParams.prototype[Symbol.iterator] = function() {
+  return this.entries();
 };
 
 _URLSearchParams.prototype.forEach = function(callback, thisArg) {
@@ -8994,17 +9689,37 @@ const querystring = {
 const types = {
   isArray: kArray.isArray,
   isArrayBuffer: function (v) { return v instanceof ArrayBuffer; },
-  isArrayBufferView: function (v) { return v instanceof ArrayBuffer && ArrayBuffer.isView(v); },
+  isArrayBufferView: function (v) { return ArrayBuffer.isView(v); },
+  isBigInt64Array: function (v) { return Object.prototype.toString.call(v) === '[object BigInt64Array]'; },
+  isBigUint64Array: function (v) { return Object.prototype.toString.call(v) === '[object BigUint64Array]'; },
   isBoolean: function (v) { return typeof v === 'boolean'; },
+  isDataView: function (v) { return Object.prototype.toString.call(v) === '[object DataView]'; },
   isDate: function (v) { return v instanceof Date; },
+  isFloat32Array: function (v) { return Object.prototype.toString.call(v) === '[object Float32Array]'; },
+  isFloat64Array: function (v) { return Object.prototype.toString.call(v) === '[object Float64Array]'; },
   isFunction: function (v) { return typeof v === 'function'; },
+  isGeneratorFunction: function (v) { return v && Object.prototype.toString.call(v) === '[object GeneratorFunction]'; },
+  isInt8Array: function (v) { return Object.prototype.toString.call(v) === '[object Int8Array]'; },
+  isInt16Array: function (v) { return Object.prototype.toString.call(v) === '[object Int16Array]'; },
+  isInt32Array: function (v) { return Object.prototype.toString.call(v) === '[object Int32Array]'; },
+  isMap: function (v) { return Object.prototype.toString.call(v) === '[object Map]'; },
+  isNativeError: function (v) { return v instanceof Error; },
   isNull: function (v) { return v === kNull; },
   isNumber: function (v) { return typeof v === 'number'; },
   isObject: function (v) { return typeof v === 'object' && v !== kNull; },
+  isPromise: function (v) { return v instanceof Promise; },
   isRegExp: function (v) { return v instanceof kRegExp; },
+  isSet: function (v) { return Object.prototype.toString.call(v) === '[object Set]'; },
+  isSharedArrayBuffer: function (v) { return v instanceof SharedArrayBuffer; },
   isString: function (v) { return typeof v === 'string'; },
   isSymbol: function (v) { return typeof v === 'symbol'; },
+  isUint8Array: function (v) { return Object.prototype.toString.call(v) === '[object Uint8Array]'; },
+  isUint8ClampedArray: function (v) { return Object.prototype.toString.call(v) === '[object Uint8ClampedArray]'; },
+  isUint16Array: function (v) { return Object.prototype.toString.call(v) === '[object Uint16Array]'; },
+  isUint32Array: function (v) { return Object.prototype.toString.call(v) === '[object Uint32Array]'; },
   isUndefined: function (v) { return v === kUndefined; },
+  isWeakMap: function (v) { return Object.prototype.toString.call(v) === '[object WeakMap]'; },
+  isWeakSet: function (v) { return Object.prototype.toString.call(v) === '[object WeakSet]'; },
 };
 
 const _systemErrorNames = {
@@ -9085,7 +9800,7 @@ module.exports = {
 //
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:zlib — Koss 标准库压缩模块
 // gzip, gunzip, inflate, deflate, brotli 压缩/解压缩
@@ -9397,29 +10112,30 @@ var _deflateDistLengths = [
 ];
 
 function _getDeflateLenCode(len) {
+  // len 落在 [_deflateLengthBase[i], 下一个 base) 区间
   for (var i = 0; i < _deflateLengthBase.length; i++) {
-    if (_deflateLengthBase[i] === len) return 257 + i;
+    if (len < _deflateLengthBase[i]) return 256 + i;
   }
-  return 258;
+  return 285;
 }
 
 function _getDeflateLenExtra(len) {
   for (var i = 0; i < _deflateLengthBase.length; i++) {
-    if (_deflateLengthBase[i] === len) return _deflateLengthExtra[i];
+    if (len < _deflateLengthBase[i]) return _deflateLengthExtra[i];
   }
   return 0;
 }
 
 function _getDeflateDistCode(dist) {
   for (var i = 0; i < _deflateDistBase.length; i++) {
-    if (_deflateDistBase[i] === dist) return i;
+    if (dist < _deflateDistBase[i]) return i;
   }
   return 29;
 }
 
 function _getDeflateDistExtra(dist) {
   for (var i = 0; i < _deflateDistBase.length; i++) {
-    if (_deflateDistBase[i] === dist) return _deflateDistExtra[i];
+    if (dist < _deflateDistBase[i]) return _deflateDistExtra[i];
   }
   return 0;
 }
@@ -9559,7 +10275,23 @@ function _deflateCompress(input, level) {
   var writer = _createBitWriter();
   var windowSize = 32768;
 
+  // Fixed Huffman 编码的码字（MSB-first 规范码），通过标准构造算法生成。
+  var litInfo = _buildHuffmanCodes(_deflateLitLenLengths);
+  var distInfo = _buildHuffmanCodes(_deflateDistLengths);
+
+  function writeLitLen(sym) {
+    var bits = _deflateLitLenLengths[sym];
+    writer.writeBits(_reverseBits(litInfo.codes[sym], bits), bits);
+  }
+
+  function writeDist(sym) {
+    var bits = _deflateDistLengths[sym];
+    writer.writeBits(_reverseBits(distInfo.codes[sym], bits), bits);
+  }
+
+  // BFINAL=1, BTYPE=01 (fixed Huffman)
   writer.writeBits(1, 1);
+  writer.writeBits(1, 2);
 
   var pos = 0;
   while (pos < data.length) {
@@ -9567,29 +10299,28 @@ function _deflateCompress(input, level) {
 
     if (match) {
       var lenCode = _getDeflateLenCode(match.len);
+      var lenIdx = lenCode - 256;
+      var lenBase = lenIdx >= 0 ? _deflateLengthBase[lenIdx] : 0;
       var lenExtra = _getDeflateLenExtra(match.len);
-      var lenIdx = lenCode - 257;
-      writer.writeBits(_deflateLitLenLengths[lenCode], 7);
-      writer.writeBits(lenIdx, 7);
-      if (lenExtra > 0) writer.writeBits(match.len - _deflateLengthBase[lenIdx], lenExtra);
+      writeLitLen(lenCode);
+      if (lenExtra > 0) writer.writeBits(match.len - lenBase, lenExtra);
 
       var distCode = _getDeflateDistCode(match.dist);
+      var distBase = _deflateDistBase[distCode];
       var distExtra = _getDeflateDistExtra(match.dist);
-      writer.writeBits(_deflateDistLengths[distCode], 5);
-      writer.writeBits(distCode, 5);
-      if (distExtra > 0) writer.writeBits(match.dist - _deflateDistBase[distCode], distExtra);
+      writeDist(distCode);
+      if (distExtra > 0) writer.writeBits(match.dist - distBase, distExtra);
 
       pos += match.len;
     } else {
-      var litLenCode = data[pos];
-      writer.writeBits(_deflateLitLenLengths[litLenCode], 7);
-      writer.writeBits(litLenCode, litLenCode < 144 ? 7 : 8);
+      var lit = data[pos];
+      writeLitLen(lit);
       pos++;
     }
   }
 
-  writer.writeBits(_deflateLitLenLengths[256], 7);
-  writer.writeBits(256, 7);
+  // 结束符号 256
+  writeLitLen(256);
   writer.flush();
 
   return writer.toBytes();
@@ -10076,7 +10807,7 @@ module.exports = {
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/assert - Node.js assert module (L3)
 // Maps to koss:assert standard library
@@ -10087,7 +10818,7 @@ module.exports = require('koss:assert');
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/buffer - Node.js buffer module (L3)
 // Maps to koss:buffer standard library
@@ -10103,11 +10834,22 @@ module.exports.atob = kossBuffer.atob;
 module.exports.btoa = kossBuffer.btoa;
 module.exports.constants = kossBuffer.constants;
 "#),
+        "node_shim/console.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
+
+// koss:node/console - Node.js console module (L3)
+// 返回全局 console（Node 中 console 既是全局对象也是模块）
+
+module.exports = globalThis.console;
+"#),
         "node_shim/constants.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/constants - Node.js constants module (L3)
 // Maps to koss:constants standard library
@@ -10118,7 +10860,7 @@ module.exports = require('koss:constants');
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/crypto - Node.js crypto module (L3)
 // Maps to koss:crypto standard library
@@ -10148,7 +10890,7 @@ function randomUUID(options) {
 
 function randomFillSync(buffer, offset, size) {
   var off = offset || 0;
-  var len = size || buffer.length - off;
+  var len = size !== undefined && size !== null ? size : buffer.length - off;
   var bytes = kossCrypto.randomBytes(len);
   for (var i = 0; i < len; i++) buffer[off + i] = bytes[i];
   return buffer;
@@ -10178,13 +10920,11 @@ function createHash(algorithm) {
     },
     digest: function(encoding) {
       var combined = Buffer.concat(chunks);
-      var hashBytes = kossCrypto.hash(algo, combined);
-      if (encoding === 'hex' || !encoding) {
-        return kossCrypto.hashHex(algo, combined);
-      }
-      if (encoding === 'base64') return Buffer.from(hashBytes).toString('base64');
-      if (encoding === 'latin1') return Buffer.from(hashBytes).toString('latin1');
-      return Buffer.from(hashBytes);
+      var bytes = kossCrypto.hashBytes(algo, combined);
+      if (encoding === 'hex' || !encoding) return Buffer.from(bytes).toString('hex');
+      if (encoding === 'base64') return Buffer.from(bytes).toString('base64');
+      if (encoding === 'latin1') return Buffer.from(bytes).toString('latin1');
+      return Buffer.from(bytes);
     },
     copy: function() {
       var copy = createHash(algo);
@@ -10209,13 +10949,11 @@ function createHmac(algorithm, key) {
     },
     digest: function(encoding) {
       var msg = Buffer.concat(chunks);
-      var macBytes = kossCrypto.hmac(algo, keyBuf, msg);
-      if (encoding === 'hex' || !encoding) {
-        return kossCrypto.hmacHex(algo, keyBuf, msg);
-      }
-      if (encoding === 'base64') return Buffer.from(macBytes).toString('base64');
-      if (encoding === 'latin1') return Buffer.from(macBytes).toString('latin1');
-      return Buffer.from(macBytes);
+      var bytes = kossCrypto.hmacBytes(algo, keyBuf, msg);
+      if (encoding === 'hex' || !encoding) return Buffer.from(bytes).toString('hex');
+      if (encoding === 'base64') return Buffer.from(bytes).toString('base64');
+      if (encoding === 'latin1') return Buffer.from(bytes).toString('latin1');
+      return Buffer.from(bytes);
     },
   };
 }
@@ -10243,12 +10981,12 @@ function getHashes() {
   return ['sha1', 'sha256', 'sha384', 'sha512', 'md5'];
 }
 
-function getCiphers() { return ['aes-256-gcm', 'aes-128-gcm']; }
+function getCiphers() { return ['aes-128-gcm', 'aes-192-gcm', 'aes-256-gcm']; }
 function getCurves() { return ['ed25519']; }
 
 function generateKeyPairSync(type, options) {
   if (type === 'ed25519') {
-    var kp = kossCrypto.internalCrypto.ed25519KeyPair();
+    var kp = kossCrypto.ed25519KeyPair();
     return {
       publicKey: Buffer.from(kp.publicKey),
       privateKey: Buffer.from(kp.privateKey),
@@ -10264,8 +11002,7 @@ function sign(algorithm, data, key) {
     var sig = kossCrypto.sign(toBuffer(key), msgBuf);
     return Buffer.from(sig);
   }
-  var macBytes = kossCrypto.hmac(algo, toBuffer(key), msgBuf);
-  return Buffer.from(macBytes);
+  throw new Error('Signing with algorithm "' + algorithm + '" is not supported. Only ed25519 is available.');
 }
 
 function verify(algorithm, data, key, signature) {
@@ -10275,55 +11012,92 @@ function verify(algorithm, data, key, signature) {
   if (algo === 'ed25519') {
     return kossCrypto.verify(toBuffer(key), msgBuf, sigBuf);
   }
-  var expected = Buffer.from(kossCrypto.hmac(algo, toBuffer(key), msgBuf));
-  return expected.length === sigBuf.length && kossCrypto.timingSafeEqual(expected, sigBuf);
+  throw new Error('Verifying with algorithm "' + algorithm + '" is not supported. Only ed25519 is available.');
+}
+
+function _parseCipherAlgorithm(algorithm) {
+  var a = String(algorithm).toLowerCase().replace('_', '-');
+  if (a === 'aes-128-gcm') return { keyLen: 16 };
+  if (a === 'aes-192-gcm') return { keyLen: 24 };
+  if (a === 'aes-256-gcm') return { keyLen: 32 };
+  return null;
+}
+
+function _encodeOutput(bytes, encoding) {
+  if (encoding === 'hex') return Buffer.from(bytes).toString('hex');
+  if (encoding === 'base64') return Buffer.from(bytes).toString('base64');
+  if (encoding === 'latin1') return Buffer.from(bytes).toString('latin1');
+  return Buffer.from(bytes);
 }
 
 function createCipheriv(algorithm, key, iv) {
+  var spec = _parseCipherAlgorithm(algorithm);
+  if (!spec) throw new Error('Unsupported cipher: ' + algorithm);
   var keyBuf = toBuffer(key);
+  if (keyBuf.length !== spec.keyLen) {
+    throw new Error('Invalid key length ' + keyBuf.length + ' for ' + algorithm);
+  }
   var ivBuf = iv ? toBuffer(iv) : new Uint8Array(0);
+  if (ivBuf.length !== 12) {
+    throw new Error('Invalid IV length ' + ivBuf.length + ' for AES-GCM (expected 12 bytes)');
+  }
   var chunks = [];
+  var aad = new Uint8Array(0);
+  var cipherState = null;
   return {
     update: function(data, inputEncoding, outputEncoding) {
       chunks.push(toBuffer(data));
       return '';
     },
+    setAAD: function(buf) { aad = toBuffer(buf); return this; },
     final: function(outputEncoding) {
+      if (cipherState) return '';
       var plaintext = Buffer.concat(chunks);
-      var aad = new Uint8Array(0);
-      var nonce = ivBuf.length >= 12 ? ivBuf.slice(0, 12) : kossCrypto.randomBytes(12);
-      var ct = kossCrypto.encrypt(keyBuf, plaintext, { nonce: nonce, aad: aad });
-      if (outputEncoding === 'hex') {
-        return kossCrypto.hashHex('sha256', ct);
-      }
-      if (outputEncoding === 'base64') return Buffer.from(ct).toString('base64');
-      return Buffer.from(ct);
+      var ct = kossCrypto.encrypt(keyBuf, plaintext, { nonce: ivBuf, aad: aad });
+      if (ct.length < 16) throw new Error('AES-GCM encryption produced invalid output');
+      var body = ct.subarray(0, ct.length - 16);
+      cipherState = { authTag: Buffer.from(ct.subarray(ct.length - 16)) };
+      return _encodeOutput(body, outputEncoding);
     },
-    getAuthTag: function() { return Buffer.alloc(16); },
+    getAuthTag: function() {
+      if (!cipherState) throw new Error('Cannot get auth tag before final()');
+      return cipherState.authTag;
+    },
   };
 }
 
 function createDecipheriv(algorithm, key, iv) {
+  var spec = _parseCipherAlgorithm(algorithm);
+  if (!spec) throw new Error('Unsupported cipher: ' + algorithm);
   var keyBuf = toBuffer(key);
+  if (keyBuf.length !== spec.keyLen) {
+    throw new Error('Invalid key length ' + keyBuf.length + ' for ' + algorithm);
+  }
   var ivBuf = iv ? toBuffer(iv) : new Uint8Array(0);
+  if (ivBuf.length !== 12) {
+    throw new Error('Invalid IV length ' + ivBuf.length + ' for AES-GCM (expected 12 bytes)');
+  }
   var chunks = [];
+  var aad = new Uint8Array(0);
   var authTag = null;
+  var decrypted = false;
   return {
     update: function(data, inputEncoding, outputEncoding) {
       chunks.push(toBuffer(data));
       return '';
     },
+    setAAD: function(buf) { aad = toBuffer(buf); return this; },
     setAuthTag: function(tag) { authTag = toBuffer(tag); return this; },
     final: function(outputEncoding) {
+      if (decrypted) return '';
+      if (!authTag) throw new Error('Cannot decrypt without auth tag (call setAuthTag first)');
       var ciphertext = Buffer.concat(chunks);
-      var aad = new Uint8Array(0);
-      var nonce = ivBuf.length >= 12 ? ivBuf.slice(0, 12) : new Uint8Array(12);
-      var pt = kossCrypto.decrypt(keyBuf, ciphertext, { nonce: nonce, aad: aad });
-      if (outputEncoding === 'hex') {
-        return kossCrypto.hashHex('sha256', pt);
-      }
-      if (outputEncoding === 'base64') return Buffer.from(pt).toString('base64');
-      return Buffer.from(pt);
+      var combined = new Uint8Array(ciphertext.length + authTag.length);
+      combined.set(ciphertext, 0);
+      combined.set(authTag, ciphertext.length);
+      var pt = kossCrypto.decrypt(keyBuf, combined, { nonce: ivBuf, aad: aad });
+      decrypted = true;
+      return _encodeOutput(pt, outputEncoding);
     },
   };
 }
@@ -10344,12 +11118,66 @@ module.exports = {
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/dgram - Node.js dgram module (L3)
+// 基于 __koss_udp_* Rust 原生函数实现真实 UDP 收发。
 
 var events = require('koss:events');
 var EventEmitter = events.EventEmitter;
+
+var Buffer = globalThis.Buffer || require('koss:buffer').Buffer;
+
+function _toBytes(data) {
+  if (Buffer && Buffer.isBuffer(data)) return data._data || data;
+  if (data instanceof Uint8Array) return data;
+  if (Array.isArray(data)) return new Uint8Array(data);
+  if (typeof data === 'string') {
+    var bytes = new Uint8Array(data.length);
+    for (var i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i) & 0xff;
+    return bytes;
+  }
+  return new Uint8Array(0);
+}
+
+function _b64c(bytes) {
+  var out = '';
+  var i = 0;
+  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  for (; i + 2 < bytes.length; i += 3) {
+    var n = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
+    out += chars[(n >> 18) & 63] + chars[(n >> 12) & 63] + chars[(n >> 6) & 63] + chars[n & 63];
+  }
+  var rem = bytes.length - i;
+  if (rem === 1) {
+    var m = bytes[i] << 16;
+    out += chars[(m >> 18) & 63] + chars[(m >> 12) & 63] + '==';
+  } else if (rem === 2) {
+    var k = (bytes[i] << 16) | (bytes[i + 1] << 8);
+    out += chars[(k >> 18) & 63] + chars[(k >> 12) & 63] + chars[(k >> 6) & 63] + '=';
+  }
+  return out;
+}
+
+function _b64dec(s) {
+  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  var lookup = {};
+  for (var i = 0; i < chars.length; i++) lookup[chars.charCodeAt(i)] = i;
+  var out = [];
+  for (var j = 0; j < s.length; j += 4) {
+    var a = lookup[s.charCodeAt(j)] || 0;
+    var b = lookup[s.charCodeAt(j + 1)] || 0;
+    var c = lookup[s.charCodeAt(j + 2)] || 0;
+    var d = lookup[s.charCodeAt(j + 3)] || 0;
+    var t = (a << 18) | (b << 12) | (c << 6) | d;
+    out.push((t >> 16) & 0xFF);
+    if (s[j + 2] !== '=') out.push((t >> 8) & 0xFF);
+    if (s[j + 3] !== '=') out.push(t & 0xFF);
+  }
+  return new Uint8Array(out);
+}
+
+var nextTick = (typeof process !== 'undefined' && process.nextTick) ? process.nextTick : setTimeout;
 
 class Socket extends EventEmitter {
   constructor(options) {
@@ -10360,43 +11188,121 @@ class Socket extends EventEmitter {
     this._fd = null;
     this._bound = false;
     this._closed = false;
+    this._polling = false;
+    this._recvInterval = null;
+  }
+
+  _ensureFd() {
+    if (this._fd !== null) return;
+    if (typeof globalThis.__koss_udp_create !== 'function') {
+      throw new Error('UDP capability not available (NET_UDP not granted)');
+    }
+    this._fd = globalThis.__koss_udp_create(this.type);
   }
 
   bind(port, address, callback) {
     if (typeof address === 'function') { callback = address; address = '0.0.0.0'; }
     if (typeof port === 'function') { callback = port; port = 0; }
+    this._ensureFd();
+    var addr = address || (this.type === 'udp6' ? '::' : '0.0.0.0');
+    try {
+      globalThis.__koss_udp_bind(this._fd, String(addr), Number(port) || 0);
+    } catch (err) {
+      if (callback) return nextTick(() => callback(err));
+      throw err;
+    }
     this._bound = true;
-    if (callback) process.nextTick(callback);
+    this._startPolling();
+    if (callback) nextTick(() => callback(null));
     this.emit('listening');
     return this;
   }
 
+  _startPolling() {
+    if (this._polling || this._closed) return;
+    this._polling = true;
+    var self = this;
+    this._recvInterval = setInterval(function() {
+      if (self._closed || typeof globalThis.__koss_udp_recv !== 'function') return;
+      try {
+        var result = globalThis.__koss_udp_recv(self._fd, 65536);
+        if (result && result.code === 0 && result.value) {
+          var bytes = _b64dec(result.value);
+          var fromParts = (result.from || '').split(':');
+          var rinfo = {
+            address: fromParts.slice(0, fromParts.length - 1).join(':'),
+            family: fromParts[0] && fromParts[0].indexOf(':') !== -1 || fromParts.length > 2 ? 'IPv6' : 'IPv4',
+            port: parseInt(fromParts[fromParts.length - 1], 10) || 0,
+            size: bytes.length,
+          };
+          self.emit('message', bytes, rinfo);
+        }
+      } catch (e) {
+        self.emit('error', e);
+      }
+    }, 10);
+  }
+
   send(msg, offset, length, port, address, callback) {
-    if (typeof address === 'function') { callback = address; address = '0.0.0.0'; }
-    if (typeof port === 'function') { callback = port; port = 0; }
+    if (typeof address === 'function') { callback = address; address = undefined; }
+    if (typeof port === 'function') { callback = port; port = undefined; }
     if (typeof offset === 'function') { callback = offset; offset = 0; }
-    if (typeof length === 'function') { callback = length; length = msg.length; }
-    if (callback) process.nextTick(callback);
+    if (typeof length === 'function') { callback = length; length = undefined; }
+
+    var bytes = _toBytes(msg);
+    var off = offset || 0;
+    var len = length !== undefined ? length : bytes.length - off;
+    var slice = bytes.subarray(off, off + len);
+    var target = address || (this.type === 'udp6' ? '::1' : '127.0.0.1');
+
+    this._ensureFd();
+    try {
+      var result = globalThis.__koss_udp_send(this._fd, _b64c(slice), true, String(target), Number(port) || 0);
+      if (result && result.code !== 0) {
+        throw new Error('UDP send failed: ' + (result.value || ''));
+      }
+      if (callback) nextTick(() => callback(null, len));
+    } catch (err) {
+      if (callback) return nextTick(() => callback(err));
+      throw err;
+    }
     return this;
   }
 
   close(callback) {
+    if (this._closed) return this;
     this._closed = true;
-    if (callback) process.nextTick(callback);
+    if (this._recvInterval) { clearInterval(this._recvInterval); this._recvInterval = null; }
+    this._polling = false;
+    if (this._fd !== null && typeof globalThis.__koss_udp_close === 'function') {
+      try { globalThis.__koss_udp_close(this._fd); } catch (e) {}
+      this._fd = null;
+    }
     this.emit('close');
+    if (callback) nextTick(callback);
     return this;
   }
 
   address() {
-    return { address: '0.0.0.0', family: this.type === 'udp4' ? 'IPv4' : 'IPv6', port: 0 };
+    this._ensureFd();
+    var addrStr = globalThis.__koss_udp_address(this._fd);
+    if (!addrStr) return { address: '0.0.0.0', family: this.type === 'udp4' ? 'IPv4' : 'IPv6', port: 0 };
+    var parts = addrStr.split(':');
+    var port = parseInt(parts[parts.length - 1], 10) || 0;
+    var address = parts.slice(0, parts.length - 1).join(':');
+    return {
+      address: address,
+      family: address.indexOf(':') !== -1 || parts.length > 2 ? 'IPv6' : 'IPv4',
+      port: port,
+    };
   }
 
-  setBroadcast(flag) {}
-  setTTL(ttl) {}
-  setMulticastTTL(ttl) {}
-  setMulticastLoopback(flag) {}
-  addMembership(multicastInterface) {}
-  dropMembership(multicastInterface) {}
+  setBroadcast(flag) { return this; }
+  setTTL(ttl) { return this; }
+  setMulticastTTL(ttl) { return this; }
+  setMulticastLoopback(flag) { return this; }
+  addMembership(multicastInterface) { return this; }
+  dropMembership(multicastInterface) { return this; }
 
   ref() { return this; }
   unref() { return this; }
@@ -10404,6 +11310,7 @@ class Socket extends EventEmitter {
 
 function createSocket(options, callback) {
   if (typeof options === 'string') options = { type: options };
+  if (typeof options === 'function') { callback = options; options = {}; }
   return new Socket(options);
 }
 
@@ -10413,7 +11320,7 @@ module.exports = { Socket, createSocket };
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/diagnostics_channel - Node.js diagnostics_channel module (L3)
 // Maps to koss:diagnostics_channel standard library
@@ -10424,7 +11331,7 @@ module.exports = require('koss:diagnostics_channel');
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/dns - Node.js dns module (L3)
 // Maps to koss:io standard library
@@ -10433,13 +11340,20 @@ var io = require('koss:io');
 
 function isIP(input) {
   if (typeof input !== 'string') return 0;
+  // IPv4
   if (/^(\d{1,3}\.){3}\d{1,3}$/.test(input)) {
     var parts = input.split('.').map(Number);
     if (parts.every(function(p) { return p >= 0 && p <= 255; })) return 4;
   }
-  if (/^[0-9a-fA-F:]+$/.test(input)) {
+  // IPv6：标准校验
+  if (/^[0-9a-fA-F:]+$/.test(input) && input.indexOf(':') !== -1) {
     var count = input.split(':').length;
-    if (count >= 3 && count <= 8) return 6;
+    if (input.indexOf('::') !== -1) {
+      // 含 :: 压缩形式，最多 8 段（含空）
+      if (count <= 8) return 6;
+    } else {
+      if (count === 8) return 6;
+    }
   }
   return 0;
 }
@@ -10459,11 +11373,19 @@ function lookup(hostname, options, callback) {
       cb(new Error('ENOTFOUND ' + hostname), null, null);
       return;
     }
+    // family 过滤
+    var filtered = ips;
+    if (opts.family === 4) filtered = ips.filter(function(ip) { return isIP(ip) === 4; });
+    else if (opts.family === 6) filtered = ips.filter(function(ip) { return isIP(ip) === 6; });
+    if (filtered.length === 0) {
+      cb(new Error('ENOTFOUND ' + hostname), null, null);
+      return;
+    }
     if (opts.all) {
-      var results = ips.map(function(ip) { return { address: ip, family: isIP(ip) }; });
+      var results = filtered.map(function(ip) { return { address: ip, family: isIP(ip) }; });
       cb(null, results);
     } else {
-      cb(null, ips[0], isIP(ips[0]));
+      cb(null, filtered[0], isIP(filtered[0]));
     }
   } catch (err) {
     cb(err, null, null);
@@ -10472,11 +11394,20 @@ function lookup(hostname, options, callback) {
 
 function resolve(hostname, rrtype, callback) {
   if (typeof rrtype === 'function') { callback = rrtype; rrtype = 'A'; }
+  var cb = typeof callback === 'function' ? callback : function() {};
+  var type = String(rrtype || 'A').toUpperCase();
   try {
     var ips = io.dns(String(hostname));
-    if (callback) callback(null, ips);
+    if (type === 'AAAA') {
+      cb(null, ips.filter(function(ip) { return isIP(ip) === 6; }));
+    } else if (type === 'A') {
+      cb(null, ips.filter(function(ip) { return isIP(ip) === 4; }));
+    } else {
+      // MX/TXT/NS/CNAME 等暂不支持，返回原记录（保持兼容）
+      cb(null, ips);
+    }
   } catch (err) {
-    if (callback) callback(err);
+    cb(err);
   }
 }
 
@@ -10490,16 +11421,27 @@ function resolve6(hostname, options, callback) {
   try {
     var ips = io.dns(String(hostname));
     var v6 = ips.filter(function(ip) { return isIP(ip) === 6; });
-    if (callback) callback(null, v6.length > 0 ? v6 : ips);
+    if (callback) callback(null, v6);
   } catch (err) {
     if (callback) callback(err);
   }
 }
 
 function lookupService(address, port, callback) {
-  if (callback) {
-    var nextTick = (typeof process !== 'undefined' && process.nextTick) ? process.nextTick : setTimeout;
-    nextTick(function() { callback(new Error('lookupService not implemented'), null, null); });
+  var cb = typeof callback === 'function' ? callback : function() {};
+  var nextTick = (typeof process !== 'undefined' && process.nextTick) ? process.nextTick : setTimeout;
+  if (typeof globalThis.__koss_dns_lookup_service === 'function') {
+    nextTick(function() {
+      try {
+        var host = globalThis.__koss_dns_lookup_service(String(address));
+        if (host) cb(null, host, port || 0);
+        else cb(new Error('ENOTFOUND ' + address), null, null);
+      } catch (err) {
+        cb(err, null, null);
+      }
+    });
+  } else {
+    nextTick(function() { cb(new Error('lookupService not available (NET_DNS not granted)'), null, null); });
   }
 }
 
@@ -10537,6 +11479,14 @@ var promises = {
       });
     });
   },
+  lookupService: function(address, port) {
+    return new Promise(function(res, rej) {
+      lookupService(address, port, function(err, hostname, service) {
+        if (err) return rej(err);
+        res({ hostname: hostname, service: service });
+      });
+    });
+  },
 };
 
 module.exports = { lookup: lookup, resolve: resolve, resolve4: resolve4, resolve6: resolve6, lookupService: lookupService, isIP: isIP, isIPv4: isIPv4, isIPv6: isIPv6, promises: promises };
@@ -10545,7 +11495,7 @@ module.exports = { lookup: lookup, resolve: resolve, resolve4: resolve4, resolve
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/events - Node.js events module (L3)
 // Maps to koss:events standard library
@@ -10562,14 +11512,16 @@ module.exports.getEventListeners = kossEvents.getEventListeners;
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/fs - Node.js fs module (L3)
-// Maps to koss:io standard library
+// Maps to koss:io standard library + fd-level native functions
 
 var io = require('koss:io');
 
 var { Buffer } = globalThis;
+
+var nextTick = (typeof process !== 'undefined' && process.nextTick) ? process.nextTick : function(fn) { setTimeout(fn, 0); };
 
 function getOptions(options, defaultEncoding) {
   if (options === null || options === undefined) return { encoding: defaultEncoding };
@@ -10578,6 +11530,101 @@ function getOptions(options, defaultEncoding) {
   return { encoding: defaultEncoding };
 }
 
+function _wrapBuffer(data) {
+  if (typeof Buffer !== 'undefined' && Buffer && Buffer.from) return Buffer.from(data);
+  return data;
+}
+
+function _b64dec(s) {
+  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  var lookup = {};
+  for (var i = 0; i < chars.length; i++) lookup[chars.charCodeAt(i)] = i;
+  var out = [];
+  for (var j = 0; j < s.length; j += 4) {
+    var a = lookup[s.charCodeAt(j)] || 0;
+    var b = lookup[s.charCodeAt(j + 1)] || 0;
+    var c = lookup[s.charCodeAt(j + 2)] || 0;
+    var d = lookup[s.charCodeAt(j + 3)] || 0;
+    var t = (a << 18) | (b << 12) | (c << 6) | d;
+    out.push((t >> 16) & 0xFF);
+    if (s[j + 2] !== '=') out.push((t >> 8) & 0xFF);
+    if (s[j + 3] !== '=') out.push(t & 0xFF);
+  }
+  return new Uint8Array(out);
+}
+
+function _b64c(bytes) {
+  var out = '';
+  var i = 0;
+  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  for (; i + 2 < bytes.length; i += 3) {
+    var n = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
+    out += chars[(n >> 18) & 63] + chars[(n >> 12) & 63] + chars[(n >> 6) & 63] + chars[n & 63];
+  }
+  var rem = bytes.length - i;
+  if (rem === 1) {
+    var m = bytes[i] << 16;
+    out += chars[(m >> 18) & 63] + chars[(m >> 12) & 63] + '==';
+  } else if (rem === 2) {
+    var k = (bytes[i] << 16) | (bytes[i + 1] << 8);
+    out += chars[(k >> 18) & 63] + chars[(k >> 12) & 63] + chars[(k >> 6) & 63] + '=';
+  }
+  return out;
+}
+
+// ─── Stats 类（与 Node 兼容：方法是函数） ───
+function Stats(size, mode, mtimeMs, ctimeMs, isFile, isDir, isSymlink) {
+  this.size = size;
+  this.mode = mode;
+  this.mtimeMs = mtimeMs;
+  this.ctimeMs = ctimeMs;
+  this.atimeMs = mtimeMs;
+  this.birthtimeMs = ctimeMs;
+  this._isFile = isFile;
+  this._isDir = isDir;
+  this._isSymlink = isSymlink;
+  this.uid = 0;
+  this.gid = 0;
+  this.ino = 0;
+  this.dev = 0;
+  this.nlink = 1;
+  this.blksize = 4096;
+  this.blocks = 0;
+}
+
+Stats.prototype.isFile = function() { return this._isFile; };
+Stats.prototype.isDirectory = function() { return this._isDir; };
+Stats.prototype.isSymbolicLink = function() { return this._isSymlink; };
+Stats.prototype.isBlockDevice = function() { return false; };
+Stats.prototype.isCharacterDevice = function() { return false; };
+Stats.prototype.isFIFO = function() { return false; };
+Stats.prototype.isSocket = function() { return false; };
+
+function _toStats(raw) {
+  if (raw instanceof Stats) return raw;
+  if (!raw) return new Stats(0, 0, 0, 0, true, false, false);
+  var isFile = raw.isFile === undefined ? true : Boolean(raw.isFile);
+  var isDir = raw.isDirectory !== undefined ? Boolean(raw.isDirectory) : Boolean(raw.isDir);
+  var size = typeof raw.size === 'number' ? raw.size : 0;
+  var mtime = typeof raw.mtime === 'number' ? raw.mtime : (raw.mtimeMs || 0);
+  var ctime = typeof raw.ctime === 'number' ? raw.ctime : (raw.ctimeMs || 0);
+  return new Stats(size, 0o100644, mtime, ctime, isFile, isDir, Boolean(raw.isSymlink));
+}
+
+// Dirent 类
+function Dirent(name, isDir, isFile) {
+  this.name = name;
+  this._isDir = isDir;
+  this._isFile = isFile;
+}
+Dirent.prototype.isDirectory = function() { return this._isDir; };
+Dirent.prototype.isFile = function() { return this._isFile; };
+Dirent.prototype.isSymbolicLink = function() { return false; };
+Dirent.prototype.isBlockDevice = function() { return false; };
+Dirent.prototype.isCharacterDevice = function() { return false; };
+Dirent.prototype.isFIFO = function() { return false; };
+Dirent.prototype.isSocket = function() { return false; };
+
 // === Synchronous API ===
 
 function readFileSync(path, options) {
@@ -10585,7 +11632,7 @@ function readFileSync(path, options) {
   if (opts.encoding) {
     return io.readText(String(path));
   }
-  return io.read(String(path));
+  return _wrapBuffer(io.read(String(path)));
 }
 
 function writeFileSync(path, data, options) {
@@ -10598,7 +11645,14 @@ function writeFileSync(path, data, options) {
 }
 
 function appendFileSync(path, data, options) {
-  io.append(String(path), data);
+  var u8 = null;
+  if (data instanceof Uint8Array) u8 = data;
+  else if (data && data._data instanceof Uint8Array) u8 = data._data;
+  if (u8 && typeof globalThis.__koss_fs_append === 'function') {
+    globalThis.__koss_fs_append(String(path), _b64c(u8), true);
+  } else {
+    globalThis.__koss_fs_append(String(path), String(data), false);
+  }
 }
 
 function existsSync(path) {
@@ -10606,11 +11660,11 @@ function existsSync(path) {
 }
 
 function statSync(path, options) {
-  return io.stat(String(path));
+  return _toStats(io.stat(String(path)));
 }
 
 function lstatSync(path, options) {
-  return io.lstat(String(path));
+  return _toStats(io.lstat(String(path)));
 }
 
 function mkdirSync(path, options) {
@@ -10619,7 +11673,7 @@ function mkdirSync(path, options) {
 }
 
 function rmdirSync(path, options) {
-  io.rm(String(path));
+  io.rm(String(path), { recursive: !!(options && options.recursive) });
 }
 
 function unlinkSync(path) {
@@ -10629,7 +11683,18 @@ function unlinkSync(path) {
 function readdirSync(path, options) {
   var opts = getOptions(options, null);
   var entries = io.list(String(path));
-  return opts.withFileTypes ? entries : entries.map(function(e) { return typeof e === 'string' ? e : e[0]; });
+  if (!opts.withFileTypes) {
+    return entries.map(function(e) { return typeof e === 'string' ? e : e[0]; });
+  }
+  var result = [];
+  for (var i = 0; i < entries.length; i++) {
+    var name = typeof entries[i] === 'string' ? entries[i] : entries[i][0];
+    var raw = null;
+    try { raw = io.stat(String(path).replace(/[\\/]+$/, '') + '/' + name); } catch (e) {}
+    var isDir = raw ? Boolean(raw.isDirectory !== undefined ? raw.isDirectory : raw.isDir) : false;
+    result.push(new Dirent(name, isDir, !isDir));
+  }
+  return result;
 }
 
 function renameSync(oldPath, newPath) {
@@ -10660,99 +11725,337 @@ function truncateSync(path, len) {
   io.truncate(String(path), len || 0);
 }
 
+// ─── fd 级 API ───
+
+function openSync(path, flags, mode) {
+  if (typeof globalThis.__koss_fd_open !== 'function') {
+    throw new Error('fs.openSync requires FS_READ/FS_WRITE capability');
+  }
+  var flagNum = typeof flags === 'number' ? flags : _flagStringToInt(flags);
+  return globalThis.__koss_fd_open(String(path), flagNum);
+}
+
+function _flagStringToInt(flag) {
+  switch (String(flag)) {
+    case 'r': return 0;
+    case 'r+': return 2;
+    case 'w': return 577; // O_WRONLY(1) | O_CREAT(64) | O_TRUNC(512)
+    case 'w+': return 578; // O_RDWR(2) | O_CREAT(64) | O_TRUNC(512)
+    case 'a': return 1025; // O_WRONLY(1) | O_CREAT(64) | O_APPEND(1024)
+    case 'a+': return 1090; // O_RDWR(2) | O_CREAT(64) | O_APPEND(1024)
+    case 'ax': return 1153; // O_WRONLY | O_CREAT | O_APPEND | O_EXCL
+    case 'ax+': return 1218;
+    case 'wx': return 705; // O_WRONLY | O_CREAT | O_EXCL
+    case 'wx+': return 706;
+    default: return 0;
+  }
+}
+
+function closeSync(fd) {
+  if (typeof globalThis.__koss_fd_close !== 'function') throw new Error('fs.closeSync requires FS capability');
+  globalThis.__koss_fd_close(Number(fd));
+}
+
+function readSync(fd, buffer, offset, length, position) {
+  if (typeof globalThis.__koss_fd_read !== 'function') throw new Error('fs.readSync requires FS_READ capability');
+  var len = length !== undefined ? length : (buffer.length - (offset || 0));
+  var result = _parseFdResult(globalThis.__koss_fd_read(Number(fd), len));
+  if (result && result.code === 2) return 0;
+  if (result && result.code === 0 && result.value) {
+    var bytes = _b64dec(result.value);
+    var target = buffer._data || buffer;
+    var off = offset || 0;
+    for (var i = 0; i < bytes.length; i++) target[off + i] = bytes[i];
+    return bytes.length;
+  }
+  throw new Error('fs.readSync failed: ' + (result && result.value || ''));
+}
+
+function writeSync(fd, buffer, offset, length, position) {
+  if (typeof globalThis.__koss_fd_write !== 'function') throw new Error('fs.writeSync requires FS_WRITE capability');
+  var data;
+  if (typeof buffer === 'string') {
+    data = buffer;
+    offset = offset !== undefined ? offset : 0;
+    length = length !== undefined ? length : undefined;
+  } else {
+    var bytes = buffer._data || buffer;
+    var off = offset || 0;
+    var len = length !== undefined ? length : bytes.length - off;
+    data = _b64c(bytes.subarray(off, off + len));
+    var result = _parseFdResult(globalThis.__koss_fd_write(Number(fd), data, true));
+    if (result && result.code === 0) return result.value || len;
+    throw new Error('fs.writeSync failed: ' + (result && result.value || ''));
+  }
+  var result2 = _parseFdResult(globalThis.__koss_fd_write(Number(fd), data, false));
+  if (result2 && result2.code === 0) return result2.value || data.length;
+  throw new Error('fs.writeSync failed: ' + (result2 && result2.value || ''));
+}
+
+function _parseFdResult(raw) {
+  if (raw && typeof raw === 'object' && raw.code !== undefined) return raw;
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw); } catch (e) { return null; }
+  }
+  return null;
+}
+
+function fsyncSync(fd) {
+  if (typeof globalThis.__koss_fd_sync !== 'function') throw new Error('fs.fsyncSync requires FS capability');
+  globalThis.__koss_fd_sync(Number(fd));
+}
+
+function ftruncateSync(fd, len) {
+  if (typeof globalThis.__koss_fd_truncate !== 'function') throw new Error('fs.ftruncateSync requires FS capability');
+  globalThis.__koss_fd_truncate(Number(fd), len || 0);
+}
+
 function fstatSync(fd) {
-  return { dev: 0, mode: 33206, nlink: 1, uid: 0, gid: 0, rdev: 0, blksize: 4096, ino: 0, size: 0, blocks: 0, atimeMs: 0, mtimeMs: 0, ctimeMs: 0 };
+  // 通过 fd 读取 stat：使用 __koss_fd_fstat（若存在），否则返回占位
+  if (typeof globalThis.__koss_fd_fstat === 'function') {
+    var result = _parseFdResult(globalThis.__koss_fd_fstat(Number(fd)));
+    if (result && result.code === 0) {
+      return _toStats(result);
+    }
+  }
+  throw new Error('fstatSync: invalid fd ' + fd);
+}
+
+// ─── 流式 API ───
+
+function createReadStream(path, options) {
+  var opts = options || {};
+  var fd;
+  try { fd = openSync(path, 'r'); } catch (e) {
+    var errStream = new (require('koss:stream').Readable)();
+    process.nextTick(function() { errStream.emit('error', e); });
+    return errStream;
+  }
+  var pos = 0;
+  var self = this;
+  var Readable = require('koss:stream').Readable;
+  var stream = new Readable({
+    read: function() {
+      try {
+        var n = readSync(fd, Buffer.alloc(65536), 0, 65536);
+        if (n === 0) {
+          closeSync(fd);
+          this.push(null);
+        } else {
+          var buf = Buffer.alloc(n);
+          var chunk = Buffer.alloc(65536);
+          var n2 = readSync(fd, chunk, 0, 65536);
+          if (n2 === 0) { closeSync(fd); this.push(null); return; }
+          buf = Buffer.from(chunk.subarray(0, n2));
+          this.push(buf);
+        }
+      } catch (err) {
+        try { closeSync(fd); } catch (e) {}
+        this.emit('error', err);
+      }
+    }
+  });
+  return stream;
+}
+
+function createWriteStream(path, options) {
+  var opts = options || {};
+  var fd;
+  var flags = opts.flags || 'w';
+  try { fd = openSync(path, flags, opts.mode); } catch (e) {
+    var errStream = new (require('koss:stream').Writable)();
+    process.nextTick(function() { errStream.emit('error', e); });
+    return errStream;
+  }
+  var Writable = require('koss:stream').Writable;
+  var stream = new Writable({
+    write: function(chunk, enc, cb) {
+      try {
+        writeSync(fd, chunk);
+        cb && cb();
+      } catch (err) {
+        cb && cb(err);
+      }
+    },
+    final: function(cb) {
+      try { fsyncSync(fd); closeSync(fd); } catch (e) {}
+      cb && cb();
+    },
+  });
+  stream.on('error', function() { try { closeSync(fd); } catch (e) {} });
+  return stream;
+}
+
+// ─── watch ───
+
+function watch(filename, options, listener) {
+  if (typeof options === 'function') { listener = options; options = {}; }
+  if (typeof listener !== 'function') listener = function() {};
+  return io.watch(String(filename), function(event, path) { listener(event, path); });
+}
+
+function watchFile(filename, options, listener) {
+  if (typeof options === 'function') { listener = options; options = {}; }
+  if (typeof listener !== 'function') listener = function() {};
+  return io.watch(String(filename), function(event, path) { listener(null, _toStats(io.stat(String(filename)))); });
+}
+
+function unwatchFile(filename, listener) {
+  // io.watch 返回的对象支持 close()，此处由用户持有并调用 close
+  return null;
 }
 
 // === Callback API ===
 
+function callAsync(fn, args) {
+  nextTick(function() {
+    try { fn.apply(null, args); } catch (err) { /* swallow */ }
+  });
+}
+
 function readFile(path, options, callback) {
   if (typeof options === 'function') { callback = options; options = undefined; }
-  try {
-    var data = readFileSync(path, options);
-    callback(null, data);
-  } catch (err) { callback(err); }
+  var cb = typeof callback === 'function' ? callback : function() {};
+  callAsync(function() {
+    try { cb(null, readFileSync(path, options)); }
+    catch (err) { cb(err); }
+  });
 }
 
 function writeFile(path, data, options, callback) {
   if (typeof options === 'function') { callback = options; options = undefined; }
-  try {
-    writeFileSync(path, data, options);
-    callback(null);
-  } catch (err) { callback(err); }
+  var cb = typeof callback === 'function' ? callback : function() {};
+  callAsync(function() {
+    try { writeFileSync(path, data, options); cb(null); }
+    catch (err) { cb(err); }
+  });
 }
 
 function appendFile(path, data, options, callback) {
   if (typeof options === 'function') { callback = options; options = undefined; }
-  writeFile(path, data, options, callback);
+  var cb = typeof callback === 'function' ? callback : function() {};
+  callAsync(function() {
+    try { appendFileSync(path, data, options); cb(null); }
+    catch (err) { cb(err); }
+  });
 }
 
 function exists(path, callback) {
-  try { callback(existsSync(path)); }
-  catch { callback(false); }
+  var cb = typeof callback === 'function' ? callback : function() {};
+  callAsync(function() { cb(existsSync(path)); });
 }
 
 function stat(path, options, callback) {
   if (typeof options === 'function') { callback = options; options = undefined; }
-  try { callback(null, statSync(path, options)); }
-  catch (err) { callback(err); }
+  var cb = typeof callback === 'function' ? callback : function() {};
+  callAsync(function() {
+    try { cb(null, statSync(path, options)); }
+    catch (err) { cb(err); }
+  });
 }
 
 function lstat(path, options, callback) {
   if (typeof options === 'function') { callback = options; options = undefined; }
-  try { callback(null, lstatSync(path, options)); }
-  catch (err) { callback(err); }
+  var cb = typeof callback === 'function' ? callback : function() {};
+  callAsync(function() {
+    try { cb(null, lstatSync(path, options)); }
+    catch (err) { cb(err); }
+  });
 }
 
 function mkdir(path, options, callback) {
   if (typeof options === 'function') { callback = options; options = undefined; }
-  try { mkdirSync(path, options); callback(null); }
-  catch (err) { callback(err); }
+  var cb = typeof callback === 'function' ? callback : function() {};
+  callAsync(function() {
+    try { mkdirSync(path, options); cb(null); }
+    catch (err) { cb(err); }
+  });
 }
 
 function rmdir(path, options, callback) {
   if (typeof options === 'function') { callback = options; options = undefined; }
-  try { rmdirSync(path); callback(null); }
-  catch (err) { callback(err); }
+  var cb = typeof callback === 'function' ? callback : function() {};
+  callAsync(function() {
+    try { rmdirSync(path, options); cb(null); }
+    catch (err) { cb(err); }
+  });
 }
 
 function unlink(path, callback) {
-  try { unlinkSync(path); callback(null); }
-  catch (err) { callback(err); }
+  var cb = typeof callback === 'function' ? callback : function() {};
+  callAsync(function() {
+    try { unlinkSync(path); cb(null); }
+    catch (err) { cb(err); }
+  });
 }
 
 function readdir(path, options, callback) {
   if (typeof options === 'function') { callback = options; options = undefined; }
-  try { callback(null, readdirSync(path, options)); }
-  catch (err) { callback(err); }
+  var cb = typeof callback === 'function' ? callback : function() {};
+  callAsync(function() {
+    try { cb(null, readdirSync(path, options)); }
+    catch (err) { cb(err); }
+  });
 }
 
 function rename(oldPath, newPath, callback) {
-  try { renameSync(oldPath, newPath); callback(null); }
-  catch (err) { callback(err); }
+  var cb = typeof callback === 'function' ? callback : function() {};
+  callAsync(function() {
+    try { renameSync(oldPath, newPath); cb(null); }
+    catch (err) { cb(err); }
+  });
 }
 
 function realpath(path, options, callback) {
   if (typeof options === 'function') { callback = options; options = undefined; }
-  try { callback(null, realpathSync(path, options)); }
-  catch (err) { callback(err); }
+  var cb = typeof callback === 'function' ? callback : function() {};
+  callAsync(function() {
+    try { cb(null, realpathSync(path, options)); }
+    catch (err) { cb(err); }
+  });
 }
 
 function copyFile(src, dest, flags, callback) {
   if (typeof flags === 'function') { callback = flags; flags = 0; }
-  try { copyFileSync(src, dest, flags); callback(null); }
-  catch (err) { callback(err); }
+  var cb = typeof callback === 'function' ? callback : function() {};
+  callAsync(function() {
+    try { copyFileSync(src, dest, flags); cb(null); }
+    catch (err) { cb(err); }
+  });
 }
 
 function access(path, mode, callback) {
   if (typeof mode === 'function') { callback = mode; mode = undefined; }
-  try { accessSync(path, mode); callback(null); }
-  catch (err) { callback(err); }
+  var cb = typeof callback === 'function' ? callback : function() {};
+  callAsync(function() {
+    try { accessSync(path, mode); cb(null); }
+    catch (err) { cb(err); }
+  });
 }
 
 function chmod(path, mode, callback) {
-  try { chmodSync(path, mode); callback(null); }
-  catch (err) { callback(err); }
+  var cb = typeof callback === 'function' ? callback : function() {};
+  callAsync(function() {
+    try { chmodSync(path, mode); cb(null); }
+    catch (err) { cb(err); }
+  });
+}
+
+function open(path, flags, mode, callback) {
+  if (typeof mode === 'function') { callback = mode; mode = undefined; }
+  var cb = typeof callback === 'function' ? callback : function() {};
+  callAsync(function() {
+    try { cb(null, openSync(path, flags, mode)); }
+    catch (err) { cb(err); }
+  });
+}
+
+function close(fd, callback) {
+  var cb = typeof callback === 'function' ? callback : function() {};
+  callAsync(function() {
+    try { closeSync(fd); cb(null); }
+    catch (err) { cb(err); }
+  });
 }
 
 // === Promises API ===
@@ -10773,35 +12076,26 @@ var promises = {
   access: function(path, mode) { return new Promise(function(resolve, reject) { access(path, mode, function(err) { err ? reject(err) : resolve(); }); }); },
   chmod: function(path, mode) { return new Promise(function(resolve, reject) { chmod(path, mode, function(err) { err ? reject(err) : resolve(); }); }); },
   mkdtemp: function(prefix, options) { return new Promise(function(resolve, reject) { try { resolve(mkdtempSync(prefix, options)); } catch (err) { reject(err); } }); },
+  open: function(path, flags, mode) { return new Promise(function(resolve, reject) { open(path, flags, mode, function(err, fd) { err ? reject(err) : resolve(fd); }); }); },
+  close: function(fd) { return new Promise(function(resolve, reject) { close(fd, function(err) { err ? reject(err) : resolve(); }); }); },
 };
 
 var constants = {
   F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
   O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2, O_CREAT: 64, O_EXCL: 128, O_TRUNC: 512, O_APPEND: 1024,
-  S_IFMT: 61440, S_IFREG: 32768, S_IFDIR: 16384, S_IRWXU: 448, S_IRUSR: 256, S_IWUSR: 128, S_IXUSR: 64,
+  S_IFMT: 61440, S_IFREG: 32768, S_IFDIR: 16384, S_IFLNK: 40960,
+  S_IRWXU: 448, S_IRUSR: 256, S_IWUSR: 128, S_IXUSR: 64,
   S_IRWXG: 56, S_IRGRP: 32, S_IWGRP: 16, S_IXGRP: 8, S_IRWXO: 7, S_IROTH: 4, S_IWOTH: 2, S_IXOTH: 1,
   COPYFILE_EXCL: 1, COPYFILE_FICLONE: 2, COPYFILE_FICLONE_FORCE: 4,
 };
 
-function watch() { throw new Error('fs.watch is not implemented'); }
-function watchFile() { throw new Error('fs.watchFile is not implemented'); }
-function unwatchFile() { throw new Error('fs.unwatchFile is not implemented'); }
-function createReadStream() { throw new Error('fs.createReadStream is not implemented'); }
-function createWriteStream() { throw new Error('fs.createWriteStream is not implemented'); }
-function openSync() { throw new Error('fs.openSync is not implemented'); }
-function closeSync() { throw new Error('fs.closeSync is not implemented'); }
-function readSync() { throw new Error('fs.readSync is not implemented'); }
-function writeSync() { throw new Error('fs.writeSync is not implemented'); }
-function ftruncateSync() { throw new Error('fs.ftruncateSync is not implemented'); }
-function fsyncSync() { throw new Error('fs.fsyncSync is not implemented'); }
-
-module.exports = { readFileSync, writeFileSync, appendFileSync, existsSync, statSync, lstatSync, mkdirSync, rmdirSync, unlinkSync, readdirSync, renameSync, realpathSync, copyFileSync, chmodSync, accessSync, mkdtempSync, truncateSync, fstatSync, readFile, writeFile, appendFile, exists, stat, lstat, mkdir, rmdir, unlink, readdir, rename, realpath, copyFile, access, chmod, promises, constants, watch, watchFile, unwatchFile, createReadStream, createWriteStream, openSync, closeSync, readSync, writeSync, ftruncateSync, fsyncSync };
+module.exports = { readFileSync, writeFileSync, appendFileSync, existsSync, statSync, lstatSync, mkdirSync, rmdirSync, unlinkSync, readdirSync, renameSync, realpathSync, copyFileSync, chmodSync, accessSync, mkdtempSync, truncateSync, fstatSync, openSync, closeSync, readSync, writeSync, fsyncSync, ftruncateSync, readFile, writeFile, appendFile, exists, stat, lstat, mkdir, rmdir, unlink, readdir, rename, realpath, copyFile, access, chmod, open, close, promises, constants, watch, watchFile, unwatchFile, createReadStream, createWriteStream, Stats, Dirent };
 "#),
         "node_shim/http.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/http - Node.js http module (L3)
 // Maps to koss:http standard library
@@ -10812,42 +12106,39 @@ module.exports = require('koss:http');
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/https - Node.js https module (L3)
-// Maps to koss:http standard library (HTTPS is HTTP over TLS)
+// 注意：KossJS 未实现真实 TLS。https.request/get 若静默降级为明文 HTTP，
+// 会让调用方误以为流量已加密。因此所有 https 操作显式抛错，
+// 直到真实 rustls 集成完成。
 
-var http = require('koss:http');
-var net = require('koss:net');
-
-class TLSSocket extends net.Socket {
-  constructor(options) {
-    super(options);
-    this._authorized = options?.rejectUnauthorized !== false;
-  }
-  get encrypted() { return true; }
-  get authorized() { return this._authorized; }
-  get authorizationError() { return this._authorized ? null : new Error('TLS authorization failed'); }
-  get alpnProtocol() { return 'http/1.1'; }
+function _unsupported(name) {
+  throw new Error(
+    'https.' + name + ' is not implemented in KossJS. ' +
+    'TLS (rustls integration) is not yet wired up. ' +
+    'Using this module would silently downgrade to plaintext HTTP, which is unsafe. ' +
+    'Do NOT rely on this module for security.'
+  );
 }
 
-class Server extends http.Server {
-  constructor(options, requestListener) {
-    super(options, requestListener);
-  }
+class TLSSocket {
+  constructor(options) { _unsupported('TLSSocket'); }
+  get encrypted() { return false; }
+  get authorized() { return false; }
+  get authorizationError() { return new Error('TLS not implemented in KossJS'); }
+  get alpnProtocol() { return undefined; }
 }
 
-function createServer(options, requestListener) {
-  return new Server(options, requestListener);
+class Server {
+  constructor(options, requestListener) { _unsupported('Server'); }
+  listen() { _unsupported('Server.listen'); }
+  close() { _unsupported('Server.close'); }
 }
 
-function request(url, options, callback) {
-  return http.request(url, options, callback);
-}
-
-function get(url, options, callback) {
-  return http.get(url, options, callback);
-}
+function createServer(options, requestListener) { _unsupported('createServer'); }
+function request(url, options, callback) { _unsupported('request'); }
+function get(url, options, callback) { _unsupported('get'); }
 
 const globalAgent = { maxSockets: Infinity };
 
@@ -10857,7 +12148,7 @@ module.exports = { createServer, request, get, Server, TLSSocket, globalAgent };
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/net - Node.js net module (L3)
 // Maps to koss:net standard library
@@ -10868,7 +12159,7 @@ module.exports = require('koss:net');
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/os - Node.js os module (L3)
 // Maps to koss:os standard library
@@ -10879,7 +12170,7 @@ module.exports = require('koss:os');
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/path - Node.js path module (L3)
 // Maps to koss:path standard library
@@ -10890,9 +12181,14 @@ module.exports = require('koss:path');
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/perf_hooks - Node.js perf_hooks module (L3)
+// performance.now() 使用单调时钟（__koss_performance_now），
+// 不受系统时间调整影响；createHistogram/monitorEventLoopDelay 返回真实直方图。
+
+const _nowFn = (typeof globalThis.__koss_performance_now === 'function') ? globalThis.__koss_performance_now : function() { return Date.now(); };
+const _timeOrigin = (typeof globalThis.__koss_performance_timeorigin === 'function') ? Number(globalThis.__koss_performance_timeorigin()) : Date.now();
 
 const marks = {};
 const measures = {};
@@ -10909,8 +12205,9 @@ class PerformanceEntry {
 
 const performance = {
   now() {
-    return Date.now();
+    return _nowFn();
   },
+  timeOrigin: _timeOrigin,
   mark(name) {
     marks[name] = performance.now();
     return new PerformanceEntry(name, 'mark', marks[name], 0);
@@ -10965,30 +12262,124 @@ const performance = {
     moduleLoadEnd: 0,
     moduleLoadStart: 0,
   },
-  timeOrigin: Date.now(),
   timing: {
     startTime: 0,
   },
 };
 
 class PerformanceObserver {
-  constructor(callback) { this._callback = callback; }
-  observe(options) { return this; }
-  disconnect() {}
-  takeRecords() { return []; }
+  constructor(callback) { this._callback = callback; this._buffered = []; this._active = false; }
+  observe(options) {
+    if (options && options.entryTypes && this._callback) {
+      this._active = true;
+      // 简化的同步投递：新产生的 entries 会通过 flush 机制回调
+    }
+    return this;
+  }
+  disconnect() { this._active = false; }
+  takeRecords() { const r = this._buffered.slice(); this._buffered = []; return r; }
+  flush() { if (this._active && this._callback && this._buffered.length > 0) { this._callback(this._buffered.slice(), this); this._buffered = []; } }
+}
+
+// ─── 真实直方图（对数分桶，类似 Node 的 Histogram） ───
+
+class Histogram {
+  constructor() {
+    this._count = 0;
+    this._sum = 0;
+    this._min = Infinity;
+    this._max = -Infinity;
+    this._buckets = new Map();
+    this._exceeds = 0;
+  }
+  _bucket(v) {
+    if (v <= 0) return 0;
+    return Math.floor(Math.log2(v)) + 1;
+  }
+  record(v) {
+    const n = Number(v);
+    if (isNaN(n)) return;
+    this._count++;
+    this._sum += n;
+    if (n < this._min) this._min = n;
+    if (n > this._max) this._max = n;
+    const b = this._bucket(n);
+    this._buckets.set(b, (this._buckets.get(b) || 0) + 1);
+    if (n > 2147483647) this._exceeds++;
+  }
+  reset() {
+    this._count = 0;
+    this._sum = 0;
+    this._min = Infinity;
+    this._max = -Infinity;
+    this._buckets.clear();
+    this._exceeds = 0;
+  }
+  get min() { return this._count === 0 ? 0 : this._min; }
+  get max() { return this._count === 0 ? 0 : this._max; }
+  get mean() { return this._count === 0 ? 0 : this._sum / this._count; }
+  get exceeds() { return this._exceeds; }
+  get stddev() {
+    if (this._count === 0) return 0;
+    const mean = this.mean;
+    let sumSq = 0;
+    for (const [bucket, count] of this._buckets) {
+      const low = Math.pow(2, bucket - 1);
+      const high = Math.pow(2, bucket);
+      const mid = (low + high) / 2;
+      sumSq += count * Math.pow(mid - mean, 2);
+    }
+    return Math.sqrt(sumSq / this._count);
+  }
+  percentile(p) {
+    const pct = Number(p);
+    if (isNaN(pct) || pct < 0 || pct > 100) throw new RangeError('percentile must be between 0 and 100');
+    if (this._count === 0) return 0;
+    const target = Math.ceil(this._count * pct / 100);
+    let cumulative = 0;
+    const sortedBuckets = Array.from(this._buckets.entries()).sort((a, b) => a[0] - b[0]);
+    for (const [bucket, count] of sortedBuckets) {
+      cumulative += count;
+      if (cumulative >= target) {
+        const low = Math.pow(2, bucket - 1);
+        const high = Math.pow(2, bucket);
+        return Math.round((low + high) / 2);
+      }
+    }
+    return this._max;
+  }
+  percentiles() {
+    const m = new Map();
+    for (let p = 1; p <= 100; p += 1) m.set(p, this.percentile(p));
+    return m;
+  }
 }
 
 function createHistogram() {
-  return { min: 0, max: 0, mean: 0, exceeds: 0, stddev: 0, percentiles: new Map(), percentile: (p) => 0, reset: () => {}, record: (v) => {} };
+  return new Histogram();
 }
 
 function monitorEventLoopDelay(options) {
-  return createHistogram();
+  const hist = new Histogram();
+  // 基于 performance.now() 的间隔采样
+  if (typeof setInterval === 'function') {
+    let last = _nowFn();
+    hist._timer = setInterval(function() {
+      const now = _nowFn();
+      hist.record(now - last);
+      last = now;
+    }, (options && options.resolution) || 10);
+  }
+  hist.reset = function() {
+    Histogram.prototype.reset.call(this);
+    if (this._timer) clearInterval(this._timer);
+  };
+  return hist;
 }
 
 function timerify(fn) {
   return function(...args) {
-    const start = performance.now();
+    const start = _nowFn();
     const result = fn.apply(this, args);
     return result;
   };
@@ -11020,7 +12411,7 @@ module.exports = { performance, PerformanceObserver, createHistogram, monitorEve
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/process - Node.js process module (L3)
 // Maps to koss:process standard library
@@ -11031,7 +12422,7 @@ module.exports = require('koss:process');
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/querystring - Node.js querystring module (L3)
 // Maps to koss:querystring standard library
@@ -11042,18 +12433,163 @@ module.exports = require('koss:querystring');
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/stream - Node.js stream module (L3)
 // Maps to koss:stream standard library
 
 module.exports = require('koss:stream');
 "#),
+        "node_shim/stream_consumers.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
+
+// koss:node/stream/consumers - Node.js stream/consumers module (L3)
+
+function _collect(stream) {
+  return new Promise(function(resolve, reject) {
+    var chunks = [];
+    if (stream && typeof stream.on === 'function') {
+      stream.on('data', function(chunk) { chunks.push(chunk); });
+      stream.on('end', function() { resolve(chunks); });
+      stream.on('error', reject);
+      if (typeof stream.resume === 'function') stream.resume();
+    } else {
+      resolve(chunks);
+    }
+  });
+}
+
+function json(stream) {
+  return _collect(stream).then(function(chunks) {
+    var text = _chunksToString(chunks);
+    return JSON.parse(text);
+  });
+}
+
+function text(stream) {
+  return _collect(stream).then(function(chunks) {
+    return _chunksToString(chunks);
+  });
+}
+
+function buffer(stream) {
+  return _collect(stream).then(function(chunks) {
+    var total = 0;
+    for (var i = 0; i < chunks.length; i++) total += chunks[i].length;
+    var buf = Buffer.alloc(total);
+    var offset = 0;
+    for (var j = 0; j < chunks.length; j++) {
+      var c = chunks[j];
+      var bytes = c._data || c;
+      for (var k = 0; k < bytes.length; k++) buf._data[offset + k] = bytes[k];
+      offset += bytes.length;
+    }
+    buf._length = total;
+    return buf;
+  });
+}
+
+function arrayBuffer(stream) {
+  return buffer(stream).then(function(buf) {
+    return buf._data.buffer;
+  });
+}
+
+function blob(stream, mimeType) {
+  return buffer(stream).then(function(buf) {
+    return new Blob([buf._data], { type: mimeType || '' });
+  });
+}
+
+function _chunksToString(chunks) {
+  var parts = [];
+  for (var i = 0; i < chunks.length; i++) {
+    var c = chunks[i];
+    if (typeof c === 'string') {
+      parts.push(c);
+    } else {
+      var bytes = c._data || c;
+      if (bytes && typeof Buffer !== 'undefined' && Buffer.prototype && typeof Buffer.prototype.toString === 'function') {
+        var b = Buffer.from(bytes);
+        parts.push(b.toString('utf8'));
+      } else {
+        parts.push(String(c));
+      }
+    }
+  }
+  return parts.join('');
+}
+
+module.exports = {
+  json: json,
+  text: text,
+  buffer: buffer,
+  arrayBuffer: arrayBuffer,
+  blob: blob,
+};
+"#),
+        "node_shim/stream_promises.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
+
+// koss:node/stream/promises - Node.js stream/promises module (L3)
+
+var kossStream = require('koss:stream');
+
+function pipeline() {
+  var args = Array.prototype.slice.call(arguments);
+  var callback = typeof args[args.length - 1] === 'function' ? args.pop() : null;
+  return new Promise(function(resolve, reject) {
+    try {
+      var result = kossStream.pipeline.apply(null, args);
+      if (callback) callback(null);
+      resolve(result);
+    } catch (err) {
+      if (callback) callback(err);
+      reject(err);
+    }
+  });
+}
+
+function finished(stream, options) {
+  return new Promise(function(resolve, reject) {
+    if (typeof kossStream.finished === 'function') {
+      try {
+        kossStream.finished(stream, options || {}, function(err) {
+          if (err) reject(err); else resolve();
+        });
+      } catch (err) {
+        reject(err);
+      }
+    } else {
+      // 降级：检查流已结束
+      var state = stream && (stream._readableState || stream._writableState);
+      if (state && state.ended) resolve();
+      else reject(new Error('stream not finished'));
+    }
+  });
+}
+
+function rejectWithError(promise, err) {
+  return promise.catch(function() { throw err; });
+}
+
+module.exports = {
+  pipeline: pipeline,
+  finished: finished,
+  rejectWithError: rejectWithError,
+};
+"#),
         "node_shim/string_decoder.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/string_decoder - Node.js string_decoder module (L3)
 // Maps to koss:string_decoder standard library
@@ -11064,66 +12600,178 @@ module.exports = require('koss:string_decoder');
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/timers - Node.js timers module (L3)
 // Maps to koss:timers standard library
 
 module.exports = require('koss:timers');
 "#),
+        "node_shim/timers_promises.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
+
+// koss:node/timers/promises - Node.js timers/promises module (L3)
+// setTimeout / setInterval / setImmediate 的 Promise 版本
+
+var timers = require('koss:timers');
+
+function setTimeoutPromise(delay, value, options) {
+  var ms = delay === undefined ? 1 : Number(delay);
+  var opts = options || {};
+  var signal = opts.signal || null;
+  return new Promise(function(resolve, reject) {
+    if (signal && signal.aborted) {
+      reject(signal.reason instanceof Error ? signal.reason : new Error('The operation was aborted'));
+      return;
+    }
+    var timer = timers.setTimeout(function() {
+      resolve(value);
+    }, ms);
+    if (signal && typeof signal.addEventListener === 'function') {
+      signal.addEventListener('abort', function() {
+        try { timers.clearTimeout(timer); } catch (e) {}
+        reject(signal.reason instanceof Error ? signal.reason : new Error('The operation was aborted'));
+      }, { once: true });
+    }
+  });
+}
+
+function setImmediatePromise(value, options) {
+  var opts = options || {};
+  var signal = opts.signal || null;
+  return new Promise(function(resolve, reject) {
+    if (signal && signal.aborted) {
+      reject(signal.reason instanceof Error ? signal.reason : new Error('The operation was aborted'));
+      return;
+    }
+    var timer = timers.setImmediate(function() {
+      resolve(value);
+    });
+    if (signal && typeof signal.addEventListener === 'function') {
+      signal.addEventListener('abort', function() {
+        try { timers.clearImmediate(timer); } catch (e) {}
+        reject(signal.reason instanceof Error ? signal.reason : new Error('The operation was aborted'));
+      }, { once: true });
+    }
+  });
+}
+
+function setIntervalPromise(delay, value, options) {
+  var ms = delay === undefined ? 1 : Number(delay);
+  var opts = options || {};
+  var signal = opts.signal || null;
+  return new Promise(function(resolve, reject) {
+    if (signal && signal.aborted) {
+      reject(signal.reason instanceof Error ? signal.reason : new Error('The operation was aborted'));
+      return;
+    }
+    var timer = timers.setInterval(function() {
+      resolve(value);
+      try { timers.clearInterval(timer); } catch (e) {}
+    }, ms);
+    if (signal && typeof signal.addEventListener === 'function') {
+      signal.addEventListener('abort', function() {
+        try { timers.clearInterval(timer); } catch (e) {}
+        reject(signal.reason instanceof Error ? signal.reason : new Error('The operation was aborted'));
+      }, { once: true });
+    }
+  });
+}
+
+// Async 迭代器版本
+function timersAsyncGenerator(factory, args) {
+  var current = null;
+  return {
+    [Symbol.asyncIterator]: function() { return this; },
+    next: function() {
+      var self = this;
+      if (current) return current;
+      current = factory.apply(null, args).then(function(value) {
+        current = null;
+        return { value: value, done: false };
+      });
+      return current;
+    },
+    return: function() {
+      current = null;
+      return Promise.resolve({ value: undefined, done: true });
+    },
+  };
+}
+
+function setTimeoutAsync(delay, value, options) {
+  return timersAsyncGenerator(setTimeoutPromise, [delay, value, options]);
+}
+
+function setIntervalAsync(delay, value, options) {
+  return timersAsyncGenerator(setIntervalPromise, [delay, value, options]);
+}
+
+function setImmediateAsync(value, options) {
+  return timersAsyncGenerator(setImmediatePromise, [value, options]);
+}
+
+module.exports = {
+  setTimeout: setTimeoutPromise,
+  setImmediate: setImmediatePromise,
+  setInterval: setIntervalPromise,
+  scheduler: {
+    wait: function(delay, options) { return setTimeoutPromise(delay, undefined, options); },
+    yield: function() { return setTimeoutPromise(0); },
+    signal: function(signal, options) {
+      return new Promise(function(resolve, reject) {
+        if (signal.aborted) reject(signal.reason instanceof Error ? signal.reason : new Error('The operation was aborted'));
+        else signal.addEventListener('abort', function() {
+          reject(signal.reason instanceof Error ? signal.reason : new Error('The operation was aborted'));
+        }, { once: true });
+      });
+    },
+  },
+};
+"#),
         "node_shim/tls.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/tls - Node.js tls module (L3)
-// Maps to koss:net standard library with TLS extensions
+// 注意：KossJS 目前未实现真实 TLS 握手与证书验证。
+// 为避免调用方误以为连接已加密（安全隐患），所有 TLS 操作显式抛错。
 
-var net = require('koss:net');
+function _unsupported(name) {
+  throw new Error(
+    'tls.' + name + ' is not implemented in KossJS. ' +
+    'Real TLS (handshake, certificate verification) requires rustls integration ' +
+    'which is not yet wired up. Do NOT rely on this module for security.'
+  );
+}
 
-class TLSSocket extends net.Socket {
-  constructor(options) {
-    super(options);
-    this._authorized = options?.rejectUnauthorized !== false;
-  }
-  get encrypted() { return true; }
-  get authorized() { return this._authorized; }
-  get authorizationError() { return this._authorized ? null : new Error('TLS authorization failed'); }
-  get alpnProtocol() { return 'http/1.1'; }
+class TLSSocket {
+  constructor(options) { _unsupported('TLSSocket'); }
+  get encrypted() { return false; }
+  get authorized() { return false; }
+  get authorizationError() { return new Error('TLS not implemented in KossJS'); }
+  get alpnProtocol() { return undefined; }
 }
 
 class Server {
-  constructor(options, connectionListener) {
-    if (typeof options === 'function') { connectionListener = options; options = {}; }
-    this._connectionListener = connectionListener;
-  }
-
-  listen(port, host, callback) {
-    if (typeof host === 'function') { callback = host; host = '0.0.0.0'; }
-    if (callback) process.nextTick(callback);
-    return this;
-  }
-
-  close(callback) { if (callback) process.nextTick(callback); return this; }
+  constructor(options, connectionListener) { _unsupported('Server'); }
+  listen() { _unsupported('Server.listen'); }
+  close() { _unsupported('Server.close'); }
 }
 
-function connect(options, callback) {
-  const socket = new TLSSocket(typeof options === 'object' ? options : {});
-  if (callback) process.nextTick(() => callback(null, socket));
-  return socket;
-}
-
-function createServer(options, connectionListener) {
-  return new Server(options, connectionListener);
-}
-
-function createSecureContext(options) {
-  return { context: {}, alpnProtocols: ['http/1.1'] };
-}
-
+function connect(options, callback) { _unsupported('connect'); }
+function createServer(options, connectionListener) { _unsupported('createServer'); }
+function createSecureContext(options) { _unsupported('createSecureContext'); }
 function checkServerIdentity(hostname, cert) {
-  return undefined;
+  throw new Error(
+    'tls.checkServerIdentity is not implemented in KossJS. ' +
+    'Certificate identity validation cannot be safely skipped.'
+  );
 }
 
 const rootCertificates = [];
@@ -11134,7 +12782,7 @@ module.exports = { TLSSocket, Server, connect, createServer, createSecureContext
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/trace_events - Node.js trace_events module (L3)
 // Maps to koss:trace_events standard library
@@ -11145,7 +12793,7 @@ module.exports = require('koss:trace_events');
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/url - Node.js url module (L3)
 // Maps to koss:url standard library
@@ -11156,7 +12804,7 @@ module.exports = require('koss:url');
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/util - Node.js util module (L3)
 // Maps to koss:util standard library
@@ -11167,12 +12815,1545 @@ module.exports = require('koss:util');
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/zlib - Node.js zlib module (L3)
 // Maps to koss:zlib standard library
 
 module.exports = require('koss:zlib');
+"#),
+        "web_api.js" => Some(r#"// Copyright (C) 2026 TT23XR Studio
+// 
+// This file is licensed under GNU Affero General Public License v3.0
+// with the TT23XR Studio Additional Permission:
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
+
+// Web API 全局引导模块 — 将 Web 标准 API 安装到 globalThis。
+// 这些 API 在 Node.js / Bun / Deno 中均为全局可用，因此 KossJS 也应提供。
+// 纯 JS 实现，无外部依赖。由运行时初始化时通过 __koss_load_module 加载。
+
+(function(globalThis) {
+  'use strict';
+
+  // ── self / globalThis ──
+  if (typeof globalThis.self === 'undefined') {
+    Object.defineProperty(globalThis, 'self', {
+      get: function() { return globalThis; },
+      configurable: true,
+      enumerable: true,
+    });
+  }
+
+  // ── queueMicrotask ──
+  if (typeof globalThis.queueMicrotask !== 'function') {
+    globalThis.queueMicrotask = function queueMicrotask(callback) {
+      Promise.resolve().then(function() {
+        if (typeof callback === 'function') callback();
+      });
+    };
+  }
+
+  // ── structuredClone（结构化克隆，支持循环引用与 Buffer/ArrayBuffer） ──
+  if (typeof globalThis.structuredClone !== 'function') {
+    function structuredClone(value) {
+      return _deepClone(value, new WeakMap());
+    }
+    function _deepClone(value, seen) {
+      if (value === null || value === undefined) return value;
+      var t = typeof value;
+      if (t === 'number' || t === 'string' || t === 'boolean' || t === 'bigint' || t === 'symbol') return value;
+      if (t === 'function') return undefined;
+      // 类型化数组 / Buffer
+      if (value instanceof Uint8Array) {
+        var u8 = new Uint8Array(value.length);
+        u8.set(value);
+        return u8;
+      }
+      if (value instanceof ArrayBuffer) {
+        return value.slice(0);
+      }
+      if (ArrayBuffer.isView(value)) {
+        var view = new value.constructor(value.length);
+        for (var i = 0; i < value.length; i++) view[i] = value[i];
+        return view;
+      }
+      if (seen.has(value)) return seen.get(value);
+      var out;
+      if (Array.isArray(value)) {
+        out = [];
+        seen.set(value, out);
+        for (var j = 0; j < value.length; j++) out.push(_deepClone(value[j], seen));
+        return out;
+      }
+      if (value instanceof Date) {
+        return new Date(value.getTime());
+      }
+      if (value instanceof Map) {
+        out = new Map();
+        seen.set(value, out);
+        var entries = value.entries();
+        var e = entries.next();
+        while (!e.done) {
+          out.set(_deepClone(e.value[0], seen), _deepClone(e.value[1], seen));
+          e = entries.next();
+        }
+        return out;
+      }
+      if (value instanceof Set) {
+        out = new Set();
+        seen.set(value, out);
+        var s = value.values();
+        var sv = s.next();
+        while (!sv.done) {
+          out.add(_deepClone(sv.value, seen));
+          sv = s.next();
+        }
+        return out;
+      }
+      if (typeof value === 'object') {
+        out = {};
+        seen.set(value, out);
+        var keys = Object.keys(value);
+        for (var k = 0; k < keys.length; k++) {
+          out[keys[k]] = _deepClone(value[keys[k]], seen);
+        }
+        return out;
+      }
+      return value;
+    }
+    globalThis.structuredClone = structuredClone;
+  }
+
+  // ── Event / CustomEvent ──
+  if (typeof globalThis.Event !== 'function') {
+    function Event(type, options) {
+      if (typeof type !== 'string') throw new TypeError('Event type must be a string');
+      this.type = type;
+      this.target = null;
+      this.currentTarget = null;
+      this.bubbles = !!(options && options.bubbles);
+      this.cancelable = !!(options && options.cancelable);
+      this.defaultPrevented = false;
+      this.eventPhase = 0;
+      this.timeStamp = Date.now();
+      this._propagated = false;
+    }
+    Event.prototype.stopPropagation = function() { this._propagated = true; };
+    Event.prototype.stopImmediatePropagation = function() { this._propagated = true; };
+    Event.prototype.preventDefault = function() { if (this.cancelable) this.defaultPrevented = true; };
+    globalThis.Event = Event;
+  }
+
+  if (typeof globalThis.CustomEvent !== 'function') {
+    function CustomEvent(type, options) {
+      var opts = options || {};
+      Event.call(this, type, opts);
+      this.detail = opts.detail !== undefined ? opts.detail : null;
+    }
+    CustomEvent.prototype = Object.create(Event.prototype);
+    CustomEvent.prototype.constructor = CustomEvent;
+    globalThis.CustomEvent = CustomEvent;
+  }
+
+  // ── MessageEvent / ErrorEvent / CloseEvent ──
+  if (typeof globalThis.MessageEvent !== 'function') {
+    function MessageEvent(type, options) {
+      var opts = options || {};
+      Event.call(this, type, opts);
+      this.data = opts.data !== undefined ? opts.data : null;
+      this.origin = opts.origin !== undefined ? opts.origin : '';
+      this.lastEventId = opts.lastEventId !== undefined ? opts.lastEventId : '';
+      this.source = opts.source !== undefined ? opts.source : null;
+      this.ports = opts.ports !== undefined ? opts.ports : [];
+    }
+    MessageEvent.prototype = Object.create(Event.prototype);
+    MessageEvent.prototype.constructor = MessageEvent;
+    globalThis.MessageEvent = MessageEvent;
+  }
+
+  if (typeof globalThis.ErrorEvent !== 'function') {
+    function ErrorEvent(type, options) {
+      var opts = options || {};
+      Event.call(this, type, opts);
+      this.message = opts.message !== undefined ? opts.message : '';
+      this.filename = opts.filename !== undefined ? opts.filename : '';
+      this.lineno = opts.lineno !== undefined ? opts.lineno : 0;
+      this.colno = opts.colno !== undefined ? opts.colno : 0;
+      this.error = opts.error !== undefined ? opts.error : null;
+    }
+    ErrorEvent.prototype = Object.create(Event.prototype);
+    ErrorEvent.prototype.constructor = ErrorEvent;
+    globalThis.ErrorEvent = ErrorEvent;
+  }
+
+  if (typeof globalThis.CloseEvent !== 'function') {
+    function CloseEvent(type, options) {
+      var opts = options || {};
+      Event.call(this, type, opts);
+      this.wasClean = opts.wasClean !== undefined ? opts.wasClean : false;
+      this.code = opts.code !== undefined ? opts.code : 0;
+      this.reason = opts.reason !== undefined ? opts.reason : '';
+    }
+    CloseEvent.prototype = Object.create(Event.prototype);
+    CloseEvent.prototype.constructor = CloseEvent;
+    globalThis.CloseEvent = CloseEvent;
+  }
+
+  // ── EventTarget（Web 标准事件目标基类） ──
+  if (typeof globalThis.EventTarget !== 'function') {
+    function EventTarget() {
+      this._kossEventListeners = {};
+    }
+    EventTarget.prototype.addEventListener = function(type, listener, options) {
+      if (typeof listener !== 'function') return;
+      var key = String(type);
+      if (!this._kossEventListeners[key]) this._kossEventListeners[key] = [];
+      var opts = (options === true) ? { capture: true } : (options || {});
+      var entry = {
+        listener: listener,
+        once: !!(opts.once),
+        capture: !!(opts.capture),
+      };
+      this._kossEventListeners[key].push(entry);
+    };
+    EventTarget.prototype.removeEventListener = function(type, listener, options) {
+      var key = String(type);
+      var arr = this._kossEventListeners[key];
+      if (!arr) return;
+      for (var i = 0; i < arr.length; i++) {
+        if (arr[i].listener === listener) { arr.splice(i, 1); break; }
+      }
+    };
+    EventTarget.prototype.dispatchEvent = function(event) {
+      if (!event || event.type === undefined) return false;
+      var key = String(event.type);
+      var arr = (this._kossEventListeners[key] || []).slice();
+      event.target = this;
+      event.currentTarget = this;
+      for (var i = 0; i < arr.length; i++) {
+        var entry = arr[i];
+        if (entry.once) this.removeEventListener(key, entry.listener);
+        try {
+          entry.listener.call(this, event);
+        } catch (e) {
+          // 监听器异常不应中断其他监听器
+        }
+        if (event._propagated) break;
+      }
+      return true;
+    };
+    globalThis.EventTarget = EventTarget;
+  }
+
+  // ── DOMException ──
+  if (typeof globalThis.DOMException !== 'function') {
+    function DOMException(message, name) {
+      var e = new Error(message === undefined || message === null ? '' : String(message));
+      e.name = name || 'Error';
+      e.message = message === undefined || message === null ? '' : String(message);
+      return e;
+    }
+    DOMException.prototype = Object.create(Error.prototype);
+    DOMException.prototype.constructor = DOMException;
+    globalThis.DOMException = DOMException;
+  }
+
+  // ── AbortController / AbortSignal ──
+  if (typeof globalThis.AbortController !== 'function') {
+    var kkAbortListeners = Symbol('abortListeners');
+    function AbortSignal() {
+      this.aborted = false;
+      this.reason = undefined;
+      this.onabort = null;
+      this[kkAbortListeners] = [];
+    }
+    AbortSignal.prototype.addEventListener = function(type, listener, options) {
+      if (type === 'abort' && typeof listener === 'function') {
+        var entry = { listener: listener, once: !!(options && options.once) };
+        this[kkAbortListeners].push(entry);
+      }
+    };
+    AbortSignal.prototype.removeEventListener = function(type, listener) {
+      if (type === 'abort') {
+        var arr = this[kkAbortListeners];
+        for (var i = 0; i < arr.length; i++) {
+          if (arr[i].listener === listener) { arr.splice(i, 1); break; }
+        }
+      }
+    };
+    AbortSignal.prototype.dispatchEvent = function(event) {
+      if (event && event.type === 'abort') {
+        this.aborted = true;
+        this.reason = event.reason !== undefined ? event.reason : new DOMException('This operation was aborted', 'AbortError');
+        if (typeof this.onabort === 'function') this.onabort(event);
+        var arr = this[kkAbortListeners].slice();
+        for (var i = 0; i < arr.length; i++) {
+          var entry = arr[i];
+          if (entry.once) this.removeEventListener('abort', entry.listener);
+          entry.listener(event);
+        }
+      }
+      return true;
+    };
+    AbortSignal.prototype.throwIfAborted = function() {
+      if (this.aborted) throw this.reason instanceof Error ? this.reason : new DOMException('The operation was aborted', 'AbortError');
+    };
+    AbortSignal.abort = function(reason) {
+      var signal = new AbortSignal();
+      signal.aborted = true;
+      signal.reason = reason !== undefined ? reason : new DOMException('This operation was aborted', 'AbortError');
+      return signal;
+    };
+    AbortSignal.timeout = function(ms) {
+      var controller = new AbortController();
+      setTimeout(function() {
+        controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+      }, Number(ms) || 0);
+      return controller.signal;
+    };
+    AbortSignal.any = function(signals) {
+      var controller = new AbortController();
+      var list = signals || [];
+      for (var i = 0; i < list.length; i++) {
+        var sig = list[i];
+        if (!sig) continue;
+        if (sig.aborted) {
+          controller.abort(sig.reason);
+          break;
+        }
+        if (typeof sig.addEventListener === 'function') {
+          sig.addEventListener('abort', function(event) {
+            controller.abort(event && event.reason);
+          }, { once: true });
+        }
+      }
+      return controller.signal;
+    };
+    globalThis.AbortSignal = AbortSignal;
+
+    function AbortController() {
+      this.signal = new AbortSignal();
+    }
+    AbortController.prototype.abort = function(reason) {
+      if (this.signal.aborted) return;
+      var event = { type: 'abort', reason: reason };
+      this.signal.dispatchEvent(event);
+    };
+    globalThis.AbortController = AbortController;
+  }
+
+  // ── URL / URLSearchParams ──
+  if (typeof globalThis.URL !== 'function') {
+    try {
+      var urlModule = require('koss:url');
+      if (urlModule && typeof urlModule.URL === 'function') {
+        globalThis.URL = urlModule.URL;
+        globalThis.URLSearchParams = urlModule.URLSearchParams;
+      }
+    } catch (e) { /* koss:url 不可用时忽略 */ }
+  }
+
+  // ── URLPattern ──
+  if (typeof globalThis.URLPattern !== 'function') {
+    function _patternToRegex(pattern) {
+      // 转换 URLPattern 语法：:name → 捕获组，* → .*，其余正则特殊字符转义
+      var p = String(pattern || '');
+      var regex = '';
+      var i = 0;
+      var groups = [];
+      while (i < p.length) {
+        var ch = p[i];
+        if (ch === '*') {
+          regex += '.*';
+          i++;
+        } else if (ch === ':') {
+          // 捕获参数名直到非字母数字
+          var j = i + 1;
+          var name = '';
+          while (j < p.length && /[A-Za-z0-9_]/.test(p[j])) { name += p[j]; j++; }
+          groups.push(name || '');
+          regex += '([^/]+)';
+          i = j;
+        } else if (ch === '{') {
+          // 可选组
+          regex += '(?:';
+          i++;
+        } else if (ch === '}') {
+          regex += ')?';
+          i++;
+        } else if (ch === '(') {
+          regex += '(';
+          i++;
+        } else if (ch === ')') {
+          regex += ')';
+          i++;
+        } else if ('\\.+?^$|[]'.indexOf(ch) !== -1) {
+          regex += '\\' + ch;
+          i++;
+        } else {
+          regex += ch;
+          i++;
+        }
+      }
+      return { regex: new RegExp('^' + regex + '$'), groups: groups };
+    }
+    function URLPattern(input, baseURL) {
+      var init;
+      if (typeof input === 'string') {
+        init = { pathname: input };
+      } else {
+        init = input || {};
+      }
+      if (baseURL && typeof baseURL === 'string') {
+        init.baseURL = baseURL;
+      }
+      this._baseURL = init.baseURL || null;
+      var pathname = init.pathname !== undefined ? init.pathname : '*';
+      var search = init.search !== undefined ? init.search : '*';
+      var hash = init.hash !== undefined ? init.hash : '*';
+      var protocol = init.protocol !== undefined ? init.protocol : '*';
+      var hostname = init.hostname !== undefined ? init.hostname : '*';
+      var port = init.port !== undefined ? init.port : '*';
+      this._pathname = _patternToRegex(pathname);
+      this._search = _patternToRegex(search);
+      this._hash = _patternToRegex(hash);
+      this._protocol = _patternToRegex(protocol);
+      this._hostname = _patternToRegex(hostname);
+      this._port = _patternToRegex(port);
+    }
+    URLPattern.prototype.test = function(url) {
+      return this.exec(url) !== null;
+    };
+    URLPattern.prototype.exec = function(url) {
+      var target = typeof url === 'string' ? url : (url && url.href) || '';
+      var parsed = null;
+      try {
+        parsed = this._baseURL ? new URL(target, this._baseURL) : new URL(target, 'https://kossjs.invalid/');
+      } catch (e) {
+        parsed = null;
+      }
+      if (!parsed) return null;
+      var path = parsed.pathname || '/';
+      // search 匹配时去掉前导 '?'
+      var rawSearch = parsed.search || '';
+      var search = rawSearch.charAt(0) === '?' ? rawSearch.substring(1) : rawSearch;
+      var hash = parsed.hash || '';
+      var protocol = parsed.protocol || '';
+      var hostname = parsed.hostname || '';
+      var port = parsed.port || '';
+      if (!this._pathname.regex.test(path)) return null;
+      if (!this._search.regex.test(search)) return null;
+      if (!this._hash.regex.test(hash)) return null;
+      if (!this._protocol.regex.test(protocol)) return null;
+      if (!this._hostname.regex.test(hostname)) return null;
+      if (!this._port.regex.test(port)) return null;
+      var pathMatch = path.match(this._pathname.regex);
+      var searchMatch = search.match(this._search.regex);
+      var hashMatch = hash.match(this._hash.regex);
+      var groups = {};
+      for (var i = 0; i < this._pathname.groups.length; i++) {
+        groups[this._pathname.groups[i]] = pathMatch[i + 1];
+      }
+      for (var j = 0; j < this._search.groups.length; j++) {
+        groups[this._search.groups[j]] = searchMatch[j + 1];
+      }
+      for (var k = 0; k < this._hash.groups.length; k++) {
+        groups[this._hash.groups[k]] = hashMatch[k + 1];
+      }
+      return {
+        input: target,
+        pathname: { input: path, groups: groups },
+        search: { input: search, groups: groups },
+        hash: { input: hash, groups: groups },
+        protocol: { input: protocol, groups: {} },
+        hostname: { input: hostname, groups: {} },
+        port: { input: port, groups: {} },
+        groups: groups,
+      };
+    };
+    URLPattern.prototype[Symbol.toStringTag] = 'URLPattern';
+    globalThis.URLPattern = URLPattern;
+  }
+
+  // ── performance ──
+  if (typeof globalThis.performance === 'undefined') {
+    try {
+      var perfModule = require('koss:node/perf_hooks');
+      if (perfModule && perfModule.performance) {
+        globalThis.performance = perfModule.performance;
+      }
+    } catch (e) { /* perf_hooks 不可用时忽略 */ }
+  }
+
+  // ── File（基于 Blob） ──
+  if (typeof globalThis.File !== 'function') {
+    function File(fileBits, fileName, options) {
+      var BlobCtor = globalThis.Blob;
+      var opts = options || {};
+      var blob = new BlobCtor(fileBits || [], { type: opts.type || '' });
+      // 复用 Blob 内部数据
+      var parts = blob._parts || [];
+      BlobCtor.call(this, parts, { type: opts.type || '' });
+      this.name = String(fileName);
+      this.lastModified = opts.lastModified !== undefined ? Number(opts.lastModified) : Date.now();
+    }
+    try {
+      File.prototype = Object.create(globalThis.Blob.prototype);
+      File.prototype.constructor = File;
+    } catch (e) { /* 忽略 */ }
+    globalThis.File = File;
+  }
+
+  // ── FormData ──
+  if (typeof globalThis.FormData !== 'function') {
+    function FormData() {
+      this._entries = [];
+    }
+    FormData.prototype.append = function(name, value, filename) {
+      this._entries.push({ name: String(name), value: value, filename: filename !== undefined ? String(filename) : undefined });
+    };
+    FormData.prototype.delete = function(name) {
+      var nameStr = String(name);
+      this._entries = this._entries.filter(function(e) { return e.name !== nameStr; });
+    };
+    FormData.prototype.get = function(name) {
+      var nameStr = String(name);
+      for (var i = 0; i < this._entries.length; i++) {
+        if (this._entries[i].name === nameStr) return this._entries[i].value;
+      }
+      return null;
+    };
+    FormData.prototype.getAll = function(name) {
+      var nameStr = String(name);
+      var out = [];
+      for (var i = 0; i < this._entries.length; i++) {
+        if (this._entries[i].name === nameStr) out.push(this._entries[i].value);
+      }
+      return out;
+    };
+    FormData.prototype.has = function(name) {
+      var nameStr = String(name);
+      for (var i = 0; i < this._entries.length; i++) {
+        if (this._entries[i].name === nameStr) return true;
+      }
+      return false;
+    };
+    FormData.prototype.set = function(name, value, filename) {
+      var nameStr = String(name);
+      this.delete(nameStr);
+      this.append(nameStr, value, filename);
+    };
+    FormData.prototype.entries = function() {
+      var arr = [];
+      for (var i = 0; i < this._entries.length; i++) arr.push([this._entries[i].name, this._entries[i].value]);
+      return arr[Symbol.iterator]();
+    };
+    FormData.prototype.keys = function() {
+      var self = this;
+      return (function*() {
+        for (var i = 0; i < self._entries.length; i++) yield self._entries[i].name;
+      })();
+    };
+    FormData.prototype.values = function() {
+      var self = this;
+      return (function*() {
+        for (var i = 0; i < self._entries.length; i++) yield self._entries[i].value;
+      })();
+    };
+    FormData.prototype.forEach = function(callback, thisArg) {
+      for (var i = 0; i < this._entries.length; i++) {
+        var e = this._entries[i];
+        callback.call(thisArg, e.value, e.name, this);
+      }
+    };
+    FormData.prototype[Symbol.iterator] = function() { return this.entries(); };
+    globalThis.FormData = FormData;
+  }
+
+  // ── Request（Web Fetch 标准） ──
+  if (typeof globalThis.Request !== 'function') {
+    function Request(input, init) {
+      var opts = init || {};
+      var url;
+      var baseRequest = null;
+      if (typeof input === 'string') {
+        url = input;
+      } else if (input && typeof input === 'object') {
+        if (input instanceof globalThis.Request) {
+          baseRequest = input;
+          url = input.url;
+        } else if (typeof input.url === 'string') {
+          url = input.url;
+        } else {
+          url = String(input);
+        }
+      } else {
+        throw new TypeError('Request input must be a string or object');
+      }
+      this.url = url;
+      this.method = (opts.method || (baseRequest ? baseRequest.method : 'GET')).toUpperCase();
+      this.headers = new Headers(baseRequest ? baseRequest.headers : {});
+      if (opts.headers) {
+        var h = new Headers(opts.headers);
+        var it = h.entries();
+        var entry = it.next();
+        while (!entry.done) {
+          this.headers.append ? this.headers.append(entry.value[0], entry.value[1]) : this.headers.set(entry.value[0], entry.value[1]);
+          entry = it.next();
+        }
+      }
+      this.body = opts.body !== undefined ? opts.body : (baseRequest ? baseRequest.body : null);
+      this.signal = opts.signal || (baseRequest ? baseRequest.signal : null);
+      this.credentials = opts.credentials || (baseRequest ? baseRequest.credentials : 'same-origin');
+      this.mode = opts.mode || (baseRequest ? baseRequest.mode : 'cors');
+      this.cache = opts.cache || (baseRequest ? baseRequest.cache : 'default');
+      this.redirect = opts.redirect || (baseRequest ? baseRequest.redirect : 'follow');
+      this.referrer = opts.referrer || (baseRequest ? baseRequest.referrer : 'about:client');
+      this.duplex = opts.duplex;
+      this._bodyUsed = false;
+    }
+    Request.prototype.clone = function() {
+      if (this._bodyUsed) throw new TypeError('Cannot clone a used Request');
+      return new Request(this);
+    };
+    Object.defineProperty(Request.prototype, 'bodyUsed', {
+      get: function() { return this._bodyUsed; }
+    });
+    Request.prototype.arrayBuffer = function() {
+      var body = this.body;
+      this._bodyUsed = true;
+      if (body === null || body === undefined) return Promise.resolve(new ArrayBuffer(0));
+      if (body instanceof ArrayBuffer) return Promise.resolve(body.slice(0));
+      if (typeof body === 'string') {
+        var bytes = [];
+        for (var i = 0; i < body.length; i++) bytes.push(body.charCodeAt(i) & 0xff);
+        var buf = new ArrayBuffer(bytes.length);
+        new Uint8Array(buf).set(bytes);
+        return Promise.resolve(buf);
+      }
+      return Promise.resolve(body);
+    };
+    Request.prototype.text = function() {
+      var self = this;
+      return this.arrayBuffer().then(function() {
+        var body = self.body;
+        if (body === null || body === undefined) return '';
+        if (typeof body === 'string') return body;
+        return String(body);
+      });
+    };
+    Request.prototype.json = function() {
+      var self = this;
+      return this.text().then(function(t) { return JSON.parse(t); });
+    };
+    Request.prototype.blob = function() {
+      var self = this;
+      return this.arrayBuffer().then(function() {
+        return new Blob([new Uint8Array(self.body && self.body.byteLength ? self.body : 0)]);
+      });
+    };
+    Request.prototype.formData = function() {
+      var self = this;
+      return this.text().then(function(t) {
+        var fd = new FormData();
+        var pairs = t.split('&');
+        for (var i = 0; i < pairs.length; i++) {
+          if (!pairs[i]) continue;
+          var parts = pairs[i].split('=');
+          var key = parts[0] ? decodeURIComponent(parts[0].replace(/\+/g, ' ')) : '';
+          var val = parts[1] ? decodeURIComponent(parts[1].replace(/\+/g, ' ')) : '';
+          fd.append(key, val);
+        }
+        return fd;
+      });
+    };
+    globalThis.Request = Request;
+  }
+
+  // ── Headers.append 补齐（Web 标准支持多值合并） ──
+  if (typeof globalThis.Headers === 'function') {
+    var _HeadersProto = globalThis.Headers.prototype;
+    if (typeof _HeadersProto.append !== 'function') {
+      _HeadersProto.append = function(name, value) {
+        var key = String(name).toLowerCase();
+        var existing = this.get ? this.get(key) : null;
+        if (existing !== null && existing !== undefined) {
+          this.set(key, existing + ', ' + String(value));
+        } else {
+          this.set(key, String(value));
+        }
+      };
+    }
+  }
+
+  // ── Response.formData 补齐 ──
+  if (typeof globalThis.Response === 'function') {
+    var _ResponseProto = globalThis.Response.prototype;
+    if (typeof _ResponseProto.formData !== 'function') {
+      _ResponseProto.formData = function() {
+        var self = this;
+        return this.text().then(function(t) {
+          var fd = new FormData();
+          var pairs = t.split('&');
+          for (var i = 0; i < pairs.length; i++) {
+            if (!pairs[i]) continue;
+            var parts = pairs[i].split('=');
+            var key = parts[0] ? decodeURIComponent(parts[0].replace(/\+/g, ' ')) : '';
+            var val = parts[1] ? decodeURIComponent(parts[1].replace(/\+/g, ' ')) : '';
+            fd.append(key, val);
+          }
+          return fd;
+        });
+      };
+    }
+  }
+
+  // ── fetch 的 signal / AbortController 支持 ──
+  var _origFetch = globalThis.fetch;
+  if (typeof _origFetch === 'function') {
+    globalThis.fetch = function(input, init) {
+      var req = (typeof input === 'string' || input instanceof globalThis.Request) ? new Request(input, init) : input;
+      var signal = (init && init.signal) || (req && req.signal) || null;
+      if (signal && signal.aborted) {
+        return Promise.reject(signal.reason instanceof Error ? signal.reason : new DOMException('The operation was aborted', 'AbortError'));
+      }
+      if (signal && typeof signal.addEventListener === 'function') {
+        return new Promise(function(resolve, reject) {
+          var onAbort = function() {
+            reject(signal.reason instanceof Error ? signal.reason : new DOMException('The operation was aborted', 'AbortError'));
+          };
+          signal.addEventListener('abort', onAbort, { once: true });
+          _origFetch(input, init).then(function(res) {
+            signal.removeEventListener('abort', onAbort);
+            resolve(res);
+          }, function(err) {
+            signal.removeEventListener('abort', onAbort);
+            reject(err);
+          });
+        });
+      }
+      return _origFetch(input, init);
+    };
+  }
+
+  // ── global（Node 风格全局别名） ──
+  if (typeof globalThis.global === 'undefined') {
+    Object.defineProperty(globalThis, 'global', {
+      get: function() { return globalThis; },
+      configurable: true,
+      enumerable: false,
+    });
+  }
+
+  // ── navigator ──
+  if (typeof globalThis.navigator === 'undefined') {
+    var kossVersion = (typeof globalThis.KossJS !== 'undefined' && globalThis.KossJS.version) ? globalThis.KossJS.version : '';
+    var kossPlatform = 'unknown';
+    var kossArch = 'unknown';
+    try {
+      var sysModule = require('koss:system');
+      kossPlatform = sysModule.platform();
+      kossArch = sysModule.arch();
+    } catch (e) { /* ignore */ }
+    var navigatorObj = {};
+    Object.defineProperty(navigatorObj, 'userAgent', {
+      get: function() { return 'KossJS/' + kossVersion; },
+      configurable: true,
+    });
+    Object.defineProperty(navigatorObj, 'platform', {
+      get: function() { return kossPlatform; },
+      configurable: true,
+    });
+    Object.defineProperty(navigatorObj, 'hardwareConcurrency', {
+      get: function() {
+        try { return require('koss:system').availableParallelism(); }
+        catch (e) { return 1; }
+      },
+      configurable: true,
+    });
+    Object.defineProperty(navigatorObj, 'language', {
+      get: function() { return 'en-US'; },
+      configurable: true,
+    });
+    Object.defineProperty(navigatorObj, 'languages', {
+      get: function() { return ['en-US']; },
+      configurable: true,
+    });
+    globalThis.navigator = navigatorObj;
+  }
+
+  // ── reportError ──
+  if (typeof globalThis.reportError !== 'function') {
+    globalThis.reportError = function(e) {
+      if (typeof console !== 'undefined' && console.error) {
+        console.error(e);
+      }
+      return undefined;
+    };
+  }
+
+  // ── Web Crypto：全局 crypto（getRandomValues / randomUUID / subtle） ──
+  if (typeof globalThis.crypto === 'undefined') {
+    var kossCryptoModule = null;
+    try { kossCryptoModule = require('koss:crypto'); } catch (e) { kossCryptoModule = null; }
+
+    var cryptoObj = {};
+    if (kossCryptoModule) {
+      cryptoObj.getRandomValues = function(array) {
+        if (!array || typeof array.length !== 'number') throw new TypeError('getRandomValues: expected a typed array');
+        var bytes = kossCryptoModule.randomBytes(array.length);
+        for (var i = 0; i < array.length && i < bytes.length; i++) array[i] = bytes[i];
+        return array;
+      };
+      cryptoObj.randomUUID = function() { return kossCryptoModule.uuid(); };
+      cryptoObj.randomBytes = function(size) { return kossCryptoModule.randomBytes(Number(size) || 0); };
+      cryptoObj.subtle = {
+        digest: function(algorithm, data) {
+          return Promise.resolve().then(function() {
+            var algo = typeof algorithm === 'string' ? algorithm : (algorithm && algorithm.name) || 'SHA-256';
+            var normalized = String(algo).toLowerCase().replace('-', '');
+            var bytes = _toUint8Array(data);
+            var out = kossCryptoModule.hashBytes(normalized, bytes);
+            return out.buffer;
+          });
+        },
+        encrypt: function(algorithm, key, data) {
+          return Promise.resolve().then(function() {
+            var algo = typeof algorithm === 'string' ? algorithm : (algorithm && algorithm.name) || 'AES-GCM';
+            var keyBytes = _toUint8Array(key);
+            var dataBytes = _toUint8Array(data);
+            var combined = kossCryptoModule.encrypt(keyBytes, dataBytes);
+            return combined.buffer;
+          });
+        },
+        decrypt: function(algorithm, key, data) {
+          return Promise.resolve().then(function() {
+            var keyBytes = _toUint8Array(key);
+            var dataBytes = _toUint8Array(data);
+            var out = kossCryptoModule.decrypt(keyBytes, dataBytes);
+            return out.buffer;
+          });
+        },
+        generateKey: function(algorithm, extractable, keyUsages) {
+          return Promise.resolve().then(function() {
+            var algo = typeof algorithm === 'string' ? algorithm : (algorithm && algorithm.name) || 'Ed25519';
+            if (algo === 'Ed25519' || algo === 'ed25519') {
+              var kp = kossCryptoModule.ed25519KeyPair();
+              return {
+                publicKey: kp.publicKey,
+                privateKey: kp.privateKey,
+                extractable: !!extractable,
+                type: 'private',
+                algorithm: { name: 'Ed25519' },
+                usages: keyUsages || [],
+              };
+            }
+            if (algo === 'AES-GCM' || algo === 'aes-gcm') {
+              var len = (algorithm && algorithm.length) || 256;
+              return kossCryptoModule.randomBytes(Math.floor(Number(len) / 8));
+            }
+            var keyLen = (algorithm && algorithm.length) || 32;
+            return kossCryptoModule.randomBytes(Math.floor(Number(keyLen) / 8));
+          });
+        },
+        sign: function(algorithm, key, data) {
+          return Promise.resolve().then(function() {
+            var keyBytes = _toUint8Array(key);
+            var dataBytes = _toUint8Array(data);
+            var out = kossCryptoModule.sign(keyBytes, dataBytes);
+            return out.buffer;
+          });
+        },
+        verify: function(algorithm, key, signature, data) {
+          return Promise.resolve().then(function() {
+            var keyBytes = _toUint8Array(key);
+            var sigBytes = _toUint8Array(signature);
+            var dataBytes = _toUint8Array(data);
+            return kossCryptoModule.verify(keyBytes, dataBytes, sigBytes);
+          });
+        },
+        importKey: function(format, keyData, algorithm, extractable, keyUsages) {
+          return Promise.resolve().then(function() {
+            if (format === 'raw') return _toUint8Array(keyData);
+            throw new DOMException('Unsupported key format: ' + format, 'NotSupportedError');
+          });
+        },
+        exportKey: function(format, key) {
+          return Promise.resolve().then(function() {
+            var bytes = _toUint8Array(key);
+            return bytes.buffer;
+          });
+        },
+      };
+    } else {
+      cryptoObj.getRandomValues = function(array) {
+        for (var i = 0; i < array.length; i++) array[i] = Math.floor(Math.random() * 256);
+        return array;
+      };
+      cryptoObj.randomUUID = function() {
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+          var r = Math.random() * 16 | 0;
+          var v = c === 'x' ? r : (r & 0x3 | 0x8);
+          return v.toString(16);
+        });
+      };
+      cryptoObj.subtle = {};
+    }
+    globalThis.crypto = cryptoObj;
+  }
+
+  function _toUint8Array(data) {
+    if (data instanceof Uint8Array) return data;
+    if (data && data.byteLength !== undefined && typeof data.byteLength === 'number') {
+      return new Uint8Array(data);
+    }
+    if (Array.isArray(data)) return new Uint8Array(data);
+    if (typeof data === 'string') {
+      var bytes = new Uint8Array(data.length);
+      for (var i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i) & 0xff;
+      return bytes;
+    }
+    return new Uint8Array(0);
+  }
+
+  // ── QueuingStrategy ──
+  if (typeof globalThis.CountQueuingStrategy !== 'function') {
+    function CountQueuingStrategy(init) {
+      var opts = init || {};
+      this.highWaterMark = opts.highWaterMark !== undefined ? Number(opts.highWaterMark) : 1;
+    }
+    CountQueuingStrategy.prototype.size = function(chunk) { return 1; };
+    globalThis.CountQueuingStrategy = CountQueuingStrategy;
+  }
+  if (typeof globalThis.ByteLengthQueuingStrategy !== 'function') {
+    function ByteLengthQueuingStrategy(init) {
+      var opts = init || {};
+      this.highWaterMark = opts.highWaterMark !== undefined ? Number(opts.highWaterMark) : 0;
+    }
+    ByteLengthQueuingStrategy.prototype.size = function(chunk) {
+      if (chunk === null || chunk === undefined) return 0;
+      return chunk.byteLength !== undefined ? chunk.byteLength : (chunk.length || 0);
+    };
+    globalThis.ByteLengthQueuingStrategy = ByteLengthQueuingStrategy;
+  }
+
+  // ── ReadableStream（Web 标准，支持 start/pull/cancel + enqueue/close/error） ──
+  if (typeof globalThis.ReadableStream !== 'function') {
+    function ReadableStream(underlyingSource, strategy) {
+      var source = underlyingSource || {};
+      this._controller = new ReadableStreamDefaultController(this, source);
+      this._strategy = strategy || new CountQueuingStrategy();
+      this._locked = false;
+      this._disturbed = false;
+      this._reader = null;
+      this._ended = false;
+      this._error = undefined;
+      this._queue = [];
+      this._closeRequested = false;
+      this._pendingReads = [];
+      if (typeof source.start === 'function') {
+        source.start(this._controller);
+      }
+    }
+    ReadableStream.prototype.getReader = function() {
+      if (this._locked) throw new TypeError('ReadableStream is already locked');
+      this._locked = true;
+      var self = this;
+      var closed = false;
+      var reader = {
+        get closed() { return closed ? Promise.resolve() : new Promise(function(res) { reader._closeResolve = res; }); },
+        get locked() { return self._locked; },
+        read: function() {
+          self._disturbed = true;
+          return new Promise(function(resolve, reject) {
+            if (self._error !== undefined) { reject(self._error); return; }
+            if (self._queue.length > 0) {
+              resolve({ value: self._queue.shift(), done: false });
+              return;
+            }
+            if (self._ended) {
+              resolve({ value: undefined, done: true });
+              return;
+            }
+            // pull 尝试填充
+            if (typeof self._controller._source.pull === 'function') {
+              try { self._controller._source.pull(self._controller); } catch (e) {}
+            }
+            if (self._queue.length > 0) {
+              resolve({ value: self._queue.shift(), done: false });
+              return;
+            }
+            if (self._ended) {
+              resolve({ value: undefined, done: true });
+              return;
+            }
+            self._pendingReads.push({ resolve: resolve, reject: reject });
+          });
+        },
+        cancel: function(reason) {
+          self._locked = false;
+          closed = true;
+          if (reader._closeResolve) reader._closeResolve();
+          if (typeof self._controller._source.cancel === 'function') {
+            try { self._controller._source.cancel(reason); } catch (e) {}
+          }
+          return Promise.resolve();
+        },
+        releaseLock: function() {
+          self._locked = false;
+        },
+      };
+      this._reader = reader;
+      return reader;
+    };
+    ReadableStream.prototype.cancel = function(reason) {
+      var reader = this.getReader();
+      return reader.cancel(reason);
+    };
+    ReadableStream.prototype[Symbol.asyncIterator] = function() {
+      var reader = this.getReader();
+      return {
+        next: function() { return reader.read(); },
+        return: function() { return reader.cancel(); },
+      };
+    };
+    ReadableStream.prototype.pipeTo = function(dest) {
+      var reader = this.getReader();
+      var writer = dest.getWriter();
+      function pump() {
+        return reader.read().then(function(result) {
+          if (result.done) { writer.close(); return; }
+          return writer.write(result.value).then(pump);
+        });
+      }
+      return pump();
+    };
+    ReadableStream.prototype.pipeThrough = function(transform) {
+      var output = transform.readable;
+      var writer = transform.writable.getWriter();
+      var reader = this.getReader();
+      function pump() {
+        return reader.read().then(function(result) {
+          if (result.done) { writer.close(); return; }
+          return writer.write(result.value).then(pump);
+        });
+      }
+      pump();
+      return output;
+    };
+    Object.defineProperty(ReadableStream.prototype, 'locked', {
+      get: function() { return this._locked; }
+    });
+
+    function ReadableStreamDefaultController(stream, source) {
+      this._stream = stream;
+      this._source = source;
+    }
+    ReadableStreamDefaultController.prototype.enqueue = function(chunk) {
+      var stream = this._stream;
+      if (stream._closeRequested) throw new TypeError('Cannot enqueue after close');
+      stream._queue.push(chunk);
+      // 满足等待中的 read
+      if (stream._pendingReads.length > 0) {
+        var pending = stream._pendingReads.shift();
+        if (pending.resolve) pending.resolve({ value: stream._queue.shift(), done: false });
+      }
+    };
+    ReadableStreamDefaultController.prototype.close = function() {
+      var stream = this._stream;
+      if (stream._closeRequested) return;
+      stream._closeRequested = true;
+      stream._ended = true;
+      while (stream._pendingReads.length > 0) {
+        var pending = stream._pendingReads.shift();
+        if (pending.resolve) pending.resolve({ value: undefined, done: true });
+      }
+      var reader = stream._reader;
+      if (reader && reader._closeResolve) reader._closeResolve();
+    };
+    ReadableStreamDefaultController.prototype.error = function(e) {
+      var stream = this._stream;
+      stream._error = e;
+      stream._ended = true;
+      while (stream._pendingReads.length > 0) {
+        var pending = stream._pendingReads.shift();
+        if (pending.reject) pending.reject(e);
+      }
+    };
+    ReadableStreamDefaultController.prototype.byobRequest = null;
+    Object.defineProperty(ReadableStreamDefaultController.prototype, 'desiredSize', {
+      get: function() { return 1; }
+    });
+
+    globalThis.ReadableStream = ReadableStream;
+    globalThis.ReadableStreamDefaultController = ReadableStreamDefaultController;
+  }
+
+  // ── WritableStream ──
+  if (typeof globalThis.WritableStream !== 'function') {
+    function WritableStream(underlyingSink, strategy) {
+      var sink = underlyingSink || {};
+      this._sink = sink;
+      this._locked = false;
+      this._closed = false;
+      this._closedPromise = null;
+      this._writeQueue = [];
+      if (typeof sink.start === 'function') {
+        sink.start({});
+      }
+    }
+    WritableStream.prototype.getWriter = function() {
+      if (this._locked) throw new TypeError('WritableStream is already locked');
+      this._locked = true;
+      var self = this;
+      var readyResolve = null;
+      return {
+        get closed() {
+          return self._closedPromise || (self._closedPromise = new Promise(function(res) {
+            self._closedResolve = res;
+          }));
+        },
+        get ready() {
+          return Promise.resolve();
+        },
+        get desiredSize() { return 1; },
+        write: function(chunk) {
+          var self2 = this;
+          if (typeof self._sink.write === 'function') {
+            try {
+              var result = self._sink.write(chunk);
+              if (result && typeof result.then === 'function') return result;
+            } catch (e) {
+              return Promise.reject(e);
+            }
+          }
+          return Promise.resolve();
+        },
+        close: function() {
+          self._locked = false;
+          self._closed = true;
+          if (typeof self._sink.close === 'function') {
+            try { self._sink.close(); } catch (e) {}
+          }
+          if (self._closedResolve) self._closedResolve();
+          return Promise.resolve();
+        },
+        abort: function(reason) {
+          self._locked = false;
+          self._closed = true;
+          if (typeof self._sink.abort === 'function') {
+            try { self._sink.abort(reason); } catch (e) {}
+          }
+          return Promise.resolve();
+        },
+        releaseLock: function() { self._locked = false; },
+      };
+    };
+    WritableStream.prototype.close = function() {
+      var writer = this.getWriter();
+      return writer.close();
+    };
+    WritableStream.prototype.abort = function(reason) {
+      var writer = this.getWriter();
+      return writer.abort(reason);
+    };
+    Object.defineProperty(WritableStream.prototype, 'locked', {
+      get: function() { return this._locked; }
+    });
+    globalThis.WritableStream = WritableStream;
+    globalThis.WritableStreamDefaultWriter = WritableStream.prototype.getWriter;
+    globalThis.WritableStreamDefaultController = function() {};
+  }
+
+  // ── TransformStream ──
+  if (typeof globalThis.TransformStream !== 'function') {
+    function TransformStream(transformer, writableStrategy, readableStrategy) {
+      var transform = transformer || {};
+      var self = this;
+      this._readable = new ReadableStream({
+        start: function(controller) {
+          self._readableController = controller;
+        },
+      });
+      this._writable = new WritableStream({
+        start: function() {
+          if (typeof transform.start === 'function') transform.start(self._readableController);
+        },
+        write: function(chunk) {
+          if (typeof transform.transform === 'function') {
+            var result = transform.transform(chunk, self._readableController);
+            if (result && typeof result.then === 'function') return result;
+          } else {
+            self._readableController.enqueue(chunk);
+          }
+          return Promise.resolve();
+        },
+        close: function() {
+          if (typeof transform.flush === 'function') {
+            transform.flush(self._readableController);
+          }
+          self._readableController.close();
+        },
+      });
+    }
+    Object.defineProperty(TransformStream.prototype, 'readable', {
+      get: function() { return this._readable; },
+      configurable: true,
+    });
+    Object.defineProperty(TransformStream.prototype, 'writable', {
+      get: function() { return this._writable; },
+      configurable: true,
+    });
+    globalThis.TransformStream = TransformStream;
+    globalThis.TransformStreamDefaultController = function() {};
+  }
+
+  // ── TextEncoderStream / TextDecoderStream ──
+  if (typeof globalThis.TextEncoderStream !== 'function') {
+    function TextEncoderStream() {
+      var self = this;
+      this._ts = new TransformStream({
+        transform: function(chunk, controller) {
+          var str = typeof chunk === 'string' ? chunk : String(chunk);
+          controller.enqueue(_utf8EncodeBytes(str));
+        },
+      });
+    }
+    Object.defineProperty(TextEncoderStream.prototype, 'readable', { get: function() { return this._ts.readable; } });
+    Object.defineProperty(TextEncoderStream.prototype, 'writable', { get: function() { return this._ts.writable; } });
+    Object.defineProperty(TextEncoderStream.prototype, 'encoding', { get: function() { return 'utf-8'; } });
+    globalThis.TextEncoderStream = TextEncoderStream;
+  }
+  if (typeof globalThis.TextDecoderStream !== 'function') {
+    function TextDecoderStream(label, options) {
+      var self = this;
+      var dec = null;
+      try { dec = new TextDecoder(label, options); } catch (e) { dec = new TextDecoder(); }
+      this._decoder = dec;
+      this._ts = new TransformStream({
+        transform: function(chunk, controller) {
+          var u8 = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+          controller.enqueue(dec.decode(u8, { stream: true }));
+        },
+        flush: function(controller) {
+          var tail = dec.decode();
+          if (tail) controller.enqueue(tail);
+        },
+      });
+    }
+    Object.defineProperty(TextDecoderStream.prototype, 'readable', { get: function() { return this._ts.readable; } });
+    Object.defineProperty(TextDecoderStream.prototype, 'writable', { get: function() { return this._ts.writable; } });
+    Object.defineProperty(TextDecoderStream.prototype, 'encoding', { get: function() { return this._decoder.encoding; } });
+    globalThis.TextDecoderStream = TextDecoderStream;
+  }
+
+  function _utf8EncodeBytes(str) {
+    var bytes = [];
+    for (var i = 0; i < str.length; i++) {
+      var cc = str.charCodeAt(i);
+      if (cc < 0x80) bytes.push(cc);
+      else if (cc < 0x800) { bytes.push(0xc0 | (cc >> 6)); bytes.push(0x80 | (cc & 0x3f)); }
+      else if (cc >= 0xd800 && cc <= 0xdbff) {
+        i++;
+        var cc2 = str.charCodeAt(i) || 0;
+        var cp = ((cc - 0xd800) << 10) + (cc2 - 0xdc00) + 0x10000;
+        bytes.push(0xf0 | (cp >> 18)); bytes.push(0x80 | ((cp >> 12) & 0x3f));
+        bytes.push(0x80 | ((cp >> 6) & 0x3f)); bytes.push(0x80 | (cp & 0x3f));
+      } else {
+        bytes.push(0xe0 | (cc >> 12)); bytes.push(0x80 | ((cc >> 6) & 0x3f)); bytes.push(0x80 | (cc & 0x3f));
+      }
+    }
+    return new Uint8Array(bytes);
+  }
+
+  // ── CompressionStream / DecompressionStream（复用 koss:zlib） ──
+  function _getZlibModule() {
+    try { return require('koss:zlib'); } catch (e) { return null; }
+  }
+  if (typeof globalThis.CompressionStream !== 'function') {
+    function CompressionStream(format) {
+      var self = this;
+      this._format = String(format || 'gzip').toLowerCase().replace('_', '-');
+      this._chunks = [];
+      this._ts = new TransformStream({
+        transform: function(chunk, controller) {
+          var u8 = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+          self._chunks.push(u8);
+        },
+        flush: function(controller) {
+          var zlib = _getZlibModule();
+          if (!zlib) { controller.error(new Error('zlib not available')); return; }
+          var total = 0;
+          for (var i = 0; i < self._chunks.length; i++) total += self._chunks[i].length;
+          var input = new Uint8Array(total);
+          var offset = 0;
+          for (var j = 0; j < self._chunks.length; j++) { input.set(self._chunks[j], offset); offset += self._chunks[j].length; }
+          var out;
+          if (self._format === 'gzip') out = zlib.gzipSync(input);
+          else if (self._format === 'deflate') out = zlib.deflateSync(input);
+          else if (self._format === 'deflate-raw') out = zlib.deflateRawSync ? zlib.deflateRawSync(input) : zlib.deflateSync(input);
+          else if (self._format === 'brotli') out = zlib.brotliCompressSync ? zlib.brotliCompressSync(input) : null;
+          else { controller.error(new Error('Unsupported compression format: ' + self._format)); return; }
+          if (out) controller.enqueue(out instanceof Uint8Array ? out : new Uint8Array(out));
+        },
+      });
+    }
+    Object.defineProperty(CompressionStream.prototype, 'readable', { get: function() { return this._ts.readable; } });
+    Object.defineProperty(CompressionStream.prototype, 'writable', { get: function() { return this._ts.writable; } });
+    globalThis.CompressionStream = CompressionStream;
+  }
+  if (typeof globalThis.DecompressionStream !== 'function') {
+    function DecompressionStream(format) {
+      var self = this;
+      this._format = String(format || 'gzip').toLowerCase().replace('_', '-');
+      this._chunks = [];
+      this._ts = new TransformStream({
+        transform: function(chunk, controller) {
+          var u8 = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+          self._chunks.push(u8);
+        },
+        flush: function(controller) {
+          var zlib = _getZlibModule();
+          if (!zlib) { controller.error(new Error('zlib not available')); return; }
+          var total = 0;
+          for (var i = 0; i < self._chunks.length; i++) total += self._chunks[i].length;
+          var input = new Uint8Array(total);
+          var offset = 0;
+          for (var j = 0; j < self._chunks.length; j++) { input.set(self._chunks[j], offset); offset += self._chunks[j].length; }
+          var out;
+          if (self._format === 'gzip') out = zlib.gunzipSync(input);
+          else if (self._format === 'deflate') out = zlib.inflateSync(input);
+          else if (self._format === 'deflate-raw') out = zlib.inflateRawSync ? zlib.inflateRawSync(input) : zlib.inflateSync(input);
+          else if (self._format === 'brotli') out = zlib.brotliDecompressSync ? zlib.brotliDecompressSync(input) : null;
+          else { controller.error(new Error('Unsupported compression format: ' + self._format)); return; }
+          if (out) controller.enqueue(out instanceof Uint8Array ? out : new Uint8Array(out));
+        },
+      });
+    }
+    Object.defineProperty(DecompressionStream.prototype, 'readable', { get: function() { return this._ts.readable; } });
+    Object.defineProperty(DecompressionStream.prototype, 'writable', { get: function() { return this._ts.writable; } });
+    globalThis.DecompressionStream = DecompressionStream;
+  }
+
+  // ── MessageChannel / MessagePort（同线程消息传递） ──
+  if (typeof globalThis.MessageChannel !== 'function') {
+    function MessagePort() {
+      this._listeners = {};
+      this._started = false;
+      this.onmessage = null;
+      this.onmessageerror = null;
+    }
+    MessagePort.prototype.postMessage = function(data, transfer) {
+      var self = this;
+      var other = this._other;
+      if (!other) return;
+      var cloned;
+      try { cloned = globalThis.structuredClone ? globalThis.structuredClone(data) : data; }
+      catch (e) { cloned = data; }
+      // 异步投递
+      setTimeout(function() {
+        other._dispatch(new MessageEvent('message', { data: cloned }));
+      }, 0);
+    };
+    MessagePort.prototype.start = function() { this._started = true; };
+    MessagePort.prototype.close = function() {
+      this._closed = true;
+      this._other = null;
+    };
+    MessagePort.prototype._dispatch = function(event) {
+      if (this._closed) return;
+      if (typeof this.onmessage === 'function') this.onmessage(event);
+      var arr = this._listeners['message'];
+      if (arr) {
+        var copy = arr.slice();
+        for (var i = 0; i < copy.length; i++) copy[i].call(this, event);
+      }
+    };
+    MessagePort.prototype.addEventListener = function(type, listener, options) {
+      if (typeof listener !== 'function') return;
+      var key = String(type);
+      if (!this._listeners[key]) this._listeners[key] = [];
+      this._listeners[key].push(listener);
+    };
+    MessagePort.prototype.removeEventListener = function(type, listener) {
+      var key = String(type);
+      var arr = this._listeners[key];
+      if (!arr) return;
+      for (var i = 0; i < arr.length; i++) {
+        if (arr[i] === listener) { arr.splice(i, 1); break; }
+      }
+    };
+    Object.defineProperty(MessagePort.prototype, 'onmessage', {
+      get: function() { return this._onmessage; },
+      set: function(fn) { this._onmessage = fn; },
+      configurable: true,
+    });
+    globalThis.MessagePort = MessagePort;
+
+    function MessageChannel() {
+      this.port1 = new MessagePort();
+      this.port2 = new MessagePort();
+      this.port1._other = this.port2;
+      this.port2._other = this.port1;
+    }
+    globalThis.MessageChannel = MessageChannel;
+  }
+
+  // ── BroadcastChannel（同进程广播） ──
+  if (typeof globalThis.BroadcastChannel !== 'function') {
+    var __broadcastChannels = {};
+    function BroadcastChannel(name) {
+      EventTarget.call(this);
+      this.name = String(name);
+      this._closed = false;
+      if (!__broadcastChannels[this.name]) __broadcastChannels[this.name] = [];
+      __broadcastChannels[this.name].push(this);
+      this.onmessage = null;
+      this.onmessageerror = null;
+    }
+    BroadcastChannel.prototype = Object.create(EventTarget.prototype);
+    BroadcastChannel.prototype.constructor = BroadcastChannel;
+    BroadcastChannel.prototype.postMessage = function(data) {
+      var self = this;
+      var channels = __broadcastChannels[this.name] || [];
+      var cloned;
+      try { cloned = globalThis.structuredClone ? globalThis.structuredClone(data) : data; }
+      catch (e) { cloned = data; }
+      setTimeout(function() {
+        for (var i = 0; i < channels.length; i++) {
+          if (channels[i] !== self && !channels[i]._closed) {
+            var event = new MessageEvent('message', { data: cloned });
+            channels[i].dispatchEvent(event);
+            if (typeof channels[i].onmessage === 'function') channels[i].onmessage(event);
+          }
+        }
+      }, 0);
+    };
+    BroadcastChannel.prototype.close = function() {
+      this._closed = true;
+      var arr = __broadcastChannels[this.name];
+      if (arr) {
+        var idx = arr.indexOf(this);
+        if (idx !== -1) arr.splice(idx, 1);
+      }
+    };
+    Object.defineProperty(BroadcastChannel.prototype, 'onmessage', {
+      get: function() { return this._onmessage; },
+      set: function(fn) { this._onmessage = fn; },
+      configurable: true,
+    });
+    globalThis.BroadcastChannel = BroadcastChannel;
+  }
+
+  // ── Storage / localStorage / sessionStorage ──
+  if (typeof globalThis.Storage !== 'function') {
+    function Storage() {
+      this._store = {};
+    }
+    Storage.prototype.getItem = function(key) {
+      return Object.prototype.hasOwnProperty.call(this._store, key) ? this._store[key] : null;
+    };
+    Storage.prototype.setItem = function(key, value) {
+      this._store[key] = String(value);
+    };
+    Storage.prototype.removeItem = function(key) {
+      delete this._store[key];
+    };
+    Storage.prototype.clear = function() {
+      this._store = {};
+    };
+    Storage.prototype.key = function(index) {
+      var keys = Object.keys(this._store);
+      return index >= 0 && index < keys.length ? keys[index] : null;
+    };
+    Object.defineProperty(Storage.prototype, 'length', {
+      get: function() { return Object.keys(this._store).length; }
+    });
+    globalThis.Storage = Storage;
+
+    if (typeof globalThis.localStorage === 'undefined') {
+      globalThis.localStorage = new Storage();
+    }
+    if (typeof globalThis.sessionStorage === 'undefined') {
+      globalThis.sessionStorage = new Storage();
+    }
+  }
+
+  // ── console 补全（table/trace/count/countReset/clear/assert） ──
+  if (typeof console !== 'undefined' && typeof console.table !== 'function') {
+    console.table = function(data) {
+      if (data === null || data === undefined) return console.log(data);
+      if (Array.isArray(data)) {
+        for (var i = 0; i < data.length; i++) {
+          if (typeof data[i] === 'object' && data[i] !== null) {
+            console.log(i, JSON.stringify(data[i]));
+          } else {
+            console.log(i, data[i]);
+          }
+        }
+      } else if (typeof data === 'object') {
+        console.log(JSON.stringify(data, null, 2));
+      } else {
+        console.log(data);
+      }
+    };
+  }
+  if (typeof console !== 'undefined' && typeof console.trace !== 'function') {
+    console.trace = function() {
+      var args = Array.prototype.slice.call(arguments);
+      var msg = args.join(' ');
+      try {
+        console.error(msg + '\n' + new Error('trace').stack);
+      } catch (e) {
+        console.error(msg);
+      }
+    };
+  }
+  if (typeof console !== 'undefined' && typeof console.count !== 'function') {
+    var __consoleCounts = {};
+    console.count = function(label) {
+      var key = label === undefined ? 'default' : String(label);
+      __consoleCounts[key] = (__consoleCounts[key] || 0) + 1;
+      console.log(key + ': ' + __consoleCounts[key]);
+    };
+    console.countReset = function(label) {
+      var key = label === undefined ? 'default' : String(label);
+      delete __consoleCounts[key];
+    };
+  }
+  if (typeof console !== 'undefined' && typeof console.clear !== 'function') {
+    console.clear = function() { /* 嵌入式环境无终端清屏 */ };
+  }
+  if (typeof console !== 'undefined' && typeof console.assert !== 'function') {
+    console.assert = function(condition) {
+      if (!condition) {
+        var args = Array.prototype.slice.call(arguments, 1);
+        var msg = 'Assertion failed';
+        if (args.length > 0) {
+          var formatted = [];
+          for (var i = 0; i < args.length; i++) {
+            formatted.push(typeof args[i] === 'object' ? JSON.stringify(args[i]) : String(args[i]));
+          }
+          msg += ': ' + formatted.join(' ');
+        }
+        console.error(msg);
+      }
+    };
+  }
+  if (typeof console !== 'undefined' && typeof console.groupCollapsed !== 'function') {
+    console.groupCollapsed = console.group || function() {};
+  }
+  if (typeof console !== 'undefined' && typeof console.groupEnd !== 'function') {
+    console.groupEnd = function() {};
+  }
+  if (typeof console !== 'undefined' && typeof console.timeLog !== 'function') {
+    console.timeLog = function(label) { console.log((label === undefined ? 'default' : String(label)) + ': ' + Date.now() + 'ms'); };
+  }
+  if (typeof console !== 'undefined' && typeof console.dirxml !== 'function') {
+    console.dirxml = console.dir || console.log;
+  }
+
+})(globalThis);
 "#),
         _ => None,
     }

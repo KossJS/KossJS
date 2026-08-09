@@ -2,55 +2,42 @@
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/tls - Node.js tls module (L3)
-// Maps to koss:net standard library with TLS extensions
+// 注意：KossJS 目前未实现真实 TLS 握手与证书验证。
+// 为避免调用方误以为连接已加密（安全隐患），所有 TLS 操作显式抛错。
 
-var net = require('koss:net');
+function _unsupported(name) {
+  throw new Error(
+    'tls.' + name + ' is not implemented in KossJS. ' +
+    'Real TLS (handshake, certificate verification) requires rustls integration ' +
+    'which is not yet wired up. Do NOT rely on this module for security.'
+  );
+}
 
-class TLSSocket extends net.Socket {
-  constructor(options) {
-    super(options);
-    this._authorized = options?.rejectUnauthorized !== false;
-  }
-  get encrypted() { return true; }
-  get authorized() { return this._authorized; }
-  get authorizationError() { return this._authorized ? null : new Error('TLS authorization failed'); }
-  get alpnProtocol() { return 'http/1.1'; }
+class TLSSocket {
+  constructor(options) { _unsupported('TLSSocket'); }
+  get encrypted() { return false; }
+  get authorized() { return false; }
+  get authorizationError() { return new Error('TLS not implemented in KossJS'); }
+  get alpnProtocol() { return undefined; }
 }
 
 class Server {
-  constructor(options, connectionListener) {
-    if (typeof options === 'function') { connectionListener = options; options = {}; }
-    this._connectionListener = connectionListener;
-  }
-
-  listen(port, host, callback) {
-    if (typeof host === 'function') { callback = host; host = '0.0.0.0'; }
-    if (callback) process.nextTick(callback);
-    return this;
-  }
-
-  close(callback) { if (callback) process.nextTick(callback); return this; }
+  constructor(options, connectionListener) { _unsupported('Server'); }
+  listen() { _unsupported('Server.listen'); }
+  close() { _unsupported('Server.close'); }
 }
 
-function connect(options, callback) {
-  const socket = new TLSSocket(typeof options === 'object' ? options : {});
-  if (callback) process.nextTick(() => callback(null, socket));
-  return socket;
-}
-
-function createServer(options, connectionListener) {
-  return new Server(options, connectionListener);
-}
-
-function createSecureContext(options) {
-  return { context: {}, alpnProtocols: ['http/1.1'] };
-}
-
+function connect(options, callback) { _unsupported('connect'); }
+function createServer(options, connectionListener) { _unsupported('createServer'); }
+function createSecureContext(options) { _unsupported('createSecureContext'); }
 function checkServerIdentity(hostname, cert) {
-  return undefined;
+  throw new Error(
+    'tls.checkServerIdentity is not implemented in KossJS. ' +
+    'Certificate identity validation cannot be safely skipped.'
+  );
 }
 
 const rootCertificates = [];

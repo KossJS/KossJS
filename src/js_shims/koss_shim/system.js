@@ -2,7 +2,7 @@
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:system — Koss 原生系统与进程模块
 // 架构、平台、内存、CPU、环境变量等
@@ -66,6 +66,23 @@ function env(key) {
 
 function pid() {
   return (process && process.pid) || 0;
+}
+
+function envSet(key, value) {
+  if (!process || !process.env) return;
+  process.env[String(key)] = String(value);
+}
+
+function envDelete(key) {
+  if (!process || !process.env) return;
+  delete process.env[String(key)];
+}
+
+function kill(targetPid, signal) {
+  if (process && typeof process.kill === 'function') {
+    return process.kill(targetPid, signal);
+  }
+  throw new Error('process.kill not available');
 }
 
 function exit(code) {
@@ -166,7 +183,8 @@ function availableParallelism() {
 module.exports = {
   arch: arch, platform: platform, hostname: hostname, cpus: cpus,
   memory: memory, uptime: uptime, loadavg: loadavg,
-  env: env, pid: pid, exit: exit, cwd: cwd, chdir: chdir,
+  env: env, envSet: envSet, envDelete: envDelete,
+  pid: pid, exit: exit, cwd: cwd, chdir: chdir, kill: kill,
   version: version, versions: versions, nextTick: nextTick,
   homedir: homedir, tmpdir: tmpdir, type: type, release: release,
   userInfo: userInfo, EOL: EOL(), availableParallelism: availableParallelism,

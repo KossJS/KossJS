@@ -292,32 +292,37 @@ class TestKossCrypto:
 
     def test_sign_returns_bytes(self):
         result = self.koss.eval("""
-        var sig = require('koss:crypto').sign('mykey', 'data');
-        sig instanceof Uint8Array && sig.length > 0;
+        var c = require('koss:crypto');
+        var kp = c.ed25519KeyPair();
+        var sig = c.sign(kp.privateKey, 'data');
+        sig instanceof Uint8Array && sig.length === 64;
         """)
         assert result == 'true' or result is True
 
     def test_verify_valid(self):
         result = self.koss.eval("""
         var c = require('koss:crypto');
-        var sig = c.sign('key', 'msg');
-        c.verify('key', 'msg', sig);
+        var kp = c.ed25519KeyPair();
+        var sig = c.sign(kp.privateKey, 'msg');
+        c.verify(kp.publicKey, 'msg', sig);
         """)
         assert result == 'true' or result is True
 
     def test_verify_tampered(self):
         result = self.koss.eval("""
         var c = require('koss:crypto');
-        var sig = c.sign('key', 'msg');
+        var kp = c.ed25519KeyPair();
+        var sig = c.sign(kp.privateKey, 'msg');
         var tampered = new Uint8Array(sig.length);
         for (var i = 0; i < sig.length; i++) tampered[i] = sig[i] ^ 0xff;
-        !c.verify('key', 'msg', tampered);
+        !c.verify(kp.publicKey, 'msg', tampered);
         """)
         assert result == 'true' or result is True
 
     def test_encrypt_returns_bytes(self):
         result = self.koss.eval("""
-        var enc = require('koss:crypto').encrypt('sha256', 'key', 'plain');
+        var key = new Uint8Array(32);
+        var enc = require('koss:crypto').encrypt(key, 'plain');
         enc instanceof Uint8Array && enc.length > 0;
         """)
         assert result == 'true' or result is True
@@ -325,8 +330,9 @@ class TestKossCrypto:
     def test_decrypt_equals_encrypt(self):
         result = self.koss.eval("""
         var c = require('koss:crypto');
-        var enc = c.encrypt('sha256', 'k', 'data');
-        var dec = c.decrypt('sha256', enc);
+        var key = new Uint8Array(32);
+        var enc = c.encrypt(key, 'k');
+        var dec = c.decrypt(key, enc);
         var s = '';
         for (var i = 0; i < dec.length; i++) s += String.fromCharCode(dec[i]);
         s === 'k';

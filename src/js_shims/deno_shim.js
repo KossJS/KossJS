@@ -2,7 +2,7 @@
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:deno - Deno 运行时兼容层 (L3)
 // Deno v2.0.x API alignment
@@ -12,7 +12,7 @@ var io = require('koss:io');
 var kossCrypto = require('koss:crypto');
 var kossSystem = require('koss:system');
 
-var Buffer = globalThis.Buffer;
+var Buffer = globalThis.Buffer || require('koss:buffer').Buffer;
 
 var version = { deno: '2.0.6', v8: '12.9', typescript: '5.6' };
 var args = [];
@@ -63,7 +63,7 @@ function rename(oldPath, newPath) {
 }
 
 function realPath(path) {
-  return path;
+  return io.realpath(path);
 }
 
 function cwd() {
@@ -79,11 +79,13 @@ function serve(handler, options) {
   options = options || {};
   var port = options.port || 8000;
   var hostname = options.hostname || '0.0.0.0';
-  var server = io.serve({ port: port, hostname: hostname });
+  // 接线 handler：io.serve 现在支持带 handler 的完整 HTTP 服务器
+  var server = io.serve({ port: port, hostname: hostname }, handler);
   return {
     port: Number(port),
     hostname: String(hostname),
     close: function() { server.close(); },
+    shutdown: function() { server.close(); return Promise.resolve(); },
   };
 }
 
@@ -116,6 +118,150 @@ function memoryUsage() {
     heapUsed: mem.used || 0,
     external: 0,
   };
+}
+
+// === Env（Deno.Env API） ===
+function _envSnapshot() {
+  var env = kossSystem.env();
+  var copy = {};
+  for (var k in env) copy[k] = env[k];
+  return copy;
+}
+var Env = {
+  get: function(key) {
+    var env = _envSnapshot();
+    return Object.prototype.hasOwnProperty.call(env, key) ? env[key] : undefined;
+  },
+  set: function(key, value) {
+    kossSystem.setEnv ? kossSystem.setEnv(key, value) : undefined;
+    var env = kossSystem.env();
+    if (env && typeof env === 'object') env[key] = value;
+  },
+  delete: function(key) {
+    kossSystem.deleteEnv ? kossSystem.deleteEnv(key) : undefined;
+    var env = kossSystem.env();
+    if (env && typeof env === 'object') delete env[key];
+  },
+  toObject: function() { return _envSnapshot(); },
+};
+
+// === 文件同步族 ===
+function readTextFileSync(path) { return io.readText(path); }
+function readFileSync(path) { return io.read(path); }
+function writeTextFileSync(path, data) { io.writeText(path, data); }
+function writeFileSync(path, data) { io.write(path, data); }
+function mkdirSync(path, options) {
+  try { io.mkdir(path, options); }
+  catch (e) {
+    var msg = e && e.message ? e.message : String(e);
+    if (msg.indexOf('already exists') !== -1 || msg.indexOf('os error 183') !== -1 || msg.indexOf('os error 17') !== -1) return;
+    throw e;
+  }
+}
+function removeSync(path, options) { io.rm(path, options); }
+function renameSync(oldPath, newPath) { io.mv(oldPath, newPath); }
+function statSync(path) { return io.stat(path); }
+function lstatSync(path) { return io.lstat(path); }
+function realPathSync(path) { return io.realpath(path); }
+function cwdSync() { return kossSystem.cwd(); }
+function chdirSync(path) { kossSystem.chdir(path); }
+function copyFileSync(from, to) { io.cp(from, to); }
+function symlinkSync(target, path, type) { throw new Error('Deno.symlinkSync is not implemented in KossJS'); }
+function existsSync(path) { return io.exists(path); }
+
+// === open/close/seek/readAll/writeAll ===
+function open(path, options) {
+  var opts = options || {};
+  var flags;
+  if (opts.read && opts.write) flags = 'r+';
+  else if (opts.write && opts.append) flags = 'a';
+  else if (opts.write) flags = 'w';
+  else if (opts.read) flags = 'r';
+  else if (opts.create) flags = 'w';
+  else flags = 'r';
+  var fsMod = require('node:fs');
+  var fd = fsMod.openSync(path, flags);
+  var f = new FsFile(fd, path);
+  return Promise.resolve(f);
+}
+function FsFile(fd, path) {
+  this.rid = fd;
+  this.path = path;
+}
+FsFile.prototype.read = function(buffer) {
+  var self = this;
+  return new Promise(function(resolve) {
+    var fsMod = require('node:fs');
+    var n = fsMod.readSync(self.rid, buffer, 0, buffer.length);
+    resolve(n === 0 ? null : n);
+  });
+};
+FsFile.prototype.write = function(data) {
+  var self = this;
+  return new Promise(function(resolve) {
+    var fsMod = require('node:fs');
+    var n = fsMod.writeSync(self.rid, data);
+    resolve(n);
+  });
+};
+FsFile.prototype.close = function() {
+  var fsMod = require('node:fs');
+  try { fsMod.closeSync(this.rid); } catch (e) {}
+  return Promise.resolve();
+};
+FsFile.prototype.seek = function(offset, whence) {
+  // 当前实现基于 fd，seek 通过 position 参数支持有限
+  return Promise.resolve(offset);
+};
+FsFile.prototype.stat = function() {
+  var self = this;
+  return new Promise(function(resolve) {
+    var fsMod = require('node:fs');
+    resolve(fsMod.fstatSync(self.rid));
+  });
+};
+FsFile.prototype[Symbol.asyncDispose] = function() {
+  return this.close();
+};
+
+function readAll(file) {
+  return new Promise(function(resolve) {
+    var chunks = [];
+    function readNext() {
+      file.read(new Uint8Array(65536)).then(function(n) {
+        if (n === null) {
+          var total = 0;
+          for (var i = 0; i < chunks.length; i++) total += chunks[i].length;
+          var out = new Uint8Array(total);
+          var off = 0;
+          for (var j = 0; j < chunks.length; j++) { out.set(chunks[j], off); off += chunks[j].length; }
+          resolve(out);
+          return;
+        }
+        var buf = new Uint8Array(65536);
+        // 从 file.read 已填充的 buffer 读取
+        chunks.push(buf.subarray(0, n));
+        readNext();
+      });
+    }
+    readNext();
+  });
+}
+
+function writeAll(file, data) {
+  var bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+  return file.write(bytes);
+}
+
+function readTextFileSyncAlias(path) { return readTextFileSync(path); }
+
+// === kill ===
+function kill(pid, signal) {
+  if (kossSystem.kill) {
+    kossSystem.kill(pid, signal);
+    return;
+  }
+  throw new Error('Deno.kill is not implemented in KossJS');
 }
 
 // === Timers ===
@@ -153,8 +299,8 @@ var cryptoObj = {
       var algo = typeof algorithm === 'string' ? algorithm : (algorithm && algorithm.name) || 'AES-GCM';
       var keyBytes = _toBytes(key);
       var ptBytes = _toBytes(data);
-      var result = kossCrypto.encrypt(keyBytes, ptBytes);
-      return result.ciphertext;
+      var combined = kossCrypto.encrypt(keyBytes, ptBytes);
+      return combined;
     },
     decrypt: async function(algorithm, key, data) {
       var ctBytes = _toBytes(data);
@@ -163,7 +309,7 @@ var cryptoObj = {
     generateKey: async function(algorithm) {
       var algo = typeof algorithm === 'string' ? algorithm : (algorithm && algorithm.name) || 'Ed25519';
       if (algo === 'Ed25519' || algo === 'ed25519') {
-        var kp = kossCrypto.internalCrypto.ed25519KeyPair();
+        var kp = kossCrypto.ed25519KeyPair();
         return kp;
       }
       var keyLen = (algorithm && algorithm.length) || 32;
@@ -246,4 +392,26 @@ module.exports = {
   run: run,
   spawn: spawn,
   permissions: permissions,
+  // 新增
+  Env: Env,
+  kill: kill,
+  readTextFileSync: readTextFileSync,
+  readFileSync: readFileSync,
+  writeTextFileSync: writeTextFileSync,
+  writeFileSync: writeFileSync,
+  mkdirSync: mkdirSync,
+  removeSync: removeSync,
+  renameSync: renameSync,
+  statSync: statSync,
+  lstatSync: lstatSync,
+  realPathSync: realPathSync,
+  cwdSync: cwdSync,
+  chdirSync: chdirSync,
+  copyFileSync: copyFileSync,
+  symlinkSync: symlinkSync,
+  existsSync: existsSync,
+  open: open,
+  readAll: readAll,
+  writeAll: writeAll,
+  FsFile: FsFile,
 };

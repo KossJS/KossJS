@@ -2,12 +2,12 @@
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:internal/stream - Internal stream layer (L2)
 // Not directly accessible to user code. Used by L3 compatibility layers.
 
-var Buffer = globalThis.Buffer;
+var Buffer = globalThis.Buffer || require('koss:buffer').Buffer;
 
 function ReadStream(readFn, options) {
   this._readFn = readFn;

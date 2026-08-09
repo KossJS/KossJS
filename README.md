@@ -2,7 +2,7 @@
 
 **可嵌入的 JavaScript 运行时** — 一个轻量级、跨平台、以动态链接库（`.dll` / `.so` / `.dylib`）形式分发的 JS 引擎。
 
-基于 [Boa Engine](https://boajs.dev/)（Rust 实现的 ECMAScript 引擎）构建，KossJS 对外暴露 **标准 C ABI**，可被 **任何编程语言** 调用 —— Python (ctypes)、C# (P/Invoke)、Java (JNA)、C++、TypeScript (koffi) 等。
+基于 [Boa Engine](https://boajs.dev/)（Rust 实现的 ECMAScript 引擎）构建，KossJS 对外暴露 **标准 C ABI**，可被 **任何编程语言** 调用 —— Python (ctypes)、C# (P/Invoke)、Java (FFM)、C++、TypeScript (koffi) 等。
 
 ## 特性
 
@@ -115,14 +115,15 @@ python -m pytest test/ -v
 | `koss_create_worker_pool` | 创建 Worker 线程池 |
 | `koss_push_value` / `koss_pop_value` | Worker 线程池消息传递 |
 | `koss_get_version` | 返回库版本字符串 |
+| ... | ... |
 
-完整的 C API 文档见 [`include/kossjs.h`](include/kossjs.h)。
+完整的 C API 文档见 [`API 概览`](https://docss.sxxyrry.qzz.io/KossJS/zh/api/API-overview.html)。
 
 ## 许可证
 
 **GNU Affero General Public License v3.0**，并附带 TT23XR Studio 第7节附加权限《独立模块闭源组合例外》。
 
-**闭源例外**：未经修改的官方预编译二进制库（`.dll`/`.so`/`.dylib`）可在注明出处的前提下链接到专有应用程序中。详见 [`LICENSE.md`](LICENSE.md)。
+**闭源例外**：未经修改的官方预编译二进制库（`.dll`/`.so`/`.dylib`）可在注明出处的前提下链接到专有应用程序中。详见 [`ADDITIONAL_PERMISSIONS.md`](ADDITIONAL_PERMISSIONS.md)。
 
 ---
 

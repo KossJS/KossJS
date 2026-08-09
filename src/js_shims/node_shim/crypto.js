@@ -2,7 +2,7 @@
 // 
 // This file is licensed under GNU Affero General Public License v3.0
 // with the TT23XR Studio Additional Permission:
-// "非本软件模块的源代码公开义务例外"
+// "独立模块闭源组合例外" ("Independent Module Exception for Closed-Source Combinations")
 
 // koss:node/crypto - Node.js crypto module (L3)
 // Maps to koss:crypto standard library
@@ -32,7 +32,7 @@ function randomUUID(options) {
 
 function randomFillSync(buffer, offset, size) {
   var off = offset || 0;
-  var len = size || buffer.length - off;
+  var len = size !== undefined && size !== null ? size : buffer.length - off;
   var bytes = kossCrypto.randomBytes(len);
   for (var i = 0; i < len; i++) buffer[off + i] = bytes[i];
   return buffer;
@@ -62,13 +62,11 @@ function createHash(algorithm) {
     },
     digest: function(encoding) {
       var combined = Buffer.concat(chunks);
-      var hashBytes = kossCrypto.hash(algo, combined);
-      if (encoding === 'hex' || !encoding) {
-        return kossCrypto.hashHex(algo, combined);
-      }
-      if (encoding === 'base64') return Buffer.from(hashBytes).toString('base64');
-      if (encoding === 'latin1') return Buffer.from(hashBytes).toString('latin1');
-      return Buffer.from(hashBytes);
+      var bytes = kossCrypto.hashBytes(algo, combined);
+      if (encoding === 'hex' || !encoding) return Buffer.from(bytes).toString('hex');
+      if (encoding === 'base64') return Buffer.from(bytes).toString('base64');
+      if (encoding === 'latin1') return Buffer.from(bytes).toString('latin1');
+      return Buffer.from(bytes);
     },
     copy: function() {
       var copy = createHash(algo);
@@ -93,13 +91,11 @@ function createHmac(algorithm, key) {
     },
     digest: function(encoding) {
       var msg = Buffer.concat(chunks);
-      var macBytes = kossCrypto.hmac(algo, keyBuf, msg);
-      if (encoding === 'hex' || !encoding) {
-        return kossCrypto.hmacHex(algo, keyBuf, msg);
-      }
-      if (encoding === 'base64') return Buffer.from(macBytes).toString('base64');
-      if (encoding === 'latin1') return Buffer.from(macBytes).toString('latin1');
-      return Buffer.from(macBytes);
+      var bytes = kossCrypto.hmacBytes(algo, keyBuf, msg);
+      if (encoding === 'hex' || !encoding) return Buffer.from(bytes).toString('hex');
+      if (encoding === 'base64') return Buffer.from(bytes).toString('base64');
+      if (encoding === 'latin1') return Buffer.from(bytes).toString('latin1');
+      return Buffer.from(bytes);
     },
   };
 }
@@ -127,12 +123,12 @@ function getHashes() {
   return ['sha1', 'sha256', 'sha384', 'sha512', 'md5'];
 }
 
-function getCiphers() { return ['aes-256-gcm', 'aes-128-gcm']; }
+function getCiphers() { return ['aes-128-gcm', 'aes-192-gcm', 'aes-256-gcm']; }
 function getCurves() { return ['ed25519']; }
 
 function generateKeyPairSync(type, options) {
   if (type === 'ed25519') {
-    var kp = kossCrypto.internalCrypto.ed25519KeyPair();
+    var kp = kossCrypto.ed25519KeyPair();
     return {
       publicKey: Buffer.from(kp.publicKey),
       privateKey: Buffer.from(kp.privateKey),
@@ -148,8 +144,7 @@ function sign(algorithm, data, key) {
     var sig = kossCrypto.sign(toBuffer(key), msgBuf);
     return Buffer.from(sig);
   }
-  var macBytes = kossCrypto.hmac(algo, toBuffer(key), msgBuf);
-  return Buffer.from(macBytes);
+  throw new Error('Signing with algorithm "' + algorithm + '" is not supported. Only ed25519 is available.');
 }
 
 function verify(algorithm, data, key, signature) {
@@ -159,55 +154,92 @@ function verify(algorithm, data, key, signature) {
   if (algo === 'ed25519') {
     return kossCrypto.verify(toBuffer(key), msgBuf, sigBuf);
   }
-  var expected = Buffer.from(kossCrypto.hmac(algo, toBuffer(key), msgBuf));
-  return expected.length === sigBuf.length && kossCrypto.timingSafeEqual(expected, sigBuf);
+  throw new Error('Verifying with algorithm "' + algorithm + '" is not supported. Only ed25519 is available.');
+}
+
+function _parseCipherAlgorithm(algorithm) {
+  var a = String(algorithm).toLowerCase().replace('_', '-');
+  if (a === 'aes-128-gcm') return { keyLen: 16 };
+  if (a === 'aes-192-gcm') return { keyLen: 24 };
+  if (a === 'aes-256-gcm') return { keyLen: 32 };
+  return null;
+}
+
+function _encodeOutput(bytes, encoding) {
+  if (encoding === 'hex') return Buffer.from(bytes).toString('hex');
+  if (encoding === 'base64') return Buffer.from(bytes).toString('base64');
+  if (encoding === 'latin1') return Buffer.from(bytes).toString('latin1');
+  return Buffer.from(bytes);
 }
 
 function createCipheriv(algorithm, key, iv) {
+  var spec = _parseCipherAlgorithm(algorithm);
+  if (!spec) throw new Error('Unsupported cipher: ' + algorithm);
   var keyBuf = toBuffer(key);
+  if (keyBuf.length !== spec.keyLen) {
+    throw new Error('Invalid key length ' + keyBuf.length + ' for ' + algorithm);
+  }
   var ivBuf = iv ? toBuffer(iv) : new Uint8Array(0);
+  if (ivBuf.length !== 12) {
+    throw new Error('Invalid IV length ' + ivBuf.length + ' for AES-GCM (expected 12 bytes)');
+  }
   var chunks = [];
+  var aad = new Uint8Array(0);
+  var cipherState = null;
   return {
     update: function(data, inputEncoding, outputEncoding) {
       chunks.push(toBuffer(data));
       return '';
     },
+    setAAD: function(buf) { aad = toBuffer(buf); return this; },
     final: function(outputEncoding) {
+      if (cipherState) return '';
       var plaintext = Buffer.concat(chunks);
-      var aad = new Uint8Array(0);
-      var nonce = ivBuf.length >= 12 ? ivBuf.slice(0, 12) : kossCrypto.randomBytes(12);
-      var ct = kossCrypto.encrypt(keyBuf, plaintext, { nonce: nonce, aad: aad });
-      if (outputEncoding === 'hex') {
-        return kossCrypto.hashHex('sha256', ct);
-      }
-      if (outputEncoding === 'base64') return Buffer.from(ct).toString('base64');
-      return Buffer.from(ct);
+      var ct = kossCrypto.encrypt(keyBuf, plaintext, { nonce: ivBuf, aad: aad });
+      if (ct.length < 16) throw new Error('AES-GCM encryption produced invalid output');
+      var body = ct.subarray(0, ct.length - 16);
+      cipherState = { authTag: Buffer.from(ct.subarray(ct.length - 16)) };
+      return _encodeOutput(body, outputEncoding);
     },
-    getAuthTag: function() { return Buffer.alloc(16); },
+    getAuthTag: function() {
+      if (!cipherState) throw new Error('Cannot get auth tag before final()');
+      return cipherState.authTag;
+    },
   };
 }
 
 function createDecipheriv(algorithm, key, iv) {
+  var spec = _parseCipherAlgorithm(algorithm);
+  if (!spec) throw new Error('Unsupported cipher: ' + algorithm);
   var keyBuf = toBuffer(key);
+  if (keyBuf.length !== spec.keyLen) {
+    throw new Error('Invalid key length ' + keyBuf.length + ' for ' + algorithm);
+  }
   var ivBuf = iv ? toBuffer(iv) : new Uint8Array(0);
+  if (ivBuf.length !== 12) {
+    throw new Error('Invalid IV length ' + ivBuf.length + ' for AES-GCM (expected 12 bytes)');
+  }
   var chunks = [];
+  var aad = new Uint8Array(0);
   var authTag = null;
+  var decrypted = false;
   return {
     update: function(data, inputEncoding, outputEncoding) {
       chunks.push(toBuffer(data));
       return '';
     },
+    setAAD: function(buf) { aad = toBuffer(buf); return this; },
     setAuthTag: function(tag) { authTag = toBuffer(tag); return this; },
     final: function(outputEncoding) {
+      if (decrypted) return '';
+      if (!authTag) throw new Error('Cannot decrypt without auth tag (call setAuthTag first)');
       var ciphertext = Buffer.concat(chunks);
-      var aad = new Uint8Array(0);
-      var nonce = ivBuf.length >= 12 ? ivBuf.slice(0, 12) : new Uint8Array(12);
-      var pt = kossCrypto.decrypt(keyBuf, ciphertext, { nonce: nonce, aad: aad });
-      if (outputEncoding === 'hex') {
-        return kossCrypto.hashHex('sha256', pt);
-      }
-      if (outputEncoding === 'base64') return Buffer.from(pt).toString('base64');
-      return Buffer.from(pt);
+      var combined = new Uint8Array(ciphertext.length + authTag.length);
+      combined.set(ciphertext, 0);
+      combined.set(authTag, ciphertext.length);
+      var pt = kossCrypto.decrypt(keyBuf, combined, { nonce: ivBuf, aad: aad });
+      decrypted = true;
+      return _encodeOutput(pt, outputEncoding);
     },
   };
 }
