@@ -7,13 +7,13 @@
 ## 特性
 
 - **通用语言互操作** — 标准 C ABI，任何支持 C FFI 的语言均可调用
-- **Node.js 兼容标准库** — 40+ 内置模块（`fs`、`net`、`http`、`crypto`、`path`、`os`、`buffer`、`stream`、`events`、`child_process`、`dgram`、`dns`、`zlib`、`assert`、`url`、`util`、`vm` 等）
+- **Node.js 兼容标准库** — 29 个内置模块（`fs`、`net`、`http`、`crypto`、`path`、`os`、`buffer`、`stream`、`events`、`dgram`、`dns`、`zlib`、`assert`、`url`、`util` 等）
 - **双模块系统** — 同时支持 ES Module（`import`/`export`）和 CommonJS（`require()`/`module.exports`）
 - **内置 `fetch()`** — 异步 HTTP 客户端，支持 TLS 指纹伪装
-- **Worker 线程池** — 基于 OS 线程的并行 JS 执行
+- **Web API 全局** — `self`/`queueMicrotask`/`structuredClone`/`URL`/`AbortController`/`FormData`/`Request`/`ReadableStream` 等标准 Web API 直接可用
 - **N-API 兼容层** — 加载已有的 `.node` 原生插件
 - **原生 FFI（Senri）** — 运行时动态加载和调用任意 C 函数库（仅桌面端）
-- **基于能力的沙箱** — 细粒度权限控制（`FS`、`NET`、`CRYPTO`、`WORKER`、`EXTERNAL_LOADER`）
+- **基于能力的沙箱** — 细粒度权限控制（`FS`、`NET`、`CRYPTO`、`FFI`、`MODULE_LOAD` 等 28 个能力位）
 - **内置标准库** — 所有标准库模块编译时嵌入二进制，运行时无需文件系统依赖
 
 ## 其他
@@ -106,15 +106,14 @@ python -m pytest test/ -v
 | `koss_create` | 创建 JS 实例，指定能力标志 |
 | `koss_destroy` | 销毁 JS 实例 |
 | `koss_eval` | 同步执行 JavaScript 代码 |
-| `koss_eval_async` | 执行 JavaScript 代码（等待 Promise） |
-| `koss_inject_global` | 向全局作用域注入值 |
+| `koss_run_async` | 执行 JavaScript 代码（等待 Promise） |
+| `koss_set_global_string` 等 | 向全局作用域注入值（string/number/bool/null/undefined/json） |
 | `koss_register_function` | 将原生回调注册为 JS 函数 |
 | `koss_register_class` | 注册原生类构造函数 |
-| `koss_load_module` | 按路径加载 ES 模块 |
+| `koss_run_module` | 按路径加载 ES 模块 |
 | `koss_register_module_loader` | 注册自定义模块加载器回调 |
-| `koss_create_worker_pool` | 创建 Worker 线程池 |
-| `koss_push_value` / `koss_pop_value` | Worker 线程池消息传递 |
-| `koss_get_version` | 返回库版本字符串 |
+| `koss_version` | 返回库版本字符串 |
+| `koss_set_audit_mask` / `koss_check_sandbox` | 沙箱审核掩码与审核回调 |
 | ... | ... |
 
 完整的 C API 文档见 [`API 概览`](https://docss.sxxyrry.qzz.io/KossJS/zh/api/API-overview.html)。
