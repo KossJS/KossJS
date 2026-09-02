@@ -590,23 +590,75 @@ jobs:
           path: kossjs_harmony_${{ matrix.suffix }}.so
           retention-days: 30
 
+  build-test-file:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: ffi_test.dll
+            lib_name: ffi_test.dll
+          - os: ubuntu-latest
+            artifact_name: ffi_test.so
+            lib_name: libffi_test.so
+          - os: macos-latest
+            artifact_name: ffi_test.dylib
+            lib_name: libffi_test.dylib
+    runs-on: ${{ matrix.os }}
+    name: 编译测试文件 (${{ matrix.os }})
+
+    steps:
+      # 编译的测试代码在 ./test-lib/ ，是 Rust 代码
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+      
+      - name: 🦀 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      
+      - name: 📦 缓存 Cargo
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: 🏗️ 编译测试文件
+        shell: bash
+        run: |
+          cd test-lib
+          cargo build --release
+          SRC="target/release/${{ matrix.lib_name }}"
+          DST="../${{ matrix.artifact_name }}"
+          cp "$SRC" "$DST"
+          echo "测试产物: $DST ($(du -h "$DST" | cut -f1))"
+        
+      - name: 📤 上传测试产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}
+
   # ═══════════════════════════════════════════════════════════════
   #  测试 (Linux + macOS + Windows 原生)
   # ═══════════════════════════════════════════════════════════════
   test:
-    needs: build-desktop
+    needs: [build-desktop, build-test-file]
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             artifact: kossjs.so
+            testartifact: ffi_test.so
             lib_env: LD_LIBRARY_PATH
           - os: macos-latest
             artifact: kossjs_arm64.dylib
+            testartifact: ffi_test.dylib
             lib_env: DYLD_LIBRARY_PATH
           - os: windows-latest
             artifact: kossjs.dll
+            testartifact: ffi_test.dll
             lib_env: PATH
     runs-on: ${{ matrix.os }}
     name: 测试 (${{ matrix.os }})
@@ -620,6 +672,12 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: .
+
+      - name: 📥 下载测试产物
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.testartifact }}
+          path: ./test-lib/target/release/
 
       - name: 🐍 安装 Python
         uses: actions/setup-python@v5

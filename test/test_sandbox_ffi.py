@@ -4,18 +4,26 @@
 """
 import os
 import pytest
+import sys
 from kossjs_interface import KossJS, JsError # pyright: ignore[reportUnusedImport]
 
 # 动态库路径
 TEST_LIB_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "test-lib", "target", "release")
-if os.name == "nt":
-    TEST_LIB_PATH = os.path.join(TEST_LIB_DIR, "senri_test.dll").replace("\\", "/")
+
+SYSTEM = sys.platform
+
+if SYSTEM == "win32":
+    TEST_LIB_PATH = os.path.join(TEST_LIB_DIR, "ffi_test.dll").replace("\\", "/")
+elif SYSTEM == "linux":
+    TEST_LIB_PATH = os.path.join(TEST_LIB_DIR, "ffi_test.so").replace("\\", "/") # pyright: ignore[reportConstantRedefinition]
+elif SYSTEM == "darwin":
+    TEST_LIB_PATH = os.path.join(TEST_LIB_DIR, "ffi_test.dylib").replace("\\", "/") # pyright: ignore[reportConstantRedefinition]
 else:
-    TEST_LIB_PATH = os.path.join(TEST_LIB_DIR, "senri_test.so").replace("\\", "/")
+    raise RuntimeError(f"Unsupported platform: {SYSTEM}")
 
 # 跳过测试如果动态库不存在
 pytestmark = pytest.mark.skipif(
-    not os.path.exists(os.path.join(TEST_LIB_DIR, "senri_test.dll" if os.name == "nt" else "libsenri_test.so")),
+    not os.path.exists(os.path.join(TEST_LIB_DIR, "ffi_test.dll" if SYSTEM == "win32" else "ffi_test.so" if SYSTEM == "linux" else "ffi_test.dylib")),
     reason="Test library not built"
 )
 
