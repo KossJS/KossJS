@@ -5752,7 +5752,9 @@ mod tests {
             (crate::sandbox::NATIVE_ADDON, true, "undefined"),
             (crate::sandbox::KOSS_CAP_SANDBOX, false, "undefined"),
         ] {
-            let instance = unsafe { &mut *koss_create_with_caps(caps, stable) };
+            let ptr = koss_create_with_caps(caps, stable);
+            assert!(!ptr.is_null(), "koss_create_with_caps should not return null");
+            let instance = unsafe { &mut *ptr };
             let value = instance
                 .context
                 .eval(Source::from_bytes(b"typeof process.dlopen"))
