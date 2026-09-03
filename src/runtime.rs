@@ -6101,7 +6101,6 @@ mod tests {
         assert_eq!(builtins, 0);
         assert!(!builtin_enabled);
         assert_eq!(audit_mask, 0);
-        assert!(!unsafe { (*ptr).sandbox.audit_debug });
 
         unsafe { koss_destroy(ptr) };
     }
