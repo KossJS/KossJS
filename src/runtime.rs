@@ -5754,7 +5754,7 @@ mod tests {
         ] {
             let ptr = koss_create_with_caps(caps, stable);
             assert!(!ptr.is_null(), "koss_create_with_caps should not return null");
-            let instance = unsafe { &mut *ptr };
+            let instance = unsafe { ptr.as_mut().unwrap() };
             let value = instance
                 .context
                 .eval(Source::from_bytes(b"typeof process.dlopen"))
