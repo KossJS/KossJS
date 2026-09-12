@@ -26,7 +26,7 @@ class TestUrlAPI:
         result = koss.eval(
             "require('koss:node/url').resolve('https://example.com/a', '/b')"
         )
-        assert result.startswith("https://example.com/") or "example.com/" in result
+        assert '"https://example.com/' in result
 
     def test_url_constructor(self, koss: KossJS):
         result = koss.eval(
